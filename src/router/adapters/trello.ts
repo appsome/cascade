@@ -102,6 +102,11 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 		return config.projects.find((p) => p.trello?.boardId === event.projectIdentifier) ?? null;
 	}
 
+	async resolveAllProjects(event: ParsedWebhookEvent): Promise<RouterProjectConfig[]> {
+		const config = await loadProjectConfig();
+		return config.projects.filter((p) => p.trello?.boardId === event.projectIdentifier);
+	}
+
 	async dispatchWithCredentials(
 		_event: ParsedWebhookEvent,
 		payload: unknown,

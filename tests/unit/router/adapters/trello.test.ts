@@ -202,6 +202,48 @@ describe('TrelloRouterAdapter', () => {
 		});
 	});
 
+	describe('resolveAllProjects', () => {
+		it('returns all projects matching boardId', async () => {
+			const secondProject: RouterProjectConfig = {
+				...mockProject,
+				id: 'p2',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-bdgt' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [mockProject, secondProject],
+				fullProjects: [{ id: 'p1' } as never, { id: 'p2' } as never],
+			});
+
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'board1',
+				eventType: 'updateCard',
+				isCommentEvent: false,
+			});
+			expect(projects).toHaveLength(2);
+			expect(projects[0].id).toBe('p1');
+			expect(projects[1].id).toBe('p2');
+		});
+
+		it('returns empty array for unknown boardId', async () => {
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'unknown-board',
+				eventType: 'updateCard',
+				isCommentEvent: false,
+			});
+			expect(projects).toHaveLength(0);
+		});
+
+		it('returns single project when only one matches', async () => {
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'board1',
+				eventType: 'updateCard',
+				isCommentEvent: false,
+			});
+			expect(projects).toHaveLength(1);
+			expect(projects[0].id).toBe('p1');
+		});
+	});
+
 	describe('dispatchWithCredentials', () => {
 		it('dispatches to trigger registry', async () => {
 			vi.mocked(mockTriggerRegistry.dispatch).mockResolvedValue({
