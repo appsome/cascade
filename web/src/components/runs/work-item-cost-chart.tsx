@@ -1,3 +1,4 @@
+import { useTheme } from 'next-themes';
 import { Cell, Label, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.js';
 import { agentTypeLabel, getAgentColor } from '@/lib/chart-colors.js';
@@ -28,7 +29,7 @@ interface CostEntry {
 	color: string;
 }
 
-function buildDataFromRuns(runs: WorkItemRun[]): CostEntry[] {
+function buildDataFromRuns(runs: WorkItemRun[], dark: boolean): CostEntry[] {
 	const costByAgent: Record<string, number> = {};
 	for (const run of runs) {
 		if (run.costUsd != null) {
@@ -42,11 +43,11 @@ function buildDataFromRuns(runs: WorkItemRun[]): CostEntry[] {
 		name: agentTypeLabel(agentType),
 		agentType,
 		value,
-		color: getAgentColor(agentType),
+		color: getAgentColor(agentType, dark),
 	}));
 }
 
-function buildDataFromBreakdown(byAgentType: AgentTypeBreakdown[]): CostEntry[] {
+function buildDataFromBreakdown(byAgentType: AgentTypeBreakdown[], dark: boolean): CostEntry[] {
 	return byAgentType
 		.map((breakdown) => {
 			const cost = Number.parseFloat(breakdown.totalCostUsd);
@@ -54,16 +55,18 @@ function buildDataFromBreakdown(byAgentType: AgentTypeBreakdown[]): CostEntry[] 
 				name: agentTypeLabel(breakdown.agentType),
 				agentType: breakdown.agentType,
 				value: Number.isNaN(cost) ? 0 : cost,
-				color: getAgentColor(breakdown.agentType),
+				color: getAgentColor(breakdown.agentType, dark),
 			};
 		})
 		.filter((entry) => entry.value > 0);
 }
 
 export function WorkItemCostChart({ runs, byAgentType }: WorkItemCostChartProps) {
+	const { theme } = useTheme();
+	const isDark = theme === 'dark';
 	const data: CostEntry[] = byAgentType
-		? buildDataFromBreakdown(byAgentType)
-		: buildDataFromRuns(runs ?? []);
+		? buildDataFromBreakdown(byAgentType, isDark)
+		: buildDataFromRuns(runs ?? [], isDark);
 
 	const totalCost = data.reduce((sum, d) => sum + d.value, 0);
 

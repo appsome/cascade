@@ -1,3 +1,4 @@
+import { useTheme } from 'next-themes';
 import {
 	Bar,
 	BarChart,
@@ -34,7 +35,10 @@ interface ChartEntry {
 	color: string;
 }
 
-export function buildDurationChartData(byAgentType: AgentTypeBreakdown[]): ChartEntry[] {
+export function buildDurationChartData(
+	byAgentType: AgentTypeBreakdown[],
+	dark = false,
+): ChartEntry[] {
 	return byAgentType
 		.filter((breakdown) => breakdown.totalDurationMs > 0)
 		.map((breakdown) => ({
@@ -43,13 +47,15 @@ export function buildDurationChartData(byAgentType: AgentTypeBreakdown[]): Chart
 			totalDurationMs: breakdown.totalDurationMs,
 			runCount: breakdown.runCount,
 			avgDurationMs: breakdown.avgDurationMs ?? 0,
-			color: getAgentColor(breakdown.agentType),
+			color: getAgentColor(breakdown.agentType, dark),
 		}))
 		.sort((a, b) => b.totalDurationMs - a.totalDurationMs);
 }
 
 export function ProjectWorkDurationChart({ byAgentType }: ProjectWorkDurationChartProps) {
-	const data: ChartEntry[] = buildDurationChartData(byAgentType);
+	const { theme } = useTheme();
+	const isDark = theme === 'dark';
+	const data: ChartEntry[] = buildDurationChartData(byAgentType, isDark);
 
 	if (data.length === 0) {
 		return (

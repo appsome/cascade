@@ -1,3 +1,4 @@
+import { useTheme } from 'next-themes';
 import { agentTypeLabel, getAgentColor } from '@/lib/chart-colors.js';
 import { formatDuration } from '@/lib/utils.js';
 
@@ -22,7 +23,7 @@ export interface DurationSegment {
  *
  * Exported for testability.
  */
-export function buildDurationSegments(runs: RunSegmentInput[]): DurationSegment[] {
+export function buildDurationSegments(runs: RunSegmentInput[], dark = false): DurationSegment[] {
 	const runsWithDuration = runs.filter((r) => r.durationMs > 0);
 	if (runsWithDuration.length === 0) return [];
 
@@ -36,7 +37,7 @@ export function buildDurationSegments(runs: RunSegmentInput[]): DurationSegment[
 			agentType: run.agentType,
 			durationMs: run.durationMs,
 			status: run.status,
-			color: getAgentColor(run.agentType),
+			color: getAgentColor(run.agentType, dark),
 			pct: totalMs > 0 ? (run.durationMs / totalMs) * 100 : 0,
 			label: `${agentTypeLabel(run.agentType)} #${count}`,
 		};
@@ -53,7 +54,9 @@ interface WorkItemDurationBarProps {
  * Highlights in red when total > 2× project average (outlier).
  */
 export function WorkItemDurationBar({ runs, projectAvgDurationMs }: WorkItemDurationBarProps) {
-	const segments = buildDurationSegments(runs);
+	const { theme } = useTheme();
+	const isDark = theme === 'dark';
+	const segments = buildDurationSegments(runs, isDark);
 
 	if (segments.length === 0) {
 		return <span className="text-xs text-muted-foreground">—</span>;

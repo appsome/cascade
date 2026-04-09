@@ -1,3 +1,4 @@
+import { useTheme } from 'next-themes';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.js';
 import { agentTypeLabel, getAgentColor } from '@/lib/chart-colors.js';
 import { formatDuration } from '@/lib/utils.js';
@@ -29,6 +30,8 @@ interface SegmentEntry {
 }
 
 export function WorkItemDurationChart({ runs }: WorkItemDurationChartProps) {
+	const { theme } = useTheme();
+	const isDark = theme === 'dark';
 	const runsWithDuration = runs.filter((r) => r.durationMs != null && r.durationMs > 0);
 
 	if (runsWithDuration.length === 0) {
@@ -62,7 +65,7 @@ export function WorkItemDurationChart({ runs }: WorkItemDurationChartProps) {
 			status: run.status,
 			model: run.model,
 			costUsd: run.costUsd,
-			color: getAgentColor(run.agentType),
+			color: getAgentColor(run.agentType, isDark),
 			pct: totalMs > 0 ? (durationMs / totalMs) * 100 : 0,
 		};
 	});
@@ -72,7 +75,7 @@ export function WorkItemDurationChart({ runs }: WorkItemDurationChartProps) {
 	const legendItems = uniqueAgentTypes.map((at) => ({
 		agentType: at,
 		label: agentTypeLabel(at),
-		color: getAgentColor(at),
+		color: getAgentColor(at, isDark),
 	}));
 
 	return (

@@ -1,5 +1,6 @@
 import { useNavigate } from '@tanstack/react-router';
 import { ClipboardList, ExternalLink, GitPullRequest } from 'lucide-react';
+import { useTheme } from 'next-themes';
 import { agentTypeLabel, getAgentColor } from '@/lib/chart-colors.js';
 import { formatCostSummary } from '@/lib/utils.js';
 import { WorkItemDurationBar } from './work-item-duration-bar.js';
@@ -234,6 +235,8 @@ export function ProjectWorkTable({
 	onPageChange,
 	projectAvgDurationMs,
 }: ProjectWorkTableProps) {
+	const { theme } = useTheme();
+	const isDark = theme === 'dark';
 	const total = items.length;
 	const totalPages = Math.ceil(total / limit);
 	const currentPage = Math.floor(offset / limit) + 1;
@@ -257,7 +260,7 @@ export function ProjectWorkTable({
 									width: 10,
 									height: 10,
 									borderRadius: 2,
-									background: getAgentColor(at),
+									background: getAgentColor(at, isDark),
 									flexShrink: 0,
 								}}
 							/>
