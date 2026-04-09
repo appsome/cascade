@@ -72,11 +72,11 @@ describe('CredentialScopedCommand', () => {
 
 	beforeEach(() => {
 		process.env = { ...originalEnv };
-		process.env.GITHUB_TOKEN = undefined;
-		process.env.GITHUB_TOKEN_IMPLEMENTER = undefined;
-		process.env.GITLAB_TOKEN_IMPLEMENTER = undefined;
-		process.env.TRELLO_API_KEY = undefined;
-		process.env.TRELLO_TOKEN = undefined;
+		delete process.env.GITHUB_TOKEN;
+		delete process.env.GITHUB_TOKEN_IMPLEMENTER;
+		delete process.env.GITLAB_TOKEN_IMPLEMENTER;
+		delete process.env.TRELLO_API_KEY;
+		delete process.env.TRELLO_TOKEN;
 	});
 
 	afterEach(() => {
