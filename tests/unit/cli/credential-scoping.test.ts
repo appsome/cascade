@@ -4,6 +4,10 @@ vi.mock('../../../src/github/client.js', () => ({
 	withGitHubToken: vi.fn((_token: string, fn: () => Promise<void>) => fn()),
 }));
 
+vi.mock('../../../src/gitlab/client.js', () => ({
+	withGitLabToken: vi.fn((_token: string, fn: () => Promise<void>, _host?: string) => fn()),
+}));
+
 vi.mock('../../../src/trello/client.js', () => ({
 	withTrelloCredentials: vi.fn(
 		(_creds: { apiKey: string; token: string }, fn: () => Promise<void>) => fn(),
@@ -69,6 +73,8 @@ describe('CredentialScopedCommand', () => {
 	beforeEach(() => {
 		process.env = { ...originalEnv };
 		process.env.GITHUB_TOKEN = undefined;
+		process.env.GITHUB_TOKEN_IMPLEMENTER = undefined;
+		process.env.GITLAB_TOKEN_IMPLEMENTER = undefined;
 		process.env.TRELLO_API_KEY = undefined;
 		process.env.TRELLO_TOKEN = undefined;
 	});
