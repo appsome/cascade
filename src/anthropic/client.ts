@@ -18,9 +18,8 @@ interface CacheEntry {
 }
 
 /**
- * Per-token cache. Keyed by masked token representation to avoid storing raw
- * tokens as cache keys. Uses a Map keyed by full token for lookup; only the
- * masked value is surfaced in returned data.
+ * Per-token cache. Keyed by full token for lookup; only the masked value is
+ * surfaced in returned data.
  */
 const cacheByToken = new Map<string, CacheEntry>();
 

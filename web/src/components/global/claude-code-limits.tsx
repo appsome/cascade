@@ -36,27 +36,32 @@ export function ClaudeCodeLimitsSection() {
 				Limits
 			</div>
 			<div className="flex flex-col gap-2 px-3 py-1">
-				{data.map((limits) => (
-					<div key={limits.tokenMasked} className="rounded-md bg-sidebar-accent/30 p-2 text-xs">
-						<div className="font-medium text-sidebar-foreground truncate mb-1">
-							{limits.tokenMasked}
+				{data.map((limits, i) => {
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: tokenMasked is not guaranteed unique (tokens may share trailing 4 chars); index is safe here as list order is server-determined and stable
+						<div key={i} className="rounded-md bg-sidebar-accent/30 p-2 text-xs">
+							<div className="font-medium text-sidebar-foreground truncate mb-1">
+								{limits.tokenMasked}
+							</div>
+							<div className="text-muted-foreground mb-0.5 capitalize">{limits.plan}</div>
+							{limits.messagesLimit > 0 && (
+								<div className="text-muted-foreground">
+									Msgs: {formatNumber(limits.messagesUsed)} / {formatNumber(limits.messagesLimit)}
+								</div>
+							)}
+							{limits.tokensLimit > 0 && (
+								<div className="text-muted-foreground">
+									Tokens: {formatNumber(limits.tokensUsed)} / {formatNumber(limits.tokensLimit)}
+								</div>
+							)}
+							{limits.resetsAt && (
+								<div className="text-muted-foreground">
+									Resets {formatResetDate(limits.resetsAt)}
+								</div>
+							)}
 						</div>
-						<div className="text-muted-foreground mb-0.5 capitalize">{limits.plan}</div>
-						{limits.messagesLimit > 0 && (
-							<div className="text-muted-foreground">
-								Msgs: {formatNumber(limits.messagesUsed)} / {formatNumber(limits.messagesLimit)}
-							</div>
-						)}
-						{limits.tokensLimit > 0 && (
-							<div className="text-muted-foreground">
-								Tokens: {formatNumber(limits.tokensUsed)} / {formatNumber(limits.tokensLimit)}
-							</div>
-						)}
-						{limits.resetsAt && (
-							<div className="text-muted-foreground">Resets {formatResetDate(limits.resetsAt)}</div>
-						)}
-					</div>
-				))}
+					);
+				})}
 			</div>
 		</div>
 	);
