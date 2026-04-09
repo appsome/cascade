@@ -35,6 +35,11 @@ const baseConfig = { serverUrl: 'http://localhost:3001', sessionToken: 'tok' };
 
 function makeClient(overrides: Record<string, unknown> = {}) {
 	return {
+		system: {
+			getPublicUrl: {
+				query: vi.fn().mockResolvedValue({ routerPublicUrl: 'http://localhost:3001' }),
+			},
+		},
 		webhooks: {
 			list: {
 				query: vi.fn().mockResolvedValue({
@@ -68,8 +73,24 @@ describe('WebhooksList (webhooks list)', () => {
 		mockLoadConfig.mockReturnValue(baseConfig);
 	});
 
-	it('lists webhooks for project ID', async () => {
+	it('lists webhooks for project ID using server public URL as callbackBaseUrl', async () => {
 		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WebhooksList(['my-project'], oclifConfig as never);
+		await cmd.run();
+
+		expect(client.system.getPublicUrl.query).toHaveBeenCalled();
+		expect(client.webhooks.list.query).toHaveBeenCalledWith({
+			projectId: 'my-project',
+			callbackBaseUrl: 'http://localhost:3001',
+			oneTimeTokens: undefined,
+		});
+	});
+
+	it('uses null callbackBaseUrl when server has no public URL configured', async () => {
+		const client = makeClient();
+		client.system.getPublicUrl.query.mockResolvedValue({ routerPublicUrl: null });
 		mockCreateDashboardClient.mockReturnValue(client);
 
 		const cmd = new WebhooksList(['my-project'], oclifConfig as never);
@@ -77,7 +98,7 @@ describe('WebhooksList (webhooks list)', () => {
 
 		expect(client.webhooks.list.query).toHaveBeenCalledWith({
 			projectId: 'my-project',
-			callbackBaseUrl: 'http://localhost:3001',
+			callbackBaseUrl: undefined,
 			oneTimeTokens: undefined,
 		});
 	});
@@ -184,23 +205,37 @@ describe('WebhooksCreate (webhooks create)', () => {
 		mockLoadConfig.mockReturnValue(baseConfig);
 	});
 
-	it('creates webhooks for project ID using server URL as callback base', async () => {
+	it('creates webhooks for project ID using server public URL as callback base', async () => {
 		const client = makeClient();
 		mockCreateDashboardClient.mockReturnValue(client);
 
 		const cmd = new WebhooksCreate(['my-project'], oclifConfig as never);
 		await cmd.run();
 
+		expect(client.system.getPublicUrl.query).toHaveBeenCalled();
 		expect(client.webhooks.create.mutate).toHaveBeenCalledWith({
 			projectId: 'my-project',
-			callbackBaseUrl: baseConfig.serverUrl,
+			callbackBaseUrl: 'http://localhost:3001',
 			trelloOnly: false,
 			githubOnly: false,
 			oneTimeTokens: undefined,
 		});
 	});
 
-	it('passes --callback-url when provided', async () => {
+	it('uses undefined callbackBaseUrl when server has no public URL configured', async () => {
+		const client = makeClient();
+		client.system.getPublicUrl.query.mockResolvedValue({ routerPublicUrl: null });
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WebhooksCreate(['my-project'], oclifConfig as never);
+		await cmd.run();
+
+		expect(client.webhooks.create.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ callbackBaseUrl: undefined }),
+		);
+	});
+
+	it('passes --callback-url when provided (takes precedence over server URL)', async () => {
 		const client = makeClient();
 		mockCreateDashboardClient.mockReturnValue(client);
 
@@ -210,6 +245,8 @@ describe('WebhooksCreate (webhooks create)', () => {
 		);
 		await cmd.run();
 
+		// When --callback-url is provided, system.getPublicUrl should not be called
+		expect(client.system.getPublicUrl.query).not.toHaveBeenCalled();
 		expect(client.webhooks.create.mutate).toHaveBeenCalledWith({
 			projectId: 'my-project',
 			callbackBaseUrl: 'https://cascade.example.com',
@@ -231,7 +268,7 @@ describe('WebhooksCreate (webhooks create)', () => {
 
 		expect(client.webhooks.create.mutate).toHaveBeenCalledWith({
 			projectId: 'my-project',
-			callbackBaseUrl: baseConfig.serverUrl,
+			callbackBaseUrl: 'http://localhost:3001',
 			trelloOnly: false,
 			githubOnly: false,
 			oneTimeTokens: { github: 'ghp_testtoken123' },
@@ -291,23 +328,37 @@ describe('WebhooksDelete (webhooks delete)', () => {
 		mockLoadConfig.mockReturnValue(baseConfig);
 	});
 
-	it('deletes webhooks for project ID using server URL as callback base', async () => {
+	it('deletes webhooks for project ID using server public URL as callback base', async () => {
 		const client = makeClient();
 		mockCreateDashboardClient.mockReturnValue(client);
 
 		const cmd = new WebhooksDelete(['my-project'], oclifConfig as never);
 		await cmd.run();
 
+		expect(client.system.getPublicUrl.query).toHaveBeenCalled();
 		expect(client.webhooks.delete.mutate).toHaveBeenCalledWith({
 			projectId: 'my-project',
-			callbackBaseUrl: baseConfig.serverUrl,
+			callbackBaseUrl: 'http://localhost:3001',
 			trelloOnly: false,
 			githubOnly: false,
 			oneTimeTokens: undefined,
 		});
 	});
 
-	it('passes --callback-url when provided', async () => {
+	it('uses undefined callbackBaseUrl when server has no public URL configured', async () => {
+		const client = makeClient();
+		client.system.getPublicUrl.query.mockResolvedValue({ routerPublicUrl: null });
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WebhooksDelete(['my-project'], oclifConfig as never);
+		await cmd.run();
+
+		expect(client.webhooks.delete.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ callbackBaseUrl: undefined }),
+		);
+	});
+
+	it('passes --callback-url when provided (takes precedence over server URL)', async () => {
 		const client = makeClient();
 		mockCreateDashboardClient.mockReturnValue(client);
 
@@ -317,6 +368,8 @@ describe('WebhooksDelete (webhooks delete)', () => {
 		);
 		await cmd.run();
 
+		// When --callback-url is provided, system.getPublicUrl should not be called
+		expect(client.system.getPublicUrl.query).not.toHaveBeenCalled();
 		expect(client.webhooks.delete.mutate).toHaveBeenCalledWith({
 			projectId: 'my-project',
 			callbackBaseUrl: 'https://cascade.example.com',
@@ -338,7 +391,7 @@ describe('WebhooksDelete (webhooks delete)', () => {
 
 		expect(client.webhooks.delete.mutate).toHaveBeenCalledWith({
 			projectId: 'my-project',
-			callbackBaseUrl: baseConfig.serverUrl,
+			callbackBaseUrl: 'http://localhost:3001',
 			trelloOnly: false,
 			githubOnly: false,
 			oneTimeTokens: { github: 'ghp_testtoken123' },

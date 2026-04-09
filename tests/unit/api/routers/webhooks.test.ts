@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMockUser } from '../../../helpers/factories.js';
 import {
 	createCallerFor,
@@ -379,6 +379,133 @@ describe('webhooksRouter', () => {
 				callbackBaseUrl: 'http://example.com',
 			});
 			expect(missingApiToken.sentry).toBeNull();
+		});
+	});
+
+	describe('create — callbackBaseUrl fallback', () => {
+		const originalEnv = process.env.WEBHOOK_CALLBACK_BASE_URL;
+
+		afterEach(() => {
+			if (originalEnv === undefined) {
+				delete process.env.WEBHOOK_CALLBACK_BASE_URL;
+			} else {
+				process.env.WEBHOOK_CALLBACK_BASE_URL = originalEnv;
+			}
+		});
+
+		it('uses WEBHOOK_CALLBACK_BASE_URL env var when callbackBaseUrl not provided', async () => {
+			process.env.WEBHOOK_CALLBACK_BASE_URL = 'https://cascade.example.com';
+			setupProjectContext({ noTrello: true });
+
+			mockListWebhooks.mockResolvedValue({ data: [] });
+			mockCreateWebhook.mockResolvedValue({
+				data: {
+					id: 1,
+					config: { url: 'https://cascade.example.com/github/webhook' },
+					events: ['push'],
+					active: true,
+				},
+			});
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.create({ projectId: 'my-project' });
+
+			expect(result.github).toMatchObject({ id: 1 });
+			expect(mockCreateWebhook).toHaveBeenCalledWith(
+				expect.objectContaining({
+					config: expect.objectContaining({
+						url: 'https://cascade.example.com/github/webhook',
+					}),
+				}),
+			);
+		});
+
+		it('throws BAD_REQUEST when neither callbackBaseUrl nor env var is set', async () => {
+			delete process.env.WEBHOOK_CALLBACK_BASE_URL;
+			setupProjectContext({ noTrello: true });
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.create({ projectId: 'my-project' })).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+			});
+		});
+
+		it('prefers explicit callbackBaseUrl over env var', async () => {
+			process.env.WEBHOOK_CALLBACK_BASE_URL = 'https://env-url.example.com';
+			setupProjectContext({ noTrello: true });
+
+			mockListWebhooks.mockResolvedValue({ data: [] });
+			mockCreateWebhook.mockResolvedValue({
+				data: {
+					id: 2,
+					config: { url: 'https://explicit.example.com/github/webhook' },
+					events: ['push'],
+					active: true,
+				},
+			});
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await caller.create({
+				projectId: 'my-project',
+				callbackBaseUrl: 'https://explicit.example.com',
+			});
+
+			expect(mockCreateWebhook).toHaveBeenCalledWith(
+				expect.objectContaining({
+					config: expect.objectContaining({
+						url: 'https://explicit.example.com/github/webhook',
+					}),
+				}),
+			);
+		});
+	});
+
+	describe('delete — callbackBaseUrl fallback', () => {
+		const originalEnv = process.env.WEBHOOK_CALLBACK_BASE_URL;
+
+		afterEach(() => {
+			if (originalEnv === undefined) {
+				delete process.env.WEBHOOK_CALLBACK_BASE_URL;
+			} else {
+				process.env.WEBHOOK_CALLBACK_BASE_URL = originalEnv;
+			}
+		});
+
+		it('uses WEBHOOK_CALLBACK_BASE_URL env var when callbackBaseUrl not provided', async () => {
+			process.env.WEBHOOK_CALLBACK_BASE_URL = 'https://cascade.example.com';
+			setupProjectContext();
+
+			mockFetch
+				.mockResolvedValueOnce({
+					ok: true,
+					json: () =>
+						Promise.resolve([
+							{
+								id: 'tw-env',
+								callbackURL: 'https://cascade.example.com/trello/webhook',
+								idModel: 'board-123',
+								active: true,
+							},
+						]),
+				})
+				.mockResolvedValueOnce({ ok: true }); // delete
+
+			mockListWebhooks.mockResolvedValue({ data: [] });
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.delete({ projectId: 'my-project' });
+
+			expect(result.trello).toEqual(['tw-env']);
+		});
+
+		it('throws BAD_REQUEST when neither callbackBaseUrl nor env var is set', async () => {
+			delete process.env.WEBHOOK_CALLBACK_BASE_URL;
+			setupProjectContext({ noTrello: true });
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.delete({ projectId: 'my-project' })).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+			});
 		});
 	});
 

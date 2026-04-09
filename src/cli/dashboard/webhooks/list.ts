@@ -31,9 +31,11 @@ export default class WebhooksList extends DashboardCommand {
 			if (flags['jira-email']) oneTimeTokens.jiraEmail = flags['jira-email'];
 			if (flags['jira-api-token']) oneTimeTokens.jiraApiToken = flags['jira-api-token'];
 
+			// Prefer the server-configured public URL for Sentry display
+			const { routerPublicUrl } = await this.client.system.getPublicUrl.query();
 			const result = await this.client.webhooks.list.query({
 				projectId: args.projectId,
-				callbackBaseUrl: this.cliConfig.serverUrl || undefined,
+				callbackBaseUrl: routerPublicUrl ?? undefined,
 				oneTimeTokens: Object.keys(oneTimeTokens).length > 0 ? oneTimeTokens : undefined,
 			});
 
