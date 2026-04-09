@@ -14,6 +14,7 @@ export interface TrelloConfig {
 	lists: Record<string, string>;
 	labels: Record<string, string>;
 	customFields?: { cost?: string };
+	requiredLabelId?: string;
 }
 
 /** JIRA-specific configuration (from project_integrations JSONB) */

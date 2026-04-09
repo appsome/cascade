@@ -42,6 +42,7 @@ vi.mock('../../../../src/router/trello.js', () => ({
 	isCardInTriggerList: vi.fn().mockReturnValue(false),
 	isReadyToProcessLabelAdded: vi.fn().mockReturnValue(false),
 	isSelfAuthoredTrelloComment: vi.fn().mockResolvedValue(false),
+	checkCardHasRequiredLabel: vi.fn().mockResolvedValue(true),
 }));
 
 import { postTrelloAck } from '../../../../src/router/acknowledgments.js';
@@ -50,7 +51,11 @@ import type { RouterProjectConfig } from '../../../../src/router/config.js';
 import { loadProjectConfig } from '../../../../src/router/config.js';
 import { resolveTrelloCredentials } from '../../../../src/router/platformClients/index.js';
 import { sendAcknowledgeReaction } from '../../../../src/router/reactions.js';
-import { isCardInTriggerList, isSelfAuthoredTrelloComment } from '../../../../src/router/trello.js';
+import {
+	checkCardHasRequiredLabel,
+	isCardInTriggerList,
+	isSelfAuthoredTrelloComment,
+} from '../../../../src/router/trello.js';
 import type { TriggerRegistry } from '../../../../src/triggers/registry.js';
 import { buildWorkItemRunsLink, getDashboardUrl } from '../../../../src/utils/runLink.js';
 
@@ -311,6 +316,85 @@ describe('TrelloRouterAdapter', () => {
 			);
 			expect(result).toBeNull();
 			expect(mockTriggerRegistry.dispatch).not.toHaveBeenCalled();
+		});
+
+		it('dispatches when card has the required label', async () => {
+			const projectWithLabel: RouterProjectConfig = {
+				...mockProject,
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-required' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [projectWithLabel],
+				fullProjects: [{ id: 'p1' } as never],
+			});
+			vi.mocked(checkCardHasRequiredLabel).mockResolvedValueOnce(true);
+			vi.mocked(mockTriggerRegistry.dispatch).mockResolvedValue({
+				agentType: 'implementation',
+				agentInput: { workItemId: 'card1' },
+			} as never);
+
+			const result = await adapter.dispatchWithCredentials(
+				{
+					projectIdentifier: 'board1',
+					eventType: 'updateCard',
+					workItemId: 'card1',
+					isCommentEvent: false,
+				},
+				{},
+				projectWithLabel,
+				mockTriggerRegistry,
+			);
+			expect(checkCardHasRequiredLabel).toHaveBeenCalledWith('card1', 'label-required');
+			expect(result?.agentType).toBe('implementation');
+		});
+
+		it('returns null and skips dispatch when card lacks required label', async () => {
+			const projectWithLabel: RouterProjectConfig = {
+				...mockProject,
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-required' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [projectWithLabel],
+				fullProjects: [{ id: 'p1' } as never],
+			});
+			vi.mocked(checkCardHasRequiredLabel).mockResolvedValueOnce(false);
+			vi.mocked(mockTriggerRegistry.dispatch).mockClear();
+
+			const result = await adapter.dispatchWithCredentials(
+				{
+					projectIdentifier: 'board1',
+					eventType: 'updateCard',
+					workItemId: 'card1',
+					isCommentEvent: false,
+				},
+				{},
+				projectWithLabel,
+				mockTriggerRegistry,
+			);
+			expect(checkCardHasRequiredLabel).toHaveBeenCalledWith('card1', 'label-required');
+			expect(result).toBeNull();
+			expect(mockTriggerRegistry.dispatch).not.toHaveBeenCalled();
+		});
+
+		it('does not call checkCardHasRequiredLabel when no requiredLabelId configured', async () => {
+			vi.mocked(checkCardHasRequiredLabel).mockClear();
+			vi.mocked(mockTriggerRegistry.dispatch).mockResolvedValue({
+				agentType: 'implementation',
+				agentInput: {},
+			} as never);
+
+			await adapter.dispatchWithCredentials(
+				{
+					projectIdentifier: 'board1',
+					eventType: 'updateCard',
+					workItemId: 'card1',
+					isCommentEvent: false,
+				},
+				{},
+				mockProject, // no requiredLabelId
+				mockTriggerRegistry,
+			);
+			expect(checkCardHasRequiredLabel).not.toHaveBeenCalled();
 		});
 	});
 

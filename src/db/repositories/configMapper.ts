@@ -17,6 +17,7 @@ export interface TrelloIntegrationConfig {
 	lists: Record<string, string>;
 	labels: Record<string, string>;
 	customFields?: { cost?: string };
+	requiredLabelId?: string;
 }
 
 export interface JiraIntegrationConfig {
@@ -98,6 +99,7 @@ export interface ProjectConfigRaw {
 		lists: Record<string, string>;
 		labels: Record<string, string>;
 		customFields?: { cost?: string };
+		requiredLabelId?: string;
 	};
 	jira?: {
 		projectKey: string;
@@ -171,6 +173,7 @@ function buildTrelloConfig(config: TrelloIntegrationConfig): ProjectConfigRaw['t
 		lists: config.lists,
 		labels: config.labels,
 		customFields: config.customFields,
+		requiredLabelId: config.requiredLabelId,
 	};
 }
 

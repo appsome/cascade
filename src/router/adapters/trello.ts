@@ -20,6 +20,7 @@ import { resolveTrelloCredentials } from '../platformClients/index.js';
 import type { CascadeJob, TrelloJob } from '../queue.js';
 import { sendAcknowledgeReaction } from '../reactions.js';
 import {
+	checkCardHasRequiredLabel,
 	isAgentLogAttachmentUploaded,
 	isCardInTriggerList,
 	isReadyToProcessLabelAdded,
@@ -125,7 +126,22 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'trello', payload };
-		return withTrelloCredentials(trelloCreds, () => triggerRegistry.dispatch(ctx));
+		return withTrelloCredentials(trelloCreds, async () => {
+			if (project.trello?.requiredLabelId && _event.workItemId) {
+				const hasLabel = await checkCardHasRequiredLabel(
+					_event.workItemId,
+					project.trello.requiredLabelId,
+				);
+				if (!hasLabel) {
+					logger.info('Card lacks required label, skipping dispatch', {
+						cardId: _event.workItemId,
+						requiredLabelId: project.trello.requiredLabelId,
+					});
+					return null;
+				}
+			}
+			return triggerRegistry.dispatch(ctx);
+		});
 	}
 
 	async postAck(

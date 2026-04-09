@@ -55,6 +55,7 @@ export interface WizardState {
 	trelloListMappings: Record<string, string>;
 	trelloLabelMappings: Record<string, string>;
 	trelloCostFieldId: string;
+	trelloRequiredLabelId: string;
 	// JIRA mappings
 	jiraStatusMappings: Record<string, string>;
 	jiraIssueTypes: Record<string, string>;
@@ -86,6 +87,7 @@ export type WizardAction =
 	| { type: 'SET_TRELLO_LIST_MAPPING'; key: string; value: string }
 	| { type: 'SET_TRELLO_LABEL_MAPPING'; key: string; value: string }
 	| { type: 'SET_TRELLO_COST_FIELD'; id: string }
+	| { type: 'SET_TRELLO_REQUIRED_LABEL'; id: string }
 	| { type: 'SET_JIRA_STATUS_MAPPING'; key: string; value: string }
 	| { type: 'SET_JIRA_ISSUE_TYPE'; key: string; value: string }
 	| { type: 'SET_JIRA_LABEL'; key: string; value: string }
@@ -129,6 +131,7 @@ export function createInitialState(): WizardState {
 		trelloListMappings: {},
 		trelloLabelMappings: {},
 		trelloCostFieldId: '',
+		trelloRequiredLabelId: '',
 		jiraStatusMappings: {},
 		jiraIssueTypes: {},
 		jiraLabels: { ...INITIAL_JIRA_LABELS },
@@ -191,6 +194,7 @@ export const wizardReducer: Reducer<WizardState, WizardAction> = (state, action)
 				trelloListMappings: {},
 				trelloLabelMappings: {},
 				trelloCostFieldId: '',
+				trelloRequiredLabelId: '',
 			};
 		case 'SET_JIRA_PROJECTS':
 			return { ...state, jiraProjects: action.projects };
@@ -219,6 +223,8 @@ export const wizardReducer: Reducer<WizardState, WizardAction> = (state, action)
 			};
 		case 'SET_TRELLO_COST_FIELD':
 			return { ...state, trelloCostFieldId: action.id };
+		case 'SET_TRELLO_REQUIRED_LABEL':
+			return { ...state, trelloRequiredLabelId: action.id };
 		case 'SET_JIRA_STATUS_MAPPING':
 			return {
 				...state,
@@ -302,6 +308,8 @@ export function buildEditState(
 
 		const cf = initialConfig.customFields as Record<string, string> | undefined;
 		editState.trelloCostFieldId = cf?.cost ?? '';
+
+		editState.trelloRequiredLabelId = (initialConfig.requiredLabelId as string) ?? '';
 
 		editState.hasStoredCredentials =
 			configuredKeys.has('TRELLO_API_KEY') && configuredKeys.has('TRELLO_TOKEN');

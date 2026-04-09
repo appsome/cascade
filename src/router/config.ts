@@ -11,6 +11,7 @@ export interface RouterProjectConfig {
 		boardId: string;
 		lists: Record<string, string>;
 		labels: Record<string, string>;
+		requiredLabelId?: string;
 	};
 	jira?: {
 		projectKey: string;
@@ -93,6 +94,7 @@ export async function loadProjectConfig(): Promise<{
 								boardId: trelloConfig.boardId,
 								lists: trelloConfig.lists,
 								labels: trelloConfig.labels,
+								requiredLabelId: trelloConfig.requiredLabelId,
 							},
 						}),
 						...(jiraConfig && {

@@ -463,6 +463,7 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 					lists: state.trelloListMappings,
 					labels: state.trelloLabelMappings,
 					...(state.trelloCostFieldId ? { customFields: { cost: state.trelloCostFieldId } } : {}),
+					...(state.trelloRequiredLabelId ? { requiredLabelId: state.trelloRequiredLabelId } : {}),
 				};
 			} else {
 				config = {

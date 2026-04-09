@@ -383,6 +383,40 @@ export function TrelloFieldMappingStep({
 				)}
 			</div>
 
+			{/* Required Label (optional) */}
+			<div className="space-y-2">
+				<Label>Required Label (optional)</Label>
+				<p className="text-xs text-muted-foreground">
+					When set, only cards carrying this label will trigger CASCADE. Leave blank to process all
+					cards.
+				</p>
+				{state.trelloBoardDetails ? (
+					<FieldMappingRow
+						slotLabel="requiredLabel"
+						options={state.trelloBoardDetails.labels
+							.filter((l) => l.name)
+							.map((l) => ({
+								label: `${l.name} (${l.color})`,
+								value: l.id,
+							}))}
+						value={state.trelloRequiredLabelId}
+						onChange={(v) => dispatch({ type: 'SET_TRELLO_REQUIRED_LABEL', id: v })}
+						manualFallback
+					/>
+				) : (
+					<Input
+						value={state.trelloRequiredLabelId}
+						onChange={(e) =>
+							dispatch({
+								type: 'SET_TRELLO_REQUIRED_LABEL',
+								id: e.target.value,
+							})
+						}
+						placeholder="Label ID to filter by (optional)"
+					/>
+				)}
+			</div>
+
 			{/* Cost custom field */}
 			<div className="space-y-2">
 				<div className="flex items-center justify-between">
