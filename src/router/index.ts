@@ -14,11 +14,13 @@ import { logger } from '../utils/logging.js';
 import {
 	createWebhookHandler,
 	parseGitHubPayload,
+	parseGitLabPayload,
 	parseJiraPayload,
 	parseSentryPayload,
 	parseTrelloPayload,
 } from '../webhook/webhookHandlers.js';
 import { GitHubRouterAdapter, injectEventType } from './adapters/github.js';
+import { GitLabRouterAdapter, injectGitLabEventType } from './adapters/gitlab.js';
 import { JiraRouterAdapter } from './adapters/jira.js';
 import { SentryRouterAdapter } from './adapters/sentry.js';
 import { TrelloRouterAdapter } from './adapters/trello.js';
@@ -27,6 +29,7 @@ import { getQueueStats } from './queue.js';
 import { processRouterWebhook } from './webhook-processor.js';
 import {
 	verifyGitHubWebhookSignature,
+	verifyGitLabWebhookSignature,
 	verifyJiraWebhookSignature,
 	verifySentryWebhookSignature,
 	verifyTrelloWebhookSignature,
@@ -137,6 +140,31 @@ app.post(
 		processWebhook: async (payload) => {
 			const adapter = new JiraRouterAdapter();
 			const result = await processRouterWebhook(adapter, payload, triggerRegistry);
+			return {
+				processed: result.shouldProcess,
+				projectId: result.projectId,
+				decisionReason: result.decisionReason,
+			};
+		},
+	}),
+);
+
+// GitLab webhook verification
+app.get('/gitlab/webhook', (c) => {
+	return c.text('OK', 200);
+});
+
+// GitLab webhook handler
+app.post(
+	'/gitlab/webhook',
+	createWebhookHandler({
+		source: 'gitlab',
+		parsePayload: parseGitLabPayload,
+		verifySignature: verifyGitLabWebhookSignature,
+		processWebhook: async (payload, eventType) => {
+			const adapter = new GitLabRouterAdapter();
+			const augmented = injectGitLabEventType(payload, eventType ?? 'unknown');
+			const result = await processRouterWebhook(adapter, augmented, triggerRegistry);
 			return {
 				processed: result.shouldProcess,
 				projectId: result.projectId,

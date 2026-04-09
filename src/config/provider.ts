@@ -10,6 +10,7 @@ import {
 	loadConfigFromDb,
 } from '../db/repositories/configRepository.js';
 import {
+	getIntegrationProvider,
 	resolveAllProjectCredentials,
 	resolveProjectCredential,
 } from '../db/repositories/credentialsRepository.js';
@@ -176,7 +177,8 @@ export function setCredentialResolver(resolver: CredentialResolver | null): void
 
 /**
  * Resolve an integration credential for a project by category and role.
- * Resolves via the active CredentialResolver using the envVarKey mapping.
+ * Looks up the project's configured provider first to resolve the correct
+ * env var key (e.g. GITHUB_TOKEN_IMPLEMENTER vs GITLAB_TOKEN_IMPLEMENTER).
  * Throws if the credential is not found.
  */
 export async function getIntegrationCredential(
@@ -184,7 +186,10 @@ export async function getIntegrationCredential(
 	category: string,
 	role: string,
 ): Promise<string> {
-	const envKey = roleToEnvVarKey(category, role);
+	const provider = await getIntegrationProvider(projectId, category);
+	const envKey = provider
+		? roleToEnvVarKeyForProvider(provider, role)
+		: roleToEnvVarKey(category, role);
 	if (!envKey) {
 		throw new Error(
 			`Integration credential '${category}/${role}' not found for project '${projectId}'`,
@@ -200,14 +205,17 @@ export async function getIntegrationCredential(
 
 /**
  * Resolve an integration credential for a project, returning null if not found.
- * Resolves via the active CredentialResolver using the envVarKey mapping.
+ * Looks up the project's configured provider first to resolve the correct env var key.
  */
 export async function getIntegrationCredentialOrNull(
 	projectId: string,
 	category: string,
 	role: string,
 ): Promise<string | null> {
-	const envKey = roleToEnvVarKey(category, role);
+	const provider = await getIntegrationProvider(projectId, category);
+	const envKey = provider
+		? roleToEnvVarKeyForProvider(provider, role)
+		: roleToEnvVarKey(category, role);
 	if (!envKey) return null;
 	return getResolver().resolve(projectId, envKey);
 }
@@ -248,8 +256,18 @@ export function invalidateConfigCache(): void {
 // ============================================================================
 
 /**
+ * Map a provider+role pair to the corresponding env var key.
+ * Used when the project's configured provider is known.
+ */
+function roleToEnvVarKeyForProvider(provider: string, role: string): string | undefined {
+	const roles = PROVIDER_CREDENTIAL_ROLES[provider as keyof typeof PROVIDER_CREDENTIAL_ROLES];
+	if (!roles) return undefined;
+	return roles.find((r) => r.role === role)?.envVarKey;
+}
+
+/**
  * Map a category+role pair to the corresponding env var key.
- * Used for env-var and DB lookups in resolver implementations.
+ * Falls back to iterating all providers in the category (used when provider is unknown).
  */
 function roleToEnvVarKey(category: string, role: string): string | undefined {
 	// Look through all providers in the category to find the role

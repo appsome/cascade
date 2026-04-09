@@ -61,6 +61,7 @@ function WebhookLogsPage() {
 					<option value="">All sources</option>
 					<option value="trello">Trello</option>
 					<option value="github">GitHub</option>
+					<option value="gitlab">GitLab</option>
 					<option value="jira">JIRA</option>
 				</select>
 

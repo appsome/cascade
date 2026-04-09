@@ -24,6 +24,7 @@
  */
 
 import { GitHubSCMIntegration } from '../github/scm-integration.js';
+import { GitLabSCMIntegration } from '../gitlab/scm-integration.js';
 import { integrationRegistry } from '../integrations/registry.js';
 import { JiraIntegration } from '../pm/jira/integration.js';
 import { pmRegistry } from '../pm/registry.js';
@@ -42,6 +43,9 @@ if (!pmRegistry.getOrNull('jira')) {
 }
 if (!integrationRegistry.getOrNull('github')) {
 	integrationRegistry.register(new GitHubSCMIntegration());
+}
+if (!integrationRegistry.getOrNull('gitlab')) {
+	integrationRegistry.register(new GitLabSCMIntegration());
 }
 if (!integrationRegistry.getOrNull('sentry')) {
 	integrationRegistry.register(new SentryAlertingIntegration());

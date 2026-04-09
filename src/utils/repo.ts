@@ -1,6 +1,7 @@
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { getProjectGitHubToken } from '../config/projects.js';
+import { getIntegrationProvider } from '../db/repositories/credentialsRepository.js';
 import type { ProjectConfig } from '../types/index.js';
 import { logger } from './logging.js';
 
@@ -33,6 +34,23 @@ export function createTempDir(projectId: string): string {
 	return tempDir;
 }
 
+/**
+ * Build the authenticated clone URL for the project's SCM provider.
+ * GitHub:  https://<token>@github.com/<owner>/<repo>.git
+ * GitLab:  https://oauth2:<token>@gitlab.com/<group>/<repo>.git
+ *
+ * For self-hosted GitLab, set GITLAB_HOST env var (e.g. "gitlab.mycompany.com").
+ */
+async function buildCloneUrl(project: ProjectConfig, token: string): Promise<string> {
+	const provider = await getIntegrationProvider(project.id, 'scm');
+	if (provider === 'gitlab') {
+		const host = process.env.GITLAB_HOST ?? 'gitlab.com';
+		return `https://oauth2:${token}@${host}/${project.repo}.git`;
+	}
+	// Default: GitHub
+	return `https://${token}@github.com/${project.repo}.git`;
+}
+
 export async function cloneRepo(
 	project: ProjectConfig,
 	targetDir: string,
@@ -42,7 +60,7 @@ export async function cloneRepo(
 		throw new Error(`Cannot clone repository: project '${project.id}' has no repo configured`);
 	}
 	const cloneToken = token ?? (await getProjectGitHubToken(project));
-	const cloneUrl = `https://${cloneToken}@github.com/${project.repo}.git`;
+	const cloneUrl = await buildCloneUrl(project, cloneToken);
 
 	const branch = project.baseBranch ?? 'main';
 	logger.info('Cloning repository', { repo: project.repo, targetDir, branch });

@@ -162,6 +162,10 @@ vi.mock('../../../../src/agents/definitions/profiles.js', () => ({
 	getAgentProfile: mockGetAgentProfile,
 }));
 
+vi.mock('../../../../src/db/repositories/credentialsRepository.js', () => ({
+	getIntegrationProvider: vi.fn().mockResolvedValue('github'),
+}));
+
 import { linkPRToWorkItem } from '../../../../src/db/repositories/prWorkItemsRepository.js';
 import { runAgentExecutionPipeline } from '../../../../src/triggers/shared/agent-execution.js';
 
@@ -706,7 +710,7 @@ describe('linkPRPostExecution PR title backfill (via runAgentExecutionPipeline)'
 			expect.objectContaining({ prTitle: undefined }),
 		);
 		expect(mockLogger.warn).toHaveBeenCalledWith(
-			'Failed to fetch PR title from GitHub',
+			'Failed to fetch PR/MR title',
 			expect.objectContaining({ prNumber: 42 }),
 		);
 	});

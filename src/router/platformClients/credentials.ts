@@ -64,8 +64,11 @@ export async function resolveJiraCredentials(
  */
 export async function resolveWebhookSecret(
 	projectId: string,
-	provider: 'github' | 'trello' | 'jira' | 'sentry',
+	provider: 'github' | 'gitlab' | 'trello' | 'jira' | 'sentry',
 ): Promise<string | null> {
+	if (provider === 'gitlab') {
+		return getIntegrationCredentialOrNull(projectId, 'scm', 'webhook_secret');
+	}
 	if (provider === 'github') {
 		return getIntegrationCredentialOrNull(projectId, 'scm', 'webhook_secret');
 	}

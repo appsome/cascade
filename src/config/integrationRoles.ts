@@ -1,5 +1,5 @@
 export type IntegrationCategory = 'pm' | 'scm' | 'alerting';
-export type IntegrationProvider = 'trello' | 'jira' | 'github' | 'sentry';
+export type IntegrationProvider = 'trello' | 'jira' | 'github' | 'gitlab' | 'sentry';
 
 export interface CredentialRoleDef {
 	role: string;
@@ -53,6 +53,23 @@ const _rolesRegistry = new Map<string, CredentialRoleDef[]>([
 		],
 	],
 	[
+		'gitlab',
+		[
+			{
+				role: 'implementer_token',
+				label: 'Implementer Token',
+				envVarKey: 'GITLAB_TOKEN_IMPLEMENTER',
+			},
+			{ role: 'reviewer_token', label: 'Reviewer Token', envVarKey: 'GITLAB_TOKEN_REVIEWER' },
+			{
+				role: 'webhook_secret',
+				label: 'Webhook Secret',
+				envVarKey: 'GITLAB_WEBHOOK_SECRET',
+				optional: true,
+			},
+		],
+	],
+	[
 		'sentry',
 		[
 			{ role: 'api_token', label: 'API Token', envVarKey: 'SENTRY_API_TOKEN' },
@@ -70,6 +87,7 @@ const _categoryRegistry = new Map<string, IntegrationCategory>([
 	['trello', 'pm'],
 	['jira', 'pm'],
 	['github', 'scm'],
+	['gitlab', 'scm'],
 	['sentry', 'alerting'],
 ]);
 

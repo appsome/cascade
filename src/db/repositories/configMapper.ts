@@ -31,6 +31,9 @@ export interface JiraIntegrationConfig {
 // biome-ignore lint/complexity/noBannedTypes: GitHub config has no fields (credentials are in integration_credentials)
 export type GitHubIntegrationConfig = {};
 
+// biome-ignore lint/complexity/noBannedTypes: GitLab config has no fields (credentials are in integration_credentials)
+export type GitLabIntegrationConfig = {};
+
 // ---------------------------------------------------------------------------
 // Row interfaces (mirrors DB select shapes)
 // ---------------------------------------------------------------------------
@@ -61,6 +64,7 @@ export interface MapProjectInput {
 	trelloConfig?: TrelloIntegrationConfig;
 	jiraConfig?: JiraIntegrationConfig;
 	githubConfig?: GitHubIntegrationConfig;
+	gitlabConfig?: GitLabIntegrationConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,15 +227,18 @@ export function extractIntegrationConfigs(integrations: IntegrationRow[]): {
 	trelloConfig?: TrelloIntegrationConfig;
 	jiraConfig?: JiraIntegrationConfig;
 	githubConfig?: GitHubIntegrationConfig;
+	gitlabConfig?: GitLabIntegrationConfig;
 } {
 	const trelloRow = integrations.find((i) => i.provider === 'trello');
 	const jiraRow = integrations.find((i) => i.provider === 'jira');
 	const githubRow = integrations.find((i) => i.provider === 'github');
+	const gitlabRow = integrations.find((i) => i.provider === 'gitlab');
 
 	return {
 		trelloConfig: trelloRow?.config as TrelloIntegrationConfig | undefined,
 		jiraConfig: jiraRow?.config as JiraIntegrationConfig | undefined,
 		githubConfig: githubRow?.config as GitHubIntegrationConfig | undefined,
+		gitlabConfig: gitlabRow?.config as GitLabIntegrationConfig | undefined,
 	};
 }
 

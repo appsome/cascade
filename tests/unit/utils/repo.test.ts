@@ -15,6 +15,10 @@ vi.mock('node:fs', () => ({
 	rmSync: vi.fn(),
 }));
 
+vi.mock('../../../src/db/repositories/credentialsRepository.js', () => ({
+	getIntegrationProvider: vi.fn(() => Promise.resolve('github')),
+}));
+
 vi.mock('../../../src/config/projects.js', () => ({
 	getProjectGitHubToken: vi.fn(() => Promise.resolve('test-token')),
 }));

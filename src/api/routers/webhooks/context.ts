@@ -38,11 +38,26 @@ export async function resolveProjectContext(
 	const alertingIntegration = await getIntegrationByProjectAndCategory(projectId, 'alerting');
 	const sentryConfigured = alertingIntegration?.provider === 'sentry' && !!creds.SENTRY_API_TOKEN;
 
+	// Determine SCM provider from integration config
+	const scmIntegration = await getIntegrationByProjectAndCategory(projectId, 'scm');
+	const scmProvider = (scmIntegration?.provider === 'gitlab' ? 'gitlab' : 'github') as
+		| 'github'
+		| 'gitlab';
+
+	// Resolve GitLab host: integration config → GITLAB_HOST env var → default
+	const scmConfig = (scmIntegration?.config ?? {}) as Record<string, unknown>;
+	const gitlabHost =
+		(scmConfig.host as string | undefined) ??
+		(process.env.GITLAB_HOST
+			? `https://${process.env.GITLAB_HOST.replace(/^https?:\/\//, '')}`
+			: undefined);
+
 	return {
 		projectId,
 		orgId: project.orgId,
 		repo: project.repo,
 		pmType: project.pm?.type ?? 'trello',
+		scmProvider,
 		boardId: trelloConfig?.boardId,
 		jiraBaseUrl: jiraConfig?.baseUrl,
 		jiraProjectKey: jiraConfig?.projectKey,
@@ -50,6 +65,9 @@ export async function resolveProjectContext(
 		trelloApiKey: creds.TRELLO_API_KEY ?? '',
 		trelloToken: creds.TRELLO_TOKEN ?? '',
 		githubToken: creds.GITHUB_TOKEN_IMPLEMENTER ?? '',
+		gitlabToken: creds.GITLAB_TOKEN_IMPLEMENTER ?? '',
+		gitlabHost,
+		gitlabWebhookSecret: creds.GITLAB_WEBHOOK_SECRET ?? undefined,
 		jiraEmail: creds.JIRA_EMAIL ?? '',
 		jiraApiToken: creds.JIRA_API_TOKEN ?? '',
 		webhookSecret: creds.GITHUB_WEBHOOK_SECRET ?? undefined,

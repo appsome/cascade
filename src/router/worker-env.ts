@@ -7,6 +7,7 @@
 
 import type { Job } from 'bullmq';
 import { findProjectByRepo, getAllProjectCredentials } from '../config/provider.js';
+import { getIntegrationProvider } from '../db/repositories/credentialsRepository.js';
 import { captureException } from '../sentry.js';
 import { logger } from '../utils/logging.js';
 import { routerConfig } from './config.js';
@@ -26,9 +27,12 @@ export async function extractProjectIdFromJob(data: CascadeJob): Promise<string 
 	if (jobData.type === 'trello' || jobData.type === 'jira') {
 		return jobData.projectId ?? null;
 	}
-	if (jobData.type === 'github') {
-		if (!jobData.repoFullName) return null;
-		const project = await findProjectByRepo(jobData.repoFullName);
+	if (jobData.type === 'github' || jobData.type === 'gitlab') {
+		// GitHub uses repoFullName, GitLab uses projectPath — both resolve via findProjectByRepo
+		const repoIdentifier =
+			jobData.repoFullName ?? (jobData as unknown as { projectPath?: string }).projectPath;
+		if (!repoIdentifier) return null;
+		const project = await findProjectByRepo(repoIdentifier);
 		return project?.id ?? null;
 	}
 	if (jobData.type === 'manual-run' || jobData.type === 'debug-analysis') {
@@ -117,6 +121,16 @@ export async function buildWorkerEnvWithProjectId(
 		env.push('CASCADE_SNAPSHOT_ENABLED=true');
 	}
 
+	// Inject SCM provider so CLI commands can detect GitHub vs GitLab without guessing.
+	if (projectId) {
+		try {
+			const scmProvider = await getIntegrationProvider(projectId, 'scm');
+			if (scmProvider) env.push(`CASCADE_SCM_PROVIDER=${scmProvider}`);
+		} catch {
+			// Non-fatal — detectSCMProvider() will fall back to env var inference
+		}
+	}
+
 	// Resolve project credentials in the router and set as individual env vars.
 	// NOTE: CREDENTIAL_MASTER_KEY is intentionally NOT passed to workers.
 	if (projectId) {
@@ -159,6 +173,7 @@ export function extractWorkItemId(data: CascadeJob): string | undefined {
 	if (jobData.type === 'trello' && jobData.workItemId) return jobData.workItemId;
 	if (jobData.type === 'jira' && jobData.issueKey) return jobData.issueKey;
 	if (jobData.type === 'github') return jobData.triggerResult?.workItemId;
+	if (jobData.type === 'gitlab') return jobData.triggerResult?.workItemId;
 	// Dashboard jobs (manual-run, retry-run, debug-analysis)
 	if (jobData.workItemId) return jobData.workItemId;
 	return undefined;

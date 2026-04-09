@@ -55,6 +55,34 @@ vi.mock('../../../src/triggers/trello/label-added.js', () => ({
 		.mockImplementation(() => ({ name: 'ready-to-process-label' })),
 }));
 
+vi.mock('../../../src/triggers/gitlab/mr-approval.js', () => ({
+	MRApprovalTrigger: vi.fn().mockImplementation(() => ({ name: 'mr-approval' })),
+}));
+vi.mock('../../../src/triggers/gitlab/mr-comment-mention.js', () => ({
+	MRCommentMentionTrigger: vi.fn().mockImplementation(() => ({ name: 'mr-comment-mention' })),
+}));
+vi.mock('../../../src/triggers/gitlab/mr-conflict-detected.js', () => ({
+	MRConflictDetectedTrigger: vi.fn().mockImplementation(() => ({ name: 'mr-conflict-detected' })),
+}));
+vi.mock('../../../src/triggers/gitlab/mr-merged.js', () => ({
+	MRMergedTrigger: vi.fn().mockImplementation(() => ({ name: 'mr-merged' })),
+}));
+vi.mock('../../../src/triggers/gitlab/mr-opened.js', () => ({
+	MROpenedTrigger: vi.fn().mockImplementation(() => ({ name: 'mr-opened' })),
+}));
+vi.mock('../../../src/triggers/gitlab/mr-ready-to-merge.js', () => ({
+	MRReadyToMergeTrigger: vi.fn().mockImplementation(() => ({ name: 'mr-ready-to-merge' })),
+}));
+vi.mock('../../../src/triggers/gitlab/pipeline-failure.js', () => ({
+	PipelineFailureTrigger: vi.fn().mockImplementation(() => ({ name: 'pipeline-failure' })),
+}));
+vi.mock('../../../src/triggers/gitlab/pipeline-success.js', () => ({
+	PipelineSuccessTrigger: vi.fn().mockImplementation(() => ({ name: 'pipeline-success' })),
+}));
+vi.mock('../../../src/triggers/gitlab/mr-reviewer-added.js', () => ({
+	MRReviewerAddedTrigger: vi.fn().mockImplementation(() => ({ name: 'mr-reviewer-added' })),
+}));
+
 vi.mock('../../../src/triggers/sentry/alerting-issue.js', () => ({
 	SentryIssueAlertTrigger: vi.fn().mockImplementation(() => ({ name: 'sentry-issue-alert' })),
 }));
@@ -88,8 +116,8 @@ describe('registerBuiltInTriggers', () => {
 
 		registerBuiltInTriggers(registry as unknown as TriggerRegistry);
 
-		// Should have registered all 21 built-in triggers (19 + 2 Sentry alerting triggers)
-		expect(registry.register).toHaveBeenCalledTimes(21);
+		// Should have registered all 30 built-in triggers (19 GitHub/Trello/JIRA + 9 GitLab + 2 Sentry alerting triggers)
+		expect(registry.register).toHaveBeenCalledTimes(30);
 	});
 
 	it('registers TrelloCommentMentionTrigger first', () => {

@@ -5,6 +5,7 @@
  * These are the building blocks composed by the YAML contextPipeline arrays.
  */
 
+import { getIntegrationProvider } from '../../db/repositories/credentialsRepository.js';
 import { formatCheckStatus } from '../../gadgets/github/core/getPRChecks.js';
 import { ListDirectory } from '../../gadgets/ListDirectory.js';
 import { readWorkItem, readWorkItemWithMedia } from '../../gadgets/pm/core/readWorkItem.js';
@@ -17,6 +18,7 @@ import {
 	saveTodos,
 } from '../../gadgets/todo/storage.js';
 import { githubClient } from '../../github/client.js';
+import { gitlabClient } from '../../gitlab/client.js';
 import { getJiraConfig, getTrelloConfig } from '../../pm/config.js';
 import { getPMProviderOrNull, MAX_IMAGES_PER_WORK_ITEM } from '../../pm/index.js';
 import { getSentryClient } from '../../sentry/client.js';
@@ -157,6 +159,24 @@ export async function fetchPRContextStep(params: FetchContextParams): Promise<Co
 	if (!repoFullName || !prNumber) {
 		throw new Error('fetchPRContextStep requires repoFullName and prNumber in input');
 	}
+
+	// Check if the project uses GitLab
+	const scmProvider = params.project?.id
+		? await getIntegrationProvider(params.project.id, 'scm')
+		: null;
+
+	if (scmProvider === 'gitlab') {
+		return fetchGitLabMRContextStep(params, repoFullName, prNumber);
+	}
+
+	return fetchGitHubPRContextStep(params, repoFullName, prNumber);
+}
+
+async function fetchGitHubPRContextStep(
+	params: FetchContextParams,
+	repoFullName: string,
+	prNumber: number,
+): Promise<ContextInjection[]> {
 	const injections: ContextInjection[] = [];
 	const { owner, repo } = parseRepoFullName(repoFullName);
 
@@ -215,6 +235,102 @@ export async function fetchPRContextStep(params: FetchContextParams): Promise<Co
 	return injections;
 }
 
+async function fetchGitLabMRContextStep(
+	params: FetchContextParams,
+	projectPath: string,
+	mrIid: number,
+): Promise<ContextInjection[]> {
+	const injections: ContextInjection[] = [];
+
+	params.logWriter('INFO', 'Fetching MR details and diff from GitLab', {
+		projectPath,
+		mrIid,
+	});
+
+	const mrDetails = await gitlabClient.getMR(projectPath, mrIid);
+	const mrDiff = await gitlabClient.getMRDiff(projectPath, mrIid);
+
+	// Format MR details
+	const detailsFormatted = [
+		`MR #${mrDetails.iid}: ${mrDetails.title}`,
+		`State: ${mrDetails.state}`,
+		`Author: ${mrDetails.author.username}`,
+		`Source: ${mrDetails.sourceBranch} → Target: ${mrDetails.targetBranch}`,
+		`URL: ${mrDetails.webUrl}`,
+		mrDetails.description ? `\nDescription:\n${mrDetails.description}` : '',
+	]
+		.filter(Boolean)
+		.join('\n');
+
+	// Format diff
+	const diffFormatted = mrDiff
+		.map((f) => {
+			const status = f.newFile
+				? 'added'
+				: f.deletedFile
+					? 'removed'
+					: f.renamedFile
+						? 'renamed'
+						: 'modified';
+			return `--- ${f.oldPath}\n+++ ${f.newPath} (${status})\n${f.diff || '(binary or empty)'}`;
+		})
+		.join('\n\n');
+
+	injections.push({
+		toolName: 'GetMRDetails',
+		params: { comment: 'Pre-fetching MR details for review context', projectPath, mrIid },
+		result: detailsFormatted,
+		description: 'Pre-fetched MR details',
+	});
+
+	injections.push({
+		toolName: 'GetMRDiff',
+		params: { comment: 'Pre-fetching MR diff for code review', projectPath, mrIid },
+		result: diffFormatted,
+		description: 'Pre-fetched MR diff',
+	});
+
+	// Read full contents of changed files from the local repo
+	const prDiffCompat = mrDiff.map((f) => ({
+		filename: f.newPath,
+		status: (f.newFile
+			? 'added'
+			: f.deletedFile
+				? 'removed'
+				: f.renamedFile
+					? 'renamed'
+					: 'modified') as
+			| 'added'
+			| 'removed'
+			| 'modified'
+			| 'renamed'
+			| 'copied'
+			| 'changed'
+			| 'unchanged',
+		additions: 0,
+		deletions: 0,
+		changes: 0,
+		patch: f.diff,
+	}));
+	params.logWriter('INFO', 'Reading MR file contents', { fileCount: mrDiff.length });
+	const fileContents = await readPRFileContents(params.repoDir, prDiffCompat);
+	params.logWriter('INFO', 'File contents loaded', {
+		included: fileContents.included.length,
+		skipped: fileContents.skipped.length,
+	});
+
+	for (const file of fileContents.included) {
+		injections.push({
+			toolName: 'ReadFile',
+			params: { comment: `Pre-fetching ${file.path} for review`, filePath: file.path },
+			result: `path=${file.path}\n\n${file.content}`,
+			description: `Pre-fetched ${file.path}`,
+		});
+	}
+
+	return injections;
+}
+
 export async function fetchPRConversationStep(
 	params: FetchContextParams,
 ): Promise<ContextInjection[]> {
@@ -222,6 +338,16 @@ export async function fetchPRConversationStep(
 	if (!repoFullName || !prNumber) {
 		throw new Error('fetchPRConversationStep requires repoFullName and prNumber in input');
 	}
+
+	// Check if the project uses GitLab
+	const scmProvider = params.project?.id
+		? await getIntegrationProvider(params.project.id, 'scm')
+		: null;
+
+	if (scmProvider === 'gitlab') {
+		return fetchGitLabMRConversationStep(params, repoFullName, prNumber);
+	}
+
 	const injections: ContextInjection[] = [];
 	const { owner, repo } = parseRepoFullName(repoFullName);
 
@@ -267,6 +393,43 @@ export async function fetchPRConversationStep(
 		},
 		result: formatPRIssueComments(issueComments),
 		description: 'Pre-fetched PR issue comments',
+	});
+
+	return injections;
+}
+
+async function fetchGitLabMRConversationStep(
+	params: FetchContextParams,
+	projectPath: string,
+	mrIid: number,
+): Promise<ContextInjection[]> {
+	const injections: ContextInjection[] = [];
+
+	params.logWriter('INFO', 'Fetching MR conversation context from GitLab', {
+		projectPath,
+		mrIid,
+	});
+
+	const notes = await gitlabClient.getMRNotes(projectPath, mrIid);
+
+	// Filter to non-system notes (user comments only)
+	const userNotes = notes.filter((n) => !n.system);
+
+	const formatted = userNotes
+		.map(
+			(n) => `[${n.createdAt}] @${n.author.username}${n.resolved ? ' (resolved)' : ''}:\n${n.body}`,
+		)
+		.join('\n\n---\n\n');
+
+	injections.push({
+		toolName: 'GetMRNotes',
+		params: {
+			comment: 'Pre-fetching MR notes for conversation context',
+			projectPath,
+			mrIid,
+		},
+		result: formatted || '(No comments on this MR)',
+		description: 'Pre-fetched MR notes',
 	});
 
 	return injections;
