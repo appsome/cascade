@@ -2,6 +2,7 @@ import { agentConfigsRouter } from './routers/agentConfigs.js';
 import { agentDefinitionsRouter } from './routers/agentDefinitions.js';
 import { agentTriggerConfigsRouter } from './routers/agentTriggerConfigs.js';
 import { authRouter } from './routers/auth.js';
+import { claudeCodeLimitsRouter } from './routers/claudeCodeLimits.js';
 import { integrationsDiscoveryRouter } from './routers/integrationsDiscovery.js';
 import { organizationRouter } from './routers/organization.js';
 import { pmDiscoveryRouter } from './routers/pm-discovery.js';
@@ -35,6 +36,7 @@ export const appRouter = router({
 	workItems: workItemsRouter,
 	users: usersRouter,
 	workflowStatuses: workflowStatusesRouter,
+	claudeCodeLimits: claudeCodeLimitsRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -160,6 +160,37 @@ export async function listProjectCredentialsMeta(
 }
 
 // ============================================================================
+// Cross-project credential queries
+// ============================================================================
+
+/**
+ * List all CLAUDE_CODE_OAUTH_TOKEN credentials across all projects in an org.
+ * Returns decrypted values for use in server-side API calls only.
+ * Never expose raw tokens to the client.
+ */
+export async function listAllClaudeCodeCredentials(
+	orgId: string,
+): Promise<{ projectId: string; value: string }[]> {
+	const db = getDb();
+
+	const rows = await db
+		.select({
+			projectId: projectCredentials.projectId,
+			value: projectCredentials.value,
+		})
+		.from(projectCredentials)
+		.innerJoin(projects, eq(projectCredentials.projectId, projects.id))
+		.where(
+			and(eq(projects.orgId, orgId), eq(projectCredentials.envVarKey, 'CLAUDE_CODE_OAUTH_TOKEN')),
+		);
+
+	return rows.map((row) => ({
+		projectId: row.projectId,
+		value: decryptCredential(row.value, row.projectId),
+	}));
+}
+
+// ============================================================================
 // Integration metadata queries
 // ============================================================================
 
