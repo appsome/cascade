@@ -14,6 +14,7 @@ import {
 	Zap,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { ClaudeCodeLimitsSection } from '@/components/global/claude-code-limits.js';
 import { ProjectFormDialog } from '@/components/projects/project-form-dialog.js';
 import {
 	Select,
@@ -238,6 +239,7 @@ export function Sidebar({ user }: SidebarProps) {
 						{globalNav.map((item) => (
 							<NavLink key={item.to} {...item} currentPath={currentPath} />
 						))}
+						<ClaudeCodeLimitsSection />
 					</>
 				)}
 			</nav>
