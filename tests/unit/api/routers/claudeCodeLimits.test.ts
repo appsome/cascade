@@ -1,9 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-	createMockContext,
-	createMockSuperAdmin,
-	createMockUser,
-} from '../../../helpers/factories.js';
+import { createMockContext, createMockSuperAdmin } from '../../../helpers/factories.js';
 import { createCallerFor, expectTRPCError } from '../../../helpers/trpcTestHarness.js';
 
 const { mockListAllClaudeCodeCredentials, mockFetchClaudeSubscriptionLimits } = vi.hoisted(() => ({
