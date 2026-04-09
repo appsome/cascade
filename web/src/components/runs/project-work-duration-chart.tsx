@@ -53,8 +53,8 @@ export function buildDurationChartData(
 }
 
 export function ProjectWorkDurationChart({ byAgentType }: ProjectWorkDurationChartProps) {
-	const { theme } = useTheme();
-	const isDark = theme === 'dark';
+	const { resolvedTheme } = useTheme();
+	const isDark = resolvedTheme === 'dark';
 	const data: ChartEntry[] = buildDurationChartData(byAgentType, isDark);
 
 	if (data.length === 0) {

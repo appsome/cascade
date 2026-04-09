@@ -54,8 +54,8 @@ interface WorkItemDurationBarProps {
  * Highlights in red when total > 2× project average (outlier).
  */
 export function WorkItemDurationBar({ runs, projectAvgDurationMs }: WorkItemDurationBarProps) {
-	const { theme } = useTheme();
-	const isDark = theme === 'dark';
+	const { resolvedTheme } = useTheme();
+	const isDark = resolvedTheme === 'dark';
 	const segments = buildDurationSegments(runs, isDark);
 
 	if (segments.length === 0) {

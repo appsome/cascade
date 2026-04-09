@@ -62,8 +62,8 @@ function buildDataFromBreakdown(byAgentType: AgentTypeBreakdown[], dark: boolean
 }
 
 export function WorkItemCostChart({ runs, byAgentType }: WorkItemCostChartProps) {
-	const { theme } = useTheme();
-	const isDark = theme === 'dark';
+	const { resolvedTheme } = useTheme();
+	const isDark = resolvedTheme === 'dark';
 	const data: CostEntry[] = byAgentType
 		? buildDataFromBreakdown(byAgentType, isDark)
 		: buildDataFromRuns(runs ?? [], isDark);
