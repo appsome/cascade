@@ -15,7 +15,8 @@ export async function processTrelloWebhook(
 	registry: TriggerRegistry,
 	ackCommentId?: string,
 	triggerResult?: TriggerResult,
+	projectId?: string,
 ): Promise<void> {
 	const integration = pmRegistry.get('trello');
-	await processPMWebhook(integration, payload, registry, ackCommentId, triggerResult);
+	await processPMWebhook(integration, payload, registry, ackCommentId, triggerResult, projectId);
 }

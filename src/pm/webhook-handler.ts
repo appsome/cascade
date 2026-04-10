@@ -7,6 +7,7 @@
  * ack comment management) is delegated to the PMIntegration interface.
  */
 
+import { loadProjectConfigById } from '../config/provider.js';
 import {
 	checkAgentTypeConcurrency,
 	clearAgentTypeEnqueued,
@@ -155,6 +156,12 @@ async function handleMatchedTrigger(
  * and runs the matched agent.
  *
  * Used by both Trello and JIRA webhook handlers.
+ *
+ * @param projectId - When provided (e.g. from a router-enqueued job), the project is
+ *   looked up by ID directly instead of by the payload's board/project identifier.
+ *   This is required for multi-project boards (e.g. two projects sharing the same
+ *   Trello board distinguished by `requiredLabelId`) where a boardId lookup would
+ *   return the wrong project.
  */
 export async function processPMWebhook(
 	integration: PMIntegration,
@@ -162,9 +169,11 @@ export async function processPMWebhook(
 	registry: TriggerRegistry,
 	ackCommentId?: string,
 	triggerResult?: TriggerResult,
+	projectId?: string,
 ): Promise<void> {
 	logger.info(`Processing ${integration.type} webhook`, {
 		hasTriggerResult: !!triggerResult,
+		projectId,
 	});
 
 	const event = integration.parseWebhookPayload(payload);
@@ -181,10 +190,15 @@ export async function processPMWebhook(
 		eventType: event.eventType,
 	});
 
-	const projectConfig = await integration.lookupProject(event.projectIdentifier);
+	// When a projectId is supplied (from a router-enqueued job), use it directly to
+	// avoid re-resolving the project by boardId — which returns only the first matching
+	// project and would pick the wrong one when multiple projects share the same board.
+	const projectConfig = projectId
+		? await loadProjectConfigById(projectId)
+		: await integration.lookupProject(event.projectIdentifier);
 	if (!projectConfig) {
 		logger.warn(`No project configured for ${integration.type} identifier`, {
-			identifier: event.projectIdentifier,
+			identifier: projectId ?? event.projectIdentifier,
 		});
 		return;
 	}

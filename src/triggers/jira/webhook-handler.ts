@@ -15,7 +15,8 @@ export async function processJiraWebhook(
 	registry: TriggerRegistry,
 	ackCommentId?: string,
 	triggerResult?: TriggerResult,
+	projectId?: string,
 ): Promise<void> {
 	const integration = pmRegistry.get('jira');
-	await processPMWebhook(integration, payload, registry, ackCommentId, triggerResult);
+	await processPMWebhook(integration, payload, registry, ackCommentId, triggerResult, projectId);
 }

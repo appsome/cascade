@@ -105,7 +105,7 @@ import {
 // ── dispatchJob routing tests ─────────────────────────────────────────────────
 
 describe('dispatchJob routing', () => {
-	it('routes trello job to processTrelloWebhook with payload, registry, ackCommentId, triggerResult', async () => {
+	it('routes trello job to processTrelloWebhook with payload, registry, ackCommentId, triggerResult, projectId', async () => {
 		const mockRegistry = {};
 		const jobPayload = { action: { type: 'updateCard' } };
 		const triggerResult = { matched: true, agentType: 'implementation' } as never;
@@ -129,6 +129,7 @@ describe('dispatchJob routing', () => {
 			mockRegistry,
 			'comment-123',
 			triggerResult,
+			'proj-1',
 		);
 	});
 
@@ -161,7 +162,7 @@ describe('dispatchJob routing', () => {
 		);
 	});
 
-	it('routes jira job to processJiraWebhook with payload, registry, ackCommentId, triggerResult', async () => {
+	it('routes jira job to processJiraWebhook with payload, registry, ackCommentId, triggerResult, projectId', async () => {
 		const mockRegistry = {};
 		const jobPayload = { issue: { key: 'PROJ-1' } };
 		const triggerResult = { matched: true, agentType: 'implementation' } as never;
@@ -185,6 +186,7 @@ describe('dispatchJob routing', () => {
 			mockRegistry,
 			'jira-comment-789',
 			triggerResult,
+			'proj-1',
 		);
 	});
 
@@ -585,6 +587,7 @@ describe('main() - environment variable validation', () => {
 			expect.anything(),
 			'comment-123',
 			undefined,
+			'proj-1',
 		);
 		// flush is called before exit(0)
 		expect(flush).toHaveBeenCalled();
