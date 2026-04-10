@@ -5,7 +5,12 @@ function formatResetDate(resetsAt: string): string {
 	if (!resetsAt) return '';
 	try {
 		const date = new Date(resetsAt);
-		return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+		return date.toLocaleDateString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit',
+		});
 	} catch {
 		return resetsAt;
 	}
@@ -67,11 +72,14 @@ export function ClaudeCodeLimitsSection() {
 						{limits.extraUsage?.isEnabled && (
 							<div className="mt-1 pt-1 border-t border-sidebar-accent text-muted-foreground">
 								Extra usage enabled
-								{limits.extraUsage.usedCredits != null && limits.extraUsage.monthlyLimit != null && (
-									<span>
-										{' '}&mdash; ${limits.extraUsage.usedCredits.toFixed(2)} / ${limits.extraUsage.monthlyLimit.toFixed(2)}
-									</span>
-								)}
+								{limits.extraUsage.usedCredits != null &&
+									limits.extraUsage.monthlyLimit != null && (
+										<span>
+											{' '}
+											&mdash; ${limits.extraUsage.usedCredits.toFixed(2)} / $
+											{limits.extraUsage.monthlyLimit.toFixed(2)}
+										</span>
+									)}
 							</div>
 						)}
 					</div>
