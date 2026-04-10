@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { trpc } from '@/lib/trpc.js';
+import { Separator } from '@/components/ui/separator.js';
 
 function formatResetDate(resetsAt: string): string {
 	if (!resetsAt) return '';
@@ -38,14 +39,15 @@ export function ClaudeCodeLimitsSection() {
 	}
 
 	return (
-		<div className="mt-1">
+		<div>
+			<Separator className="my-3" />
 			<div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
 				Usage
 			</div>
 			<div className="flex flex-col gap-2 px-3 py-1">
 				{data.map((limits, i) => (
 					// biome-ignore lint/suspicious/noArrayIndexKey: tokenMasked is not guaranteed unique (tokens may share trailing 4 chars); index is safe here as list order is server-determined and stable
-					<div key={i} className="rounded-md bg-sidebar-accent/30 p-2 text-xs">
+					<div key={i} className="rounded-md bg-sidebar-accent/30 text-xs">
 						<div className="font-medium text-sidebar-foreground truncate mb-1.5">
 							{limits.tokenMasked}
 						</div>
