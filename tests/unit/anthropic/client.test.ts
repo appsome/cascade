@@ -25,23 +25,24 @@ describe('fetchClaudeSubscriptionLimits', () => {
 		});
 	}
 
-	// Reflects the actual api/oauth/profile response shape used by the Claude Code CLI
+	// Reflects the actual /api/oauth/usage response shape
 	const sampleResponse = {
-		account: {
-			display_name: 'Test User',
-			created_at: '2025-01-01T00:00:00Z',
-		},
-		organization: {
-			organization_type: 'claude_max',
-			rate_limit_tier: 'default_claude_max_5x',
-			has_extra_usage_enabled: false,
-			billing_type: 'subscription',
-			subscription_created_at: '2025-01-01T00:00:00Z',
-			uuid: 'org-uuid-123',
+		five_hour: { utilization: 33, resets_at: '2026-04-10T19:00:00.772723+00:00' },
+		seven_day: { utilization: 3, resets_at: '2026-04-17T09:59:59.772747+00:00' },
+		seven_day_oauth_apps: null,
+		seven_day_opus: null,
+		seven_day_sonnet: { utilization: 44, resets_at: '2026-04-10T16:59:59.772755+00:00' },
+		seven_day_cowork: null,
+		iguana_necktie: null,
+		extra_usage: {
+			is_enabled: false,
+			monthly_limit: null,
+			used_credits: null,
+			utilization: null,
 		},
 	};
 
-	it('returns subscription info on success', async () => {
+	it('returns usage buckets on success', async () => {
 		vi.mocked(fetch).mockReturnValueOnce(
 			makeFetchResponse(sampleResponse) as ReturnType<typeof fetch>,
 		);
@@ -49,13 +50,82 @@ describe('fetchClaudeSubscriptionLimits', () => {
 		const result = await fetchClaudeSubscriptionLimits('test-oauth-token');
 
 		expect(result).not.toBeNull();
-		expect(result?.plan).toBe('claude_max');
-		// Usage stats are not available from the profile endpoint; always 0
-		expect(result?.messagesUsed).toBe(0);
-		expect(result?.messagesLimit).toBe(0);
-		expect(result?.tokensUsed).toBe(0);
-		expect(result?.tokensLimit).toBe(0);
-		expect(result?.resetsAt).toBe('');
+		expect(result?.buckets).toHaveLength(3);
+		expect(result?.buckets[0]).toEqual({
+			label: '5-Hour Window',
+			utilization: 33,
+			resetsAt: '2026-04-10T19:00:00.772723+00:00',
+		});
+		expect(result?.buckets[1]).toEqual({
+			label: '7-Day Overall',
+			utilization: 3,
+			resetsAt: '2026-04-17T09:59:59.772747+00:00',
+		});
+		expect(result?.buckets[2]).toEqual({
+			label: '7-Day Sonnet',
+			utilization: 44,
+			resetsAt: '2026-04-10T16:59:59.772755+00:00',
+		});
+	});
+
+	it('parses extra_usage when enabled with values', async () => {
+		const responseWithExtra = {
+			...sampleResponse,
+			extra_usage: {
+				is_enabled: true,
+				monthly_limit: 100,
+				used_credits: 42.5,
+				utilization: 42,
+			},
+		};
+		vi.mocked(fetch).mockReturnValueOnce(
+			makeFetchResponse(responseWithExtra) as ReturnType<typeof fetch>,
+		);
+
+		const result = await fetchClaudeSubscriptionLimits('test-token');
+
+		expect(result?.extraUsage).toEqual({
+			isEnabled: true,
+			monthlyLimit: 100,
+			usedCredits: 42.5,
+			utilization: 42,
+		});
+	});
+
+	it('returns extra_usage as non-enabled when disabled', async () => {
+		vi.mocked(fetch).mockReturnValueOnce(
+			makeFetchResponse(sampleResponse) as ReturnType<typeof fetch>,
+		);
+
+		const result = await fetchClaudeSubscriptionLimits('test-token');
+
+		expect(result?.extraUsage).toEqual({
+			isEnabled: false,
+			monthlyLimit: null,
+			usedCredits: null,
+			utilization: null,
+		});
+	});
+
+	it('skips null buckets', async () => {
+		const sparseResponse = {
+			five_hour: null,
+			seven_day: { utilization: 10, resets_at: '2026-04-17T00:00:00Z' },
+			seven_day_oauth_apps: null,
+			seven_day_opus: null,
+			seven_day_sonnet: null,
+			seven_day_cowork: null,
+			iguana_necktie: null,
+			extra_usage: null,
+		};
+		vi.mocked(fetch).mockReturnValueOnce(
+			makeFetchResponse(sparseResponse) as ReturnType<typeof fetch>,
+		);
+
+		const result = await fetchClaudeSubscriptionLimits('test-token');
+
+		expect(result?.buckets).toHaveLength(1);
+		expect(result?.buckets[0]?.label).toBe('7-Day Overall');
 	});
 
 	it('masks the token showing only last 4 chars', async () => {
@@ -85,7 +155,7 @@ describe('fetchClaudeSubscriptionLimits', () => {
 		);
 	});
 
-	it('calls the oauth/profile endpoint', async () => {
+	it('calls the oauth/usage endpoint', async () => {
 		vi.mocked(fetch).mockReturnValueOnce(
 			makeFetchResponse(sampleResponse) as ReturnType<typeof fetch>,
 		);
@@ -93,7 +163,7 @@ describe('fetchClaudeSubscriptionLimits', () => {
 		await fetchClaudeSubscriptionLimits('my-oauth-token');
 
 		expect(fetch).toHaveBeenCalledWith(
-			'https://api.anthropic.com/api/oauth/profile',
+			'https://api.anthropic.com/api/oauth/usage',
 			expect.any(Object),
 		);
 	});
@@ -134,28 +204,16 @@ describe('fetchClaudeSubscriptionLimits', () => {
 		expect(result).toBeNull();
 	});
 
-	it('returns null when response has no organization field', async () => {
+	it('returns empty buckets when response has no recognized fields', async () => {
 		vi.mocked(fetch).mockReturnValueOnce(
-			// Response missing the organization field (invalid shape)
-			makeFetchResponse({ account: { display_name: 'Test' } }) as ReturnType<typeof fetch>,
-		);
-
-		const result = await fetchClaudeSubscriptionLimits('some-token');
-
-		expect(result).toBeNull();
-	});
-
-	it('returns unknown plan when organization_type is missing', async () => {
-		vi.mocked(fetch).mockReturnValueOnce(
-			makeFetchResponse({
-				organization: { rate_limit_tier: 'default' },
-			}) as ReturnType<typeof fetch>,
+			makeFetchResponse({ something_unexpected: true }) as ReturnType<typeof fetch>,
 		);
 
 		const result = await fetchClaudeSubscriptionLimits('some-token');
 
 		expect(result).not.toBeNull();
-		expect(result?.plan).toBe('unknown');
+		expect(result?.buckets).toEqual([]);
+		expect(result?.extraUsage).toBeNull();
 	});
 
 	it('caches results for subsequent calls with the same token', async () => {
