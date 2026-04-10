@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { trpc } from '@/lib/trpc.js';
 import { Separator } from '@/components/ui/separator.js';
+import { trpc } from '@/lib/trpc.js';
 
 function formatResetDate(resetsAt: string): string {
 	if (!resetsAt) return '';

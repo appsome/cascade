@@ -56,6 +56,32 @@ const BUCKET_LABELS: Record<string, string> = {
 	iguana_necktie: 'Iguana Necktie',
 };
 
+/** Parse usage buckets from the API response JSON. */
+function parseBuckets(json: Record<string, unknown>): UsageBucket[] {
+	const buckets: UsageBucket[] = [];
+	for (const [key, label] of Object.entries(BUCKET_LABELS)) {
+		const raw = json[key] as { utilization?: number; resets_at?: string } | null | undefined;
+		if (raw && typeof raw.utilization === 'number' && typeof raw.resets_at === 'string') {
+			buckets.push({ label, utilization: raw.utilization, resetsAt: raw.resets_at });
+		}
+	}
+	return buckets;
+}
+
+/** Parse the extra_usage block from the API response JSON. */
+function parseExtraUsage(json: Record<string, unknown>): ClaudeSubscriptionLimits['extraUsage'] {
+	const rawExtra = json.extra_usage as Record<string, unknown> | null | undefined;
+	if (!rawExtra || typeof rawExtra.is_enabled !== 'boolean') {
+		return null;
+	}
+	return {
+		isEnabled: rawExtra.is_enabled,
+		monthlyLimit: typeof rawExtra.monthly_limit === 'number' ? rawExtra.monthly_limit : null,
+		usedCredits: typeof rawExtra.used_credits === 'number' ? rawExtra.used_credits : null,
+		utilization: typeof rawExtra.utilization === 'number' ? rawExtra.utilization : null,
+	};
+}
+
 /**
  * Fetch Claude subscription usage for the given OAuth token via the /api/oauth/usage endpoint.
  * Returns null on any error (network, auth, unexpected shape, etc.).
@@ -86,33 +112,10 @@ export async function fetchClaudeSubscriptionLimits(
 		}
 
 		const json = (await response.json()) as Record<string, unknown>;
-
-		// Parse usage buckets — each key (except extra_usage) is either null or
-		// { utilization: number, resets_at: string }
-		const buckets: UsageBucket[] = [];
-		for (const [key, label] of Object.entries(BUCKET_LABELS)) {
-			const raw = json[key] as { utilization?: number; resets_at?: string } | null | undefined;
-			if (raw && typeof raw.utilization === 'number' && typeof raw.resets_at === 'string') {
-				buckets.push({ label, utilization: raw.utilization, resetsAt: raw.resets_at });
-			}
-		}
-
-		// Parse extra_usage block
-		let extraUsage: ClaudeSubscriptionLimits['extraUsage'] = null;
-		const rawExtra = json.extra_usage as Record<string, unknown> | null | undefined;
-		if (rawExtra && typeof rawExtra.is_enabled === 'boolean') {
-			extraUsage = {
-				isEnabled: rawExtra.is_enabled,
-				monthlyLimit: typeof rawExtra.monthly_limit === 'number' ? rawExtra.monthly_limit : null,
-				usedCredits: typeof rawExtra.used_credits === 'number' ? rawExtra.used_credits : null,
-				utilization: typeof rawExtra.utilization === 'number' ? rawExtra.utilization : null,
-			};
-		}
-
 		const result: ClaudeSubscriptionLimits = {
 			tokenMasked: maskToken(oauthToken),
-			buckets,
-			extraUsage,
+			buckets: parseBuckets(json),
+			extraUsage: parseExtraUsage(json),
 		};
 
 		cacheByToken.set(oauthToken, { data: result, timestamp: Date.now() });
