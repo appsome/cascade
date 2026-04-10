@@ -7,7 +7,7 @@
  * `processRouterWebhook()` function.
  */
 
-import { withTrelloCredentials } from '../../trello/client.js';
+import { trelloClient, withTrelloCredentials } from '../../trello/client.js';
 import type { TriggerRegistry } from '../../triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
@@ -102,13 +102,72 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 		return config.projects.find((p) => p.trello?.boardId === event.projectIdentifier) ?? null;
 	}
 
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: label pre-filter requires branching over API result, fallback, and empty cases
 	async resolveAllProjects(event: ParsedWebhookEvent): Promise<RouterProjectConfig[]> {
 		const config = await loadProjectConfig();
-		return config.projects.filter((p) => p.trello?.boardId === event.projectIdentifier);
+		const candidates = config.projects.filter((p) => p.trello?.boardId === event.projectIdentifier);
+
+		// When multiple projects share the same board and at least one uses a required-label
+		// filter, fetch the card's labels from the Trello API now — before the dispatch loop —
+		// so we route to the correct project immediately rather than relying on each
+		// dispatchWithCredentials call to discover the mismatch.
+		//
+		// The Trello webhook payload does NOT include the card's current labels, so an explicit
+		// API lookup is necessary for correct multi-project routing.
+		if (event.workItemId && candidates.some((p) => p.trello?.requiredLabelId)) {
+			for (const proj of candidates) {
+				const creds = await resolveTrelloCredentials(proj.id);
+				if (!creds) continue;
+
+				try {
+					const cardLabelIds = await withTrelloCredentials(creds, async () => {
+						const card = await trelloClient.getCard(event.workItemId as string);
+						return card.labels.map((l) => l.id);
+					});
+
+					// Return projects whose required label is present on the card.
+					const labelMatched = candidates.filter(
+						(p) => p.trello?.requiredLabelId && cardLabelIds.includes(p.trello.requiredLabelId),
+					);
+					if (labelMatched.length > 0) {
+						logger.info('Pre-filtered projects by card labels', {
+							cardId: event.workItemId,
+							matched: labelMatched.map((p) => p.id),
+						});
+						return labelMatched;
+					}
+
+					// No label-specific match — fall back to projects without a required label (catch-all)
+					const catchAll = candidates.filter((p) => !p.trello?.requiredLabelId);
+					if (catchAll.length > 0) {
+						logger.info('No label-matched project; falling back to catch-all projects', {
+							cardId: event.workItemId,
+							catchAll: catchAll.map((p) => p.id),
+						});
+						return catchAll;
+					}
+
+					// Card has no label that matches any configured project — drop.
+					logger.info('Card labels do not match any project requiredLabelId, skipping', {
+						cardId: event.workItemId,
+						cardLabelIds,
+					});
+					return [];
+				} catch (err) {
+					logger.warn(
+						'Failed to look up card labels for project pre-filtering, falling back to all candidates',
+						{ cardId: event.workItemId, error: String(err) },
+					);
+					break;
+				}
+			}
+		}
+
+		return candidates;
 	}
 
 	async dispatchWithCredentials(
-		_event: ParsedWebhookEvent,
+		event: ParsedWebhookEvent,
 		payload: unknown,
 		project: RouterProjectConfig,
 		triggerRegistry: TriggerRegistry,
@@ -132,14 +191,16 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 
 		const ctx: TriggerContext = { project: fullProject, source: 'trello', payload };
 		return withTrelloCredentials(trelloCreds, async () => {
-			if (project.trello?.requiredLabelId && _event.workItemId) {
+			// Secondary label guard: resolveAllProjects pre-filters by label, but this
+			// check ensures correctness even when pre-filtering was skipped (e.g. API error).
+			if (project.trello?.requiredLabelId && event.workItemId) {
 				const hasLabel = await checkCardHasRequiredLabel(
-					_event.workItemId,
+					event.workItemId,
 					project.trello.requiredLabelId,
 				);
 				if (!hasLabel) {
 					logger.info('Card lacks required label, skipping dispatch', {
-						cardId: _event.workItemId,
+						cardId: event.workItemId,
 						requiredLabelId: project.trello.requiredLabelId,
 					});
 					return null;

@@ -35,6 +35,17 @@ vi.mock('../../../../src/utils/runLink.js', () => ({
 }));
 vi.mock('../../../../src/trello/client.js', () => ({
 	withTrelloCredentials: vi.fn().mockImplementation((_creds: unknown, fn: () => unknown) => fn()),
+	trelloClient: {
+		getCard: vi.fn().mockResolvedValue({
+			id: 'card1',
+			name: 'Test card',
+			desc: '',
+			idList: 'list1',
+			labels: [],
+			url: 'https://trello.com/c/card1',
+			shortUrl: 'https://trello.com/c/card1',
+		}),
+	},
 }));
 vi.mock('../../../../src/router/trello.js', () => ({
 	isAgentLogFilename: vi.fn().mockReturnValue(false),
@@ -56,6 +67,7 @@ import {
 	isCardInTriggerList,
 	isSelfAuthoredTrelloComment,
 } from '../../../../src/router/trello.js';
+import { trelloClient } from '../../../../src/trello/client.js';
 import type { TriggerRegistry } from '../../../../src/triggers/registry.js';
 import { buildWorkItemRunsLink, getDashboardUrl } from '../../../../src/utils/runLink.js';
 
@@ -203,27 +215,6 @@ describe('TrelloRouterAdapter', () => {
 	});
 
 	describe('resolveAllProjects', () => {
-		it('returns all projects matching boardId', async () => {
-			const secondProject: RouterProjectConfig = {
-				...mockProject,
-				id: 'p2',
-				trello: { ...mockProject.trello!, requiredLabelId: 'label-bdgt' },
-			};
-			vi.mocked(loadProjectConfig).mockResolvedValue({
-				projects: [mockProject, secondProject],
-				fullProjects: [{ id: 'p1' } as never, { id: 'p2' } as never],
-			});
-
-			const projects = await adapter.resolveAllProjects({
-				projectIdentifier: 'board1',
-				eventType: 'updateCard',
-				isCommentEvent: false,
-			});
-			expect(projects).toHaveLength(2);
-			expect(projects[0].id).toBe('p1');
-			expect(projects[1].id).toBe('p2');
-		});
-
 		it('returns empty array for unknown boardId', async () => {
 			const projects = await adapter.resolveAllProjects({
 				projectIdentifier: 'unknown-board',
@@ -233,7 +224,8 @@ describe('TrelloRouterAdapter', () => {
 			expect(projects).toHaveLength(0);
 		});
 
-		it('returns single project when only one matches', async () => {
+		it('returns single project when only one matches and no requiredLabelId', async () => {
+			// No project has requiredLabelId, no label lookup needed
 			const projects = await adapter.resolveAllProjects({
 				projectIdentifier: 'board1',
 				eventType: 'updateCard',
@@ -241,6 +233,166 @@ describe('TrelloRouterAdapter', () => {
 			});
 			expect(projects).toHaveLength(1);
 			expect(projects[0].id).toBe('p1');
+			expect(trelloClient.getCard).not.toHaveBeenCalled();
+		});
+
+		it('pre-filters by card labels when multiple projects share a board', async () => {
+			const projectCascade: RouterProjectConfig = {
+				...mockProject,
+				id: 'cascade',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-cascade' },
+			};
+			const projectBdgt: RouterProjectConfig = {
+				...mockProject,
+				id: 'bdgt',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-bdgt' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [projectCascade, projectBdgt],
+				fullProjects: [{ id: 'cascade' } as never, { id: 'bdgt' } as never],
+			});
+			// Card only has the bdgt label
+			vi.mocked(trelloClient.getCard).mockResolvedValueOnce({
+				id: 'card1',
+				name: 'Test card',
+				desc: '',
+				idList: 'list1',
+				labels: [{ id: 'label-bdgt', name: 'project:bdgt', color: 'orange' }],
+				url: 'https://trello.com/c/card1',
+				shortUrl: 'https://trello.com/c/card1',
+			});
+
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'board1',
+				eventType: 'updateCard',
+				workItemId: 'card1',
+				isCommentEvent: false,
+			});
+			// Only bdgt should be returned (cascade's label not on card)
+			expect(projects).toHaveLength(1);
+			expect(projects[0].id).toBe('bdgt');
+		});
+
+		it('returns catch-all projects when card has no label matching any project', async () => {
+			const projectCascade: RouterProjectConfig = {
+				...mockProject,
+				id: 'cascade',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-cascade' },
+			};
+			const projectBdgt: RouterProjectConfig = {
+				...mockProject,
+				id: 'bdgt',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-bdgt' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [projectCascade, projectBdgt],
+				fullProjects: [{ id: 'cascade' } as never, { id: 'bdgt' } as never],
+			});
+			// Card has no project-specific labels
+			vi.mocked(trelloClient.getCard).mockResolvedValueOnce({
+				id: 'card1',
+				name: 'Test card',
+				desc: '',
+				idList: 'list1',
+				labels: [],
+				url: 'https://trello.com/c/card1',
+				shortUrl: 'https://trello.com/c/card1',
+			});
+
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'board1',
+				eventType: 'updateCard',
+				workItemId: 'card1',
+				isCommentEvent: false,
+			});
+			// No label match and no catch-all → empty
+			expect(projects).toHaveLength(0);
+		});
+
+		it('returns catch-all project when card has no matching label but catch-all exists', async () => {
+			const projectCatchAll: RouterProjectConfig = {
+				...mockProject,
+				id: 'catch-all',
+				// no requiredLabelId
+			};
+			const projectBdgt: RouterProjectConfig = {
+				...mockProject,
+				id: 'bdgt',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-bdgt' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [projectCatchAll, projectBdgt],
+				fullProjects: [{ id: 'catch-all' } as never, { id: 'bdgt' } as never],
+			});
+			// Card has no labels → no specific match → fall back to catch-all
+			vi.mocked(trelloClient.getCard).mockResolvedValueOnce({
+				id: 'card1',
+				name: 'Test card',
+				desc: '',
+				idList: 'list1',
+				labels: [],
+				url: 'https://trello.com/c/card1',
+				shortUrl: 'https://trello.com/c/card1',
+			});
+
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'board1',
+				eventType: 'updateCard',
+				workItemId: 'card1',
+				isCommentEvent: false,
+			});
+			expect(projects).toHaveLength(1);
+			expect(projects[0].id).toBe('catch-all');
+		});
+
+		it('falls back to all candidates when getCard API call fails', async () => {
+			const projectCascade: RouterProjectConfig = {
+				...mockProject,
+				id: 'cascade',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-cascade' },
+			};
+			const projectBdgt: RouterProjectConfig = {
+				...mockProject,
+				id: 'bdgt',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-bdgt' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [projectCascade, projectBdgt],
+				fullProjects: [{ id: 'cascade' } as never, { id: 'bdgt' } as never],
+			});
+			vi.mocked(trelloClient.getCard).mockRejectedValueOnce(new Error('API error'));
+
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'board1',
+				eventType: 'updateCard',
+				workItemId: 'card1',
+				isCommentEvent: false,
+			});
+			// Falls back to all candidates on API failure
+			expect(projects).toHaveLength(2);
+		});
+
+		it('skips label lookup when workItemId is absent', async () => {
+			const projectWithLabel: RouterProjectConfig = {
+				...mockProject,
+				id: 'p1',
+				trello: { ...mockProject.trello!, requiredLabelId: 'label-cascade' },
+			};
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [projectWithLabel],
+				fullProjects: [{ id: 'p1' } as never],
+			});
+			vi.mocked(trelloClient.getCard).mockClear();
+
+			// No workItemId in event
+			const projects = await adapter.resolveAllProjects({
+				projectIdentifier: 'board1',
+				eventType: 'addLabelToCard',
+				isCommentEvent: false,
+			});
+			// Returns all candidates without label lookup
+			expect(projects).toHaveLength(1);
+			expect(trelloClient.getCard).not.toHaveBeenCalled();
 		});
 	});
 
