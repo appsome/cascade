@@ -63,6 +63,7 @@ export const ProjectConfigSchema = z.object({
 					cost: z.string().optional(),
 				})
 				.optional(),
+			requiredLabelId: z.string().optional(),
 		})
 		.optional(),
 
