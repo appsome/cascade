@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { HelpCircle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { CloneProjectDialog } from '@/components/projects/clone-project-dialog.js';
 import { ProjectSecretField } from '@/components/projects/project-secret-field.js';
 import { useProjectUpdate } from '@/components/projects/use-project-update.js';
 import { OpenRouterModelCombobox } from '@/components/settings/openrouter-model-combobox.js';
@@ -66,6 +67,7 @@ export function ProjectGeneralForm({ project }: { project: Project }) {
 	const queryClient = useQueryClient();
 	const updateMutation = useProjectUpdate(project.id);
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+	const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
 	const deleteMutation = useMutation({
 		mutationFn: () => trpcClient.projects.delete.mutate({ id: project.id }),
 		onSuccess: () => {
@@ -417,6 +419,32 @@ export function ProjectGeneralForm({ project }: { project: Project }) {
 					</CardContent>
 				</Card>
 
+				{/* Clone Project */}
+				<Card>
+					<CardHeader>
+						<CardTitle>Clone Project</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<div className="flex items-center justify-between">
+							<div>
+								<p className="text-sm font-medium">Clone this project</p>
+								<p className="text-xs text-muted-foreground">
+									Create a new project with the same settings, integrations, credentials, agent
+									configs, and trigger configs. The repository field will need to be configured
+									separately.
+								</p>
+							</div>
+							<button
+								type="button"
+								onClick={() => setCloneDialogOpen(true)}
+								className="ml-4 inline-flex h-9 shrink-0 items-center rounded-md border border-input px-4 text-sm font-medium hover:bg-accent transition-colors"
+							>
+								Clone Project
+							</button>
+						</div>
+					</CardContent>
+				</Card>
+
 				{/* Danger Zone */}
 				<Card className="border-destructive/50">
 					<CardHeader>
@@ -462,6 +490,12 @@ export function ProjectGeneralForm({ project }: { project: Project }) {
 						</AlertDialogFooter>
 					</AlertDialogContent>
 				</AlertDialog>
+
+				<CloneProjectDialog
+					sourceProjectId={project.id}
+					open={cloneDialogOpen}
+					onOpenChange={setCloneDialogOpen}
+				/>
 			</div>
 		</TooltipProvider>
 	);
