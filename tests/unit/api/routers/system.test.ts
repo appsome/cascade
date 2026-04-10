@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { systemRouter } from '../../../../src/api/routers/system.js';
 import { createMockUser } from '../../../helpers/factories.js';
 import { createCallerFor, expectTRPCError } from '../../../helpers/trpcTestHarness.js';
