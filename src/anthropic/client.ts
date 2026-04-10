@@ -1,21 +1,30 @@
 /**
- * OAuth profile endpoint used by the Claude Code CLI to fetch subscription info.
- * Returns organization type (plan), rate limit tier, and account display name.
- * Note: per-token usage stats (messages/tokens used) are not available via this
- * endpoint — they are only surfaced via rate-limit response headers during API calls.
+ * OAuth usage endpoint — returns per-bucket utilization percentages and reset times
+ * for the authenticated subscription.
  */
-const ANTHROPIC_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
+const ANTHROPIC_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const FETCH_TIMEOUT_MS = 10_000; // 10 seconds
 
-export interface ClaudeSubscriptionLimits {
-	plan: string;
-	messagesUsed: number;
-	messagesLimit: number;
-	tokensUsed: number;
-	tokensLimit: number;
+/** A single rate-limit bucket from the usage API. */
+export interface UsageBucket {
+	/** Human-readable label (e.g. "5-Hour Window", "Sonnet 7-Day") */
+	label: string;
+	/** Utilization percentage 0–100 */
+	utilization: number;
+	/** ISO-8601 reset timestamp */
 	resetsAt: string;
+}
+
+export interface ClaudeSubscriptionLimits {
 	tokenMasked: string;
+	buckets: UsageBucket[];
+	extraUsage: {
+		isEnabled: boolean;
+		monthlyLimit: number | null;
+		usedCredits: number | null;
+		utilization: number | null;
+	} | null;
 }
 
 interface CacheEntry {
@@ -36,15 +45,21 @@ function maskToken(token: string): string {
 	return `****${token.slice(-4)}`;
 }
 
+/** Maps API response keys to human-readable labels. */
+const BUCKET_LABELS: Record<string, string> = {
+	five_hour: '5-Hour Window',
+	seven_day: '7-Day Overall',
+	seven_day_oauth_apps: '7-Day OAuth Apps',
+	seven_day_opus: '7-Day Opus',
+	seven_day_sonnet: '7-Day Sonnet',
+	seven_day_cowork: '7-Day Cowork',
+	iguana_necktie: 'Iguana Necktie',
+};
+
 /**
- * Fetch Claude subscription info for the given OAuth token via the oauth/profile endpoint.
+ * Fetch Claude subscription usage for the given OAuth token via the /api/oauth/usage endpoint.
  * Returns null on any error (network, auth, unexpected shape, etc.).
  * Results are cached in memory for 5 minutes per unique token.
- *
- * Note: per-token usage stats (messages/tokens used vs. limit) are not available
- * from this endpoint. The returned `messagesUsed`, `messagesLimit`, `tokensUsed`,
- * `tokensLimit`, and `resetsAt` fields will always be 0/"" — the UI hides them
- * when the limit is 0.
  */
 export async function fetchClaudeSubscriptionLimits(
 	oauthToken: string,
@@ -56,11 +71,12 @@ export async function fetchClaudeSubscriptionLimits(
 	}
 
 	try {
-		const response = await fetch(ANTHROPIC_PROFILE_URL, {
+		const response = await fetch(ANTHROPIC_USAGE_URL, {
 			headers: {
 				Authorization: `Bearer ${oauthToken}`,
-				'anthropic-version': '2023-06-01',
+				'anthropic-beta': 'oauth-2025-04-20',
 				'Content-Type': 'application/json',
+				'User-Agent': 'claude-code/2.1.87',
 			},
 			signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 		});
@@ -71,30 +87,32 @@ export async function fetchClaudeSubscriptionLimits(
 
 		const json = (await response.json()) as Record<string, unknown>;
 
-		// Parse defensively — return null if the shape doesn't match expectations.
-		// The profile response contains: { organization: { organization_type, rate_limit_tier, ... }, account: { ... } }
-		const organization = json.organization as Record<string, unknown> | undefined;
-
-		if (!organization) {
-			return null;
+		// Parse usage buckets — each key (except extra_usage) is either null or
+		// { utilization: number, resets_at: string }
+		const buckets: UsageBucket[] = [];
+		for (const [key, label] of Object.entries(BUCKET_LABELS)) {
+			const raw = json[key] as { utilization?: number; resets_at?: string } | null | undefined;
+			if (raw && typeof raw.utilization === 'number' && typeof raw.resets_at === 'string') {
+				buckets.push({ label, utilization: raw.utilization, resetsAt: raw.resets_at });
+			}
 		}
 
-		// organization_type is e.g. "claude_max", "claude_pro", "claude_enterprise", "claude_team"
-		const plan =
-			typeof organization.organization_type === 'string'
-				? organization.organization_type
-				: 'unknown';
+		// Parse extra_usage block
+		let extraUsage: ClaudeSubscriptionLimits['extraUsage'] = null;
+		const rawExtra = json.extra_usage as Record<string, unknown> | null | undefined;
+		if (rawExtra && typeof rawExtra.is_enabled === 'boolean') {
+			extraUsage = {
+				isEnabled: rawExtra.is_enabled,
+				monthlyLimit: typeof rawExtra.monthly_limit === 'number' ? rawExtra.monthly_limit : null,
+				usedCredits: typeof rawExtra.used_credits === 'number' ? rawExtra.used_credits : null,
+				utilization: typeof rawExtra.utilization === 'number' ? rawExtra.utilization : null,
+			};
+		}
 
 		const result: ClaudeSubscriptionLimits = {
-			plan,
-			// Usage stats (messages/tokens) are not available from this endpoint;
-			// the UI hides these fields when limit is 0.
-			messagesUsed: 0,
-			messagesLimit: 0,
-			tokensUsed: 0,
-			tokensLimit: 0,
-			resetsAt: '',
 			tokenMasked: maskToken(oauthToken),
+			buckets,
+			extraUsage,
 		};
 
 		cacheByToken.set(oauthToken, { data: result, timestamp: Date.now() });

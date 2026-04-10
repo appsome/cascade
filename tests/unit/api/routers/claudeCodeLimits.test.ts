@@ -20,13 +20,12 @@ import { claudeCodeLimitsRouter } from '../../../../src/api/routers/claudeCodeLi
 const createCaller = createCallerFor(claudeCodeLimitsRouter);
 
 const sampleLimits = {
-	plan: 'claude_max',
-	messagesUsed: 1000,
-	messagesLimit: 20000,
-	tokensUsed: 500000,
-	tokensLimit: 10000000,
-	resetsAt: '2026-05-01T00:00:00Z',
 	tokenMasked: '****abcd',
+	buckets: [
+		{ label: '5-Hour Window', utilization: 33, resetsAt: '2026-04-10T19:00:00Z' },
+		{ label: '7-Day Overall', utilization: 3, resetsAt: '2026-04-17T10:00:00Z' },
+	],
+	extraUsage: { isEnabled: false, monthlyLimit: null, usedCredits: null, utilization: null },
 };
 
 describe('claudeCodeLimitsRouter', () => {
