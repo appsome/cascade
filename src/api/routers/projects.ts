@@ -757,7 +757,24 @@ export const projectsRouter = router({
 		)
 		.mutation(async ({ ctx, input }) => {
 			await verifyProjectOwnership(input.sourceId, ctx.effectiveOrgId);
-			return cloneProject(ctx.effectiveOrgId, input.sourceId, input.newId, input.newName);
+			try {
+				return await cloneProject(ctx.effectiveOrgId, input.sourceId, input.newId, input.newName);
+			} catch (err) {
+				// PostgreSQL unique constraint violation (error code 23505) means the
+				// new project ID already exists — surface an actionable BAD_REQUEST instead
+				// of an opaque INTERNAL_SERVER_ERROR.
+				if (
+					err instanceof Error &&
+					'code' in err &&
+					(err as NodeJS.ErrnoException).code === '23505'
+				) {
+					throw new TRPCError({
+						code: 'BAD_REQUEST',
+						message: `Project ID '${input.newId}' is already taken. Please choose a different name.`,
+					});
+				}
+				throw err;
+			}
 		}),
 
 	// Integrations

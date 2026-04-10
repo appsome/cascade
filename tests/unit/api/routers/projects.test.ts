@@ -469,6 +469,22 @@ describe('projectsRouter', () => {
 				caller.clone({ sourceId: 'p1', newId: 'valid-id', newName: '' }),
 			).rejects.toThrow();
 		});
+
+		it('converts unique constraint violation to BAD_REQUEST with actionable message', async () => {
+			mockDbWhere.mockResolvedValue([{ orgId: 'org-1' }]);
+			const uniqueConstraintError = Object.assign(new Error('duplicate key value'), {
+				code: '23505',
+			});
+			mockCloneProject.mockRejectedValue(uniqueConstraintError);
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+
+			await expect(
+				caller.clone({ sourceId: 'p1', newId: 'existing-id', newName: 'New P1' }),
+			).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+				message: expect.stringContaining('existing-id'),
+			});
+		});
 	});
 
 	// ============================================================================
