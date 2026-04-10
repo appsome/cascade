@@ -98,17 +98,17 @@ export async function processRouterWebhook(
 
 	// Step 6: Resolve project config(s)
 	// When the adapter implements resolveAllProjects (e.g. Trello, where multiple projects can
-	// share the same board and are distinguished by requiredLabelId), we collect all candidates
-	// and try each in turn at dispatch time. For adapters that don't implement it, we fall back
-	// to the single-project resolveProject path.
-	const projectsToTry: RouterProjectConfig[] = [];
+	// share the same board and are distinguished by requiredLabelId), we use its result directly.
+	// An empty array means the event was definitively filtered out (e.g. card lacks required label)
+	// and we must NOT fall back to resolveProject — that would bypass the filter and re-introduce
+	// projects that were intentionally excluded.
+	// For adapters that don't implement resolveAllProjects, we fall back to resolveProject.
+	let projectsToTry: RouterProjectConfig[];
 	if (adapter.resolveAllProjects) {
-		const allProjects = await adapter.resolveAllProjects(event);
-		projectsToTry.push(...allProjects);
-	}
-	if (projectsToTry.length === 0) {
+		projectsToTry = await adapter.resolveAllProjects(event);
+	} else {
 		const singleProject = await adapter.resolveProject(event);
-		if (singleProject) projectsToTry.push(singleProject);
+		projectsToTry = singleProject ? [singleProject] : [];
 	}
 
 	if (projectsToTry.length === 0) {

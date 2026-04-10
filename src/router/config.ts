@@ -17,6 +17,12 @@ export interface RouterProjectConfig {
 		projectKey: string;
 		baseUrl: string;
 	};
+	/**
+	 * @internal Set by resolveAllProjects when label pre-filtering was successful.
+	 * When true, dispatchWithCredentials skips the secondary checkCardHasRequiredLabel
+	 * guard since the label was already verified during project resolution.
+	 */
+	_labelPreFiltered?: boolean;
 }
 
 export interface RouterConfig {

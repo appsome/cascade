@@ -126,6 +126,8 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 					});
 
 					// Return projects whose required label is present on the card.
+					// Mark returned projects as pre-filtered so dispatchWithCredentials skips its
+					// secondary label guard (avoiding a redundant getCard API call).
 					const labelMatched = candidates.filter(
 						(p) => p.trello?.requiredLabelId && cardLabelIds.includes(p.trello.requiredLabelId),
 					);
@@ -134,7 +136,7 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 							cardId: event.workItemId,
 							matched: labelMatched.map((p) => p.id),
 						});
-						return labelMatched;
+						return labelMatched.map((p) => ({ ...p, _labelPreFiltered: true }));
 					}
 
 					// No label-specific match — fall back to projects without a required label (catch-all)
@@ -144,7 +146,7 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 							cardId: event.workItemId,
 							catchAll: catchAll.map((p) => p.id),
 						});
-						return catchAll;
+						return catchAll.map((p) => ({ ...p, _labelPreFiltered: true }));
 					}
 
 					// Card has no label that matches any configured project — drop.
@@ -191,9 +193,10 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 
 		const ctx: TriggerContext = { project: fullProject, source: 'trello', payload };
 		return withTrelloCredentials(trelloCreds, async () => {
-			// Secondary label guard: resolveAllProjects pre-filters by label, but this
-			// check ensures correctness even when pre-filtering was skipped (e.g. API error).
-			if (project.trello?.requiredLabelId && event.workItemId) {
+			// Secondary label guard: ensures correctness when resolveAllProjects errored and
+			// returned all candidates unfiltered. Skipped when _labelPreFiltered is set,
+			// meaning resolveAllProjects already verified the label (avoids a duplicate getCard call).
+			if (project.trello?.requiredLabelId && event.workItemId && !project._labelPreFiltered) {
 				const hasLabel = await checkCardHasRequiredLabel(
 					event.workItemId,
 					project.trello.requiredLabelId,

@@ -555,6 +555,22 @@ describe('processRouterWebhook', () => {
 			expect(addJob).not.toHaveBeenCalled();
 		});
 
+		it('short-circuits as "no project config found" when resolveAllProjects returns []', async () => {
+			// resolveAllProjects returning [] means the event was definitively filtered
+			// (e.g. card lacks required label). Should NOT fall through to resolveProject.
+			const adapter = makeMockAdapter({
+				resolveAllProjects: vi.fn().mockResolvedValue([]),
+				resolveProject: vi.fn().mockResolvedValue(project1), // must NOT be called
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+			expect(result.shouldProcess).toBe(true);
+			expect(result.decisionReason).toMatch(/No project config for identifier/);
+			expect(adapter.resolveProject).not.toHaveBeenCalled();
+			expect(adapter.dispatchWithCredentials).not.toHaveBeenCalled();
+			expect(addJob).not.toHaveBeenCalled();
+		});
+
 		it('falls back to resolveProject when resolveAllProjects not implemented', async () => {
 			const triggerResult = { agentType: 'implementation', agentInput: {} };
 			vi.mocked(addJob).mockResolvedValue('job-1');
