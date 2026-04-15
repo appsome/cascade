@@ -25,11 +25,12 @@ function makeGraphQLErrorResponse(message: string) {
 	};
 }
 
-function makeHttpErrorResponse(status: number) {
+function makeHttpErrorResponse(status: number, body = '') {
 	return {
 		ok: false,
 		status,
 		json: vi.fn().mockResolvedValue({}),
+		text: vi.fn().mockResolvedValue(body),
 	};
 }
 

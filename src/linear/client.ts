@@ -5,7 +5,8 @@
  * are scoped per-request via withLinearCredentials().
  *
  * API endpoint: https://api.linear.app/graphql
- * Auth: Authorization: Bearer <api_key>
+ * Auth: Authorization: <api_key>  (personal API keys are sent bare; `Bearer`
+ * is OAuth-only and triggers HTTP 400 with personal keys.)
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -68,7 +69,8 @@ async function linearGraphQL<T>(query: string, variables?: Record<string, unknow
 	});
 
 	if (!response.ok) {
-		throw new Error(`Linear API HTTP error ${response.status}`);
+		const body = await response.text().catch(() => '<no body>');
+		throw new Error(`Linear API HTTP error ${response.status}: ${body}`);
 	}
 
 	const json = (await response.json()) as GraphQLResponse<T>;

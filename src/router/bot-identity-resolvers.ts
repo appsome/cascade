@@ -95,7 +95,8 @@ export async function resolveLinearBotUserId(projectId: string): Promise<string 
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
-				Authorization: `Bearer ${creds.apiKey}`,
+				// Linear personal API keys are sent bare; `Bearer` is OAuth-only.
+				Authorization: creds.apiKey,
 			},
 			body: JSON.stringify({ query: '{ viewer { id } }' }),
 		});
