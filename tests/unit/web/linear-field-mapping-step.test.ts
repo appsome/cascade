@@ -80,12 +80,36 @@ describe('LinearFieldMappingStep — status slots', () => {
 	it('reflects persisted mappings on initial render', () => {
 		const html = render({
 			linearStatusMappings: {
-				splitting: 'Splitting',
-				planning: 'Planning',
+				splitting: 'st-sp',
+				planning: 'st-pl',
 			},
 		});
 		// The persisted values should appear as selected option values.
-		expect(html).toContain('value="Splitting"');
-		expect(html).toContain('value="Planning"');
+		expect(html).toContain('value="st-sp"');
+		expect(html).toContain('value="st-pl"');
+	});
+
+	// Regression: Linear webhooks deliver workflow-state UUIDs in `data.stateId`,
+	// not display names. Storing names in the mapping makes the trigger handler's
+	// strict equality check (src/triggers/linear/status-changed.ts) silently no-op.
+	it('uses state IDs (not names) as dropdown option values', () => {
+		const html = render();
+		// Each Linear workflow state's ID must appear as an option value.
+		for (const id of ['st-bl', 'st-sp', 'st-pl', 'st-td', 'st-ip', 'st-ir', 'st-dn', 'st-mg']) {
+			expect(html, `option value="${id}" missing`).toContain(`value="${id}"`);
+		}
+		// State names must NOT appear as option values (they may still be option labels).
+		for (const name of [
+			'Backlog',
+			'Splitting',
+			'Planning',
+			'Todo',
+			'In Progress',
+			'In Review',
+			'Done',
+			'Merged',
+		]) {
+			expect(html, `state name "${name}" must not be a value`).not.toContain(`value="${name}"`);
+		}
 	});
 });
