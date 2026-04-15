@@ -172,10 +172,13 @@ export function LinearFieldMappingStep({
 						<FieldMappingRow
 							key={slot}
 							slotLabel={slot}
+							// Linear webhooks deliver state UUIDs in data.stateId; the
+							// status-changed trigger does strict-equality matching, so
+							// the saved mapping value MUST be the state ID, not the name.
 							options={
 								state.linearTeamDetails?.states.map((s) => ({
 									label: s.name,
-									value: s.name,
+									value: s.id,
 								})) ?? []
 							}
 							value={state.linearStatusMappings[slot] ?? ''}
