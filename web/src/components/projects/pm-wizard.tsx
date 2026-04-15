@@ -30,6 +30,7 @@ import {
 	areCredentialsReady,
 	buildEditState,
 	createInitialState,
+	deriveActiveWebhooks,
 	isStep1Complete,
 	isStep2Complete,
 	isStep3Complete,
@@ -56,6 +57,23 @@ const STEP_TITLES = [
 	'Webhooks',
 	'Save',
 ] as const;
+
+const PROVIDER_LABELS: Record<'trello' | 'jira' | 'linear', string> = {
+	trello: 'Trello',
+	jira: 'JIRA',
+	linear: 'Linear',
+};
+
+function confirmProviderSwitch(
+	from: 'trello' | 'jira' | 'linear',
+	to: 'trello' | 'jira' | 'linear',
+): boolean {
+	return window.confirm(
+		`Switch PM provider from ${PROVIDER_LABELS[from]} to ${PROVIDER_LABELS[to]}?\n\n` +
+			`You'll need to re-enter credentials and re-map fields for ${PROVIDER_LABELS[to]}. ` +
+			`The old provider's credentials will be deleted when you save.`,
+	);
+}
 
 // ============================================================================
 // Main PMWizard Component
@@ -205,20 +223,7 @@ export function PMWizard({
 	}
 
 	// ---- Active webhooks for this provider ----
-	const activeWebhooks =
-		state.provider === 'trello'
-			? (webhooksQuery.data?.trello ?? []).map((w) => ({
-					id: String(w.id),
-					url: w.callbackURL,
-					active: w.active,
-				}))
-			: state.provider === 'jira'
-				? (webhooksQuery.data?.jira ?? []).map((w) => ({
-						id: String(w.id),
-						url: w.url,
-						active: w.enabled,
-					}))
-				: []; // Linear: webhooks are configured manually
+	const activeWebhooks = deriveActiveWebhooks(state.provider, webhooksQuery.data);
 
 	// ---- Render ----
 
@@ -239,8 +244,9 @@ export function PMWizard({
 							<button
 								key={p}
 								type="button"
-								disabled={state.isEditing}
 								onClick={() => {
+									if (p === state.provider) return;
+									if (state.isEditing && !confirmProviderSwitch(state.provider, p)) return;
 									dispatch({ type: 'SET_PROVIDER', provider: p });
 									advanceToStep(2);
 								}}
@@ -248,9 +254,9 @@ export function PMWizard({
 									state.provider === p
 										? 'border-primary bg-primary/5 text-foreground'
 										: 'border-input text-muted-foreground hover:text-foreground hover:bg-accent/50'
-								} ${state.isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
+								}`}
 							>
-								{p === 'trello' ? 'Trello' : p === 'jira' ? 'JIRA' : 'Linear'}
+								{PROVIDER_LABELS[p]}
 							</button>
 						))}
 					</div>

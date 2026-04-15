@@ -41,6 +41,18 @@ Projects are configured in the PostgreSQL database (`projects` table). Each proj
 
 ## Development
 
+### PR Checkout (worker)
+
+The worker checks out PRs via the canonical `refs/pull/N/head` ref — works for both same-repo branches and external-fork branches. When `prNumber` is set on `AgentInput`, `setupRepository`:
+
+1. Fetches `+refs/pull/<N>/head:refs/remotes/pr/<N>` from `origin`.
+2. Detached-checks out `pr/<N>`.
+3. If `headSha` is also set on `AgentInput`, verifies `git rev-parse HEAD` matches.
+
+Any non-zero git exit code throws — there is no warn-and-continue in setup. Failed runs are marked failed in the dashboard rather than proceeding on a stale or wrong working tree.
+
+The legacy `prBranch` field is retained for human-readable logging but is **not** used to drive checkout (fork branches don't exist on `origin` and the by-name path silently 404s).
+
 ### Testing
 
 > **For a full catalog of test helpers, factory functions, and mock objects**, see [`tests/README.md`](tests/README.md).
@@ -758,6 +770,14 @@ CASCADE integrates llmist's resilience features to ensure reliable operation dur
 **Monitoring**: Check `llmist-*.log` for rate limiting events. Compaction events are logged to main agent logs with details (tokens saved, reduction percentage, messages removed).
 
 ## Debugging Production Sessions
+
+### Review Agent — Context Shape
+
+The review agent receives a **compact per-file diff context** rather than full file contents. Each changed file appears as a `### <filename> (<status>, +N -M)` section followed by a unified diff hunk. The budget is `REVIEW_DIFF_CONTEXT_TOKEN_LIMIT` (200,000 tokens), with a per-file cap of 10% of that.
+
+Files that can't fit (deleted, binary, oversized patch, or budget exhausted) are surfaced via a separate `SKIPPED FILES` injection. The injection is self-documenting: it lists each filename + reason and instructs the agent to fetch on demand using `gh pr diff <PR_NUMBER> -- <path>`, `Read <path>`, or `Grep <pattern> <path>`.
+
+When debugging review-agent output that misses something, check the `PR context prepared` log entry for `included`/`skipped`/`skipReasons` to confirm whether the file was even visible to the agent.
 
 ### Manual Session Download
 
