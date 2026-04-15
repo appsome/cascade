@@ -1,0 +1,149 @@
+---
+id: 005
+slug: linear-project-scope
+level: spec
+title: Linear PM integration — optional Project scope
+created: 2026-04-15
+status: done
+---
+
+# 005: Linear PM integration — optional Project scope
+
+## Problem & Motivation
+
+Today, when an operator connects a CASCADE project to Linear, the only scoping knob in the PM wizard is **Select Team** (see the "Board / Project Selection" step). That means CASCADE responds to every issue in the selected Linear team — there is no way to say "only work within this specific Linear Project (initiative) inside the team."
+
+Linear users routinely structure work as **Projects within a team** — one project per feature, epic, or initiative. A team often contains many projects running in parallel, some of which should be automated by CASCADE and some of which should absolutely not be (e.g. a separate project run by a different sub-team, or an exploratory project where automation isn't desired). The current team-only scope forces operators into an all-or-nothing choice that doesn't match how they actually organize work in Linear.
+
+The fix is to let operators optionally narrow a CASCADE project's scope to a specific **Linear Project** inside the selected team. When a project is chosen, CASCADE only sees, lists, and acts on issues that belong to that Linear Project. When no project is chosen, behavior is unchanged from today (full-team scope). This brings the integration into line with the Trello ("Select board") and JIRA ("Select project") flows, where scope is narrower than the whole tenant.
+
+---
+
+## Goals
+
+- Operators can optionally select a Linear Project when configuring a Linear-backed CASCADE project.
+- CASCADE honors the project scope across all inbound (webhook) and outbound (list, create, transition) operations.
+- Operators who don't select a project see no behavior change (fully backwards compatible).
+- The wizard clearly explains that webhook setup in Linear is unchanged — project filtering happens on CASCADE's side.
+- New issues CASCADE creates (e.g. sub-issues for checklists) inherit the configured Linear Project so children stay in-scope.
+
+---
+
+## Non-goals
+
+- **Linear Initiatives as a scope** (the level above Projects). Not supported in v1.
+- **Multi-team projects.** A Linear Project can span multiple teams, but v1 only handles the **intersection of the selected team and the selected project**. Issues in the chosen project that live in a *different* team are ignored.
+- **Status mapping per project.** Linear's workflow states are defined per team, not per project. Status mappings stay team-scoped. No "override statuses for this project" feature.
+- **"Not in any project" filtering.** v1 has two modes: no project selected (full team) or one project selected (that project only). There is no "only issues without a project" mode.
+- **Workspace-level labels** as a scope source. Label config stays team-scoped as today.
+- **Project labels** (Linear's separate concept where labels are applied to the *project* entity, not issues in it). Out of scope.
+- **Linear-side webhook reconfiguration.** Linear webhooks cannot be scoped to a project at their end; CASCADE continues to assume a team-or-org-scoped webhook and filters in code.
+
+---
+
+## Constraints
+
+- **Linear data model constraint:** Every Linear issue belongs to exactly one team, identifiers like `ENG-123` derive from the team key. Projects are an optional grouping. Workflow states are team-scoped. None of this can be worked around.
+- **Linear webhook constraint:** Webhooks can only be configured for a single team or "all public teams" — never for a specific project. Project-level filtering must happen in the consumer.
+- **Backwards compatibility:** Every existing Linear-connected CASCADE project must continue to work with zero operator action. "No project selected" is a valid, supported state forever.
+- **CASCADE architectural alignment:** The solution must fit the existing PM integration abstraction (`PMIntegration`, `PMProvider`, `ProjectPMConfig`, `RouterPlatformAdapter`) without adding a new category or shared-layer branch for Linear.
+- **Stateless project-membership evaluation:** CASCADE must not maintain a cached list of "issues currently in the scoped project." Project membership is determined per-event from the webhook payload / API response.
+
+---
+
+## User stories / Requirements
+
+1. **As an operator configuring Linear**, I can select a Team (required) and optionally narrow the scope to a Linear Project within that team.
+2. **As an operator**, when I don't select a project, CASCADE behaves exactly as it does today — full-team scope.
+3. **As an operator**, the project dropdown shows me only projects that are accessible to the selected team, and I can search by name.
+4. **As an operator**, I can change or clear the project selection later and have the new scope take effect on subsequent events.
+5. **As an operator**, the wizard tells me that my Linear webhook setup doesn't change when I add a project scope — the filter is applied on CASCADE's side.
+6. **As CASCADE**, when a webhook arrives for an issue whose current project doesn't match the configured scope, I ignore the event and record a log entry explaining why.
+7. **As CASCADE**, when I list issues (e.g. to back a trigger or an agent query), I scope the listing to the configured Linear Project.
+8. **As CASCADE**, when I create a new issue (including sub-issues for checklist items), the new issue is placed into the configured Linear Project.
+9. **As CASCADE**, when the operator has configured a project scope but a webhook event's issue has no project or belongs to a different one, my acknowledgment and triage behavior does not fire — the event is silently dropped at the scope filter layer, not surfaced to agents.
+10. **As an operator with an existing Linear integration (no project scope)**, I see no change in behavior and no forced migration.
+
+---
+
+## Research Notes
+
+- **Linear's conceptual model:** Issues belong to a team (mandatory). Projects are optional groupings that can span teams, but each issue still has exactly one team. Workflow states are defined per team; labels exist at team or workspace level. [Linear docs: Concepts](https://linear.app/docs/conceptual-model), [Teams](https://linear.app/docs/teams), [Projects](https://linear.app/docs/projects).
+- **Project statuses are not issue statuses.** Linear added "Custom statuses for projects" (Backlog / Planned / In Progress / Completed / Canceled) in 2024, but these describe the *project initiative* and are updated manually — they do not drive issue status transitions. Integrations automate *issue* status, not project status. [Custom statuses for projects](https://linear.app/changelog/2024-03-19-custom-statuses-for-projects), [Project status docs](https://linear.app/docs/project-status).
+- **Webhook scoping:** Linear webhooks can be configured for a single team (`teamId`) or all public teams (`allPublicTeams: true`). There is no `projectId` option. [Linear webhooks](https://linear.app/developers/webhooks).
+- **GraphQL filtering by project is supported.** Issues can be filtered by nested project relationships using the standard filter DSL. [Linear GraphQL filtering](https://linear.app/developers/filtering).
+- **Cross-team projects are native.** Introduced in 2020, a project can have multiple associated teams; the UI surfaces per-team tabs. CASCADE's v1 intersection model is the simplest valid subset of this behavior. [Cross-team projects changelog](https://linear.app/changelog/2020-03-27).
+- **Labels** live at team or workspace level; sub-teams inherit from parents. [Labels docs](https://linear.app/docs/labels), [Sub-teams](https://linear.app/docs/sub-teams).
+
+---
+
+## Open Source Decisions
+
+| Tool | Solves | Decision | Reason |
+|------|--------|----------|--------|
+| [`@linear/sdk`](https://github.com/linear/linear-sdk) (official SDK) | GraphQL wrapper | **Skip** | CASCADE already has a hand-written Linear GraphQL client in the codebase; continue extending it rather than introducing a second dependency path. |
+| [Linear Zapier integration](https://github.com/linear/linear-zapier) reference | Implementation patterns for team/project scoping | **Reference only** | Read it to sanity-check our scope filtering, do not import. |
+
+No new runtime dependencies. This change is pure feature work on top of the existing Linear client and PM integration layer.
+
+---
+
+## Strategic decisions
+
+1. **Team is required, Project is optional (additive narrowing).** Team stays the primary scope (it's mandatory in Linear's model for issue creation, status mapping, and label config). Project, if set, is an additional filter. Rejected: making Project the primary selector — it doesn't fit Linear's model because statuses/labels are team-scoped and issues must have a team.
+
+2. **Cross-team projects are handled by intersection in v1.** If a chosen Linear Project spans the configured team and one or more sibling teams, CASCADE responds only to the Team ∩ Project intersection. Sibling-team issues inside the same project are ignored. Multi-team-in-project support is a future spec. Reason: keeps status mapping single-team and avoids compounding the config surface.
+
+3. **Project filtering happens in CASCADE, not in Linear.** Webhooks remain team- or org-scoped at Linear's end; CASCADE inspects each incoming event's payload and drops events whose issue is outside the scoped project. Reason: Linear does not expose project-level webhook scoping, so there is no alternative.
+
+4. **Project membership is evaluated per-event and stateless.** Each webhook or API response is judged against the currently-configured scope using the issue's current `projectId` at the time of the event. No persistent "tracked issues" set. Reason: matches how the team-only filter works today, keeps the runtime simple, and naturally handles issues being added/removed from the project.
+
+5. **New issues CASCADE creates inherit the configured project.** Sub-issues (used for checklists), agent-created issues, and any other creation path set `projectId` alongside `teamId`. Reason: otherwise children would fall outside the scope and webhook events for them would be silently dropped — confusing and broken.
+
+6. **Backwards compatibility is free.** The project scope is nothing more than an optional field on the Linear PM config. Absence = existing behavior, presence = scoped behavior. No migration, no env-var toggle, no feature flag. Reason: every existing Linear integration must keep working unchanged.
+
+7. **Wizard surfaces the project selector in the existing "Board / Project Selection" step.** No new step. The project dropdown appears below the team dropdown, disabled until a team is chosen, with copy that makes the optional nature obvious. Reason: matches the existing Trello/JIRA flow and avoids wizard sprawl.
+
+8. **Wizard copy explicitly clarifies the webhook setup is unchanged.** The existing `LinearWebhookInfoPanel` gets a short note explaining that project filtering is applied by CASCADE after the webhook fires, so operators don't try to find a (non-existent) project-level webhook option in Linear. Reason: pre-empt a predictable support question.
+
+---
+
+## Acceptance Criteria (outcome-level)
+
+1. In the PM wizard, selecting a Team enables an optional "Linear Project" selector populated with that team's projects; leaving it empty preserves today's full-team scope.
+2. When a project is selected and saved, reopening the wizard shows the previously chosen project pre-selected.
+3. When a project is cleared (set back to empty) and saved, the integration reverts to full-team scope with no residual project filter on any subsequent operation.
+4. Webhook events for issues whose current Linear Project matches the configured scope are processed as they are today.
+5. Webhook events for issues whose current Linear Project does **not** match the configured scope (including issues with no project) are silently dropped at the scope filter; no agent is invoked, no acknowledgment comment is posted, no reaction is sent. A log entry records that the event was dropped and why.
+6. When the configured scope is "no project" (i.e. full-team), all webhook events for the configured team are processed exactly as today, regardless of any project the issue may or may not belong to.
+7. For cross-team Linear Projects, CASCADE responds only to issues that belong to **both** the configured team and the configured project; issues in the same project but a different team are dropped as in (5).
+8. Issue-listing operations triggered by CASCADE (e.g. to enumerate work items) return only issues in the configured project when a project scope is set, and all team issues when it is not.
+9. Issues CASCADE creates — including sub-issues created for checklist items — are placed into the configured Linear Project when a project scope is set, and into no project when it is not.
+10. Configuring a Linear integration without a project scope works end-to-end with no behavior change from the current release, for both new and existing projects.
+11. The wizard step that explains Linear webhook setup includes copy clarifying that project filtering is performed by CASCADE (not by Linear webhook config), so operators do not look for a Linear-side project-scoping option that does not exist.
+12. Clearing and re-selecting a different project results in the new scope taking effect on the next inbound event, with no stale state from the previous project influencing routing.
+
+---
+
+## Documentation Impact (high-level)
+
+- **Integration architecture README** — Linear operator setup section: mention the new optional project scope and where it lives in the wizard.
+- **Top-level CLAUDE.md** — update any Linear-related invariants if relevant (e.g. the fact that project scope is a valid optional config now).
+- **PM wizard copy** (Linear steps) — the "Board / Project Selection" step needs to surface the new Project selector and explain the opt-in, optional nature. Per-file edits belong in the plan.
+- **PM wizard info panel** (Linear webhook setup) — add the clarifying sentence about where project filtering happens (in CASCADE, not in Linear's webhook config). Per-file edits belong in the plan.
+- **CHANGELOG** — add an entry noting the optional Linear Project scope.
+
+Per-file granular documentation impact is deferred to the downstream plans.
+
+---
+
+## Out of Scope
+
+- Linear **Initiatives** as a CASCADE scope selector.
+- **Multi-team project scoping** (responding to issues across all teams in a project with per-team status maps).
+- **"No project" as an explicit filter** (issues not belonging to any project as a first-class scope).
+- **Project-level label configuration** (using Linear's "Project labels" concept).
+- **Workspace-level labels** as an alternative to team labels.
+- **Migration tooling** to move existing Linear integrations from team-only to team+project scope (not needed — the change is purely additive and opt-in).
+- Any change to the **webhook signature verification, ack comment, or reaction** behavior beyond the project-scope filter gating whether those fire.
+- Any change to how **status mappings** are configured (they stay team-scoped).
