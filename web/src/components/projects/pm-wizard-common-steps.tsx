@@ -148,6 +148,12 @@ export function LinearWebhookInfoPanel({
 					</li>
 				</ol>
 			</div>
+
+			<p className="text-xs text-muted-foreground">
+				If you also set a Linear <strong>project scope</strong> in the Board / Project Selection
+				step, CASCADE applies that filter on its side after receiving each webhook — your Linear
+				webhook configuration stays team-scoped and unchanged.
+			</p>
 		</div>
 	);
 }

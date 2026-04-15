@@ -1,0 +1,206 @@
+---
+id: 005
+slug: linear-project-scope
+plan: 2
+plan_slug: webhook-scope-filter-and-discovery
+level: plan
+parent_spec: docs/specs/005-linear-project-scope.md
+depends_on: [1-scope-config-and-outbound.md]
+status: done
+---
+
+# 005/2: Webhook scope filter + `linearProjects` discovery endpoint
+
+> Part 2 of 3 in the 005-linear-project-scope plan. See [parent spec](../../specs/005-linear-project-scope.md).
+
+## Summary
+
+This plan adds the inbound half of the feature: the `LinearRouterAdapter.parseWebhook()` drop path that silently ignores events whose issue is outside the configured project scope, and the tRPC discovery endpoint the wizard will call in plan 3 to populate its project dropdown.
+
+After this plan, a CASCADE project with a `projectId` manually set in its `project_integrations.config` JSONB will start ignoring webhook events for issues that don't belong to that project — with a distinct log entry — while a CASCADE project without `projectId` continues to behave exactly as today. The behavior is verifiable via unit tests and by curl/database smoke tests; no UI is required. Plan 3 wires the wizard so operators can actually save a `projectId`.
+
+**Components delivered:**
+- `src/router/adapters/linear.ts` — `parseWebhook` reads `linearConfig.projectId` from the resolved project and drops events whose issue `projectId` does not match. Log line makes the drop reason obvious.
+- `src/api/routers/integrationsDiscovery.ts` — two new procedures: `linearProjects` (raw credentials) and `linearProjectsByProject` (stored-credential variant), mirroring the existing `linearTeams` / `linearTeamsByProject` pattern. Both accept a `teamId` input and return `{ id: string; name: string; icon?: string; color?: string }[]`.
+- `src/linear/client.ts` — add `getTeamProjects(teamId): Promise<LinearProject[]>` GraphQL method.
+- `src/linear/types.ts` — add `LinearProject` type.
+- `tests/unit/router/adapters/linear.test.ts` — extend.
+- `tests/unit/api/routers/integrationsDiscovery.test.ts` — extend.
+- `tests/unit/linear/client.test.ts` — extend (from plan 1).
+
+**Deferred to later plans in this spec:**
+- Wizard UI project selector, state reducer updates, save payload change (plan 3).
+- `LinearWebhookInfoPanel` copy update (plan 3).
+- Operator-facing documentation: integration README, CHANGELOG user-facing notes (plan 3).
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #4** (webhook events for issues whose current Linear Project matches the configured scope are processed as today) — **full** at the router filter.
+- **Spec AC #5** (webhook events for out-of-scope issues — including issues with no project — are silently dropped; no agent invoked, no ack, no reaction; a log entry records the drop and its reason) — **full**.
+- **Spec AC #6** (when no project is configured, all team webhook events are processed as today) — **full** at the router filter; the tests assert the backwards-compatible path.
+- **Spec AC #7** (cross-team project intersection — CASCADE responds only to issues in **both** the configured team and configured project) — **full**. Because the team-match is already enforced by the existing `data.teamId` lookup in `parseWebhook`, and the new project-match filter runs against the issue's `projectId`, the two conditions compose into the intersection.
+- **Spec AC #10** (existing integrations with no project scope work unchanged) — **partial (this plan provides the router-side half; plan 1 provided the outbound half; plan 3 preserves wizard compatibility)**.
+- **Spec AC #12** (clearing and re-selecting a project takes effect on the next inbound event with no stale state) — **partial (this plan provides the backend "re-read config on every event" guarantee via the existing `loadProjectConfig()` call in `parseWebhook`; plan 3 provides the UI that lets the operator actually clear/change the scope)**.
+
+Additional (not strictly AC-mapped but required for plan 3):
+- tRPC `linearProjects` / `linearProjectsByProject` — enables the plan 3 UI to load the dropdown options.
+
+---
+
+## Depends On
+
+- Plan 1 (`scope-config-and-outbound`) — provides the `LinearConfig.projectId` field that this plan reads in `parseWebhook`.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. `linearClient.getTeamProjects()`
+
+**Tests first** (`tests/unit/linear/client.test.ts`, extend):
+- `getTeamProjects — returns mapped projects`: stub the GraphQL transport to return two project nodes, call `linearClient.getTeamProjects('T1')`, assert the result is an array of `{ id, name, icon?, color? }` with the expected fields.
+- `getTeamProjects — returns empty array when team has no projects`: stub returning `{ team: { projects: { nodes: [] } } }`, assert empty array.
+- `getTeamProjects — sends the teamId as the `id` variable`: stub transport, assert the GraphQL variables contain `{ id: 'T1' }`.
+
+**Implementation** (`src/linear/types.ts`):
+- Add a `LinearProject` interface: `{ id: string; name: string; icon?: string | null; color?: string | null }`.
+
+**Implementation** (`src/linear/client.ts`):
+- Add a new method under the `// ===== Discovery =====` region (alongside `getTeams`, `getTeamWorkflowStates`, `getTeamLabels`):
+  ```
+  async getTeamProjects(teamId: string): Promise<LinearProject[]> {
+      // GraphQL: query GetTeamProjects($id: String!) { team(id: $id) { projects { nodes { id name icon color } } } }
+  }
+  ```
+- Introduce a `PROJECT_FIELDS` fragment near the other field-set constants for readability (`id name icon color` — nothing more in v1; Linear project statuses and labels are out of scope here).
+
+### 2. `linearProjects` / `linearProjectsByProject` tRPC procedures
+
+**Tests first** (`tests/unit/api/routers/integrationsDiscovery.test.ts`, extend):
+- `linearProjects — returns team projects when api key + teamId are valid`: call the procedure with `{ apiKey: 'k', teamId: 'T1' }`, stub `linearClient.getTeamProjects`, assert response matches the stub payload.
+- `linearProjects — throws INVALID_ARGUMENT when teamId is missing or empty`: zod validation rejects empty string.
+- `linearProjectsByProject — resolves api key from stored credentials and returns projects`: existing fixture with a Linear PM integration; assert the procedure looks up the key via the credentials repository and calls `linearClient.getTeamProjects` within `withLinearCredentials`.
+- `linearProjectsByProject — returns PRECONDITION_FAILED when no PM integration exists` (mirror `linearTeamsByProject` semantics).
+- `linearProjectsByProject — returns PRECONDITION_FAILED when provider is not linear`.
+
+**Implementation** (`src/api/routers/integrationsDiscovery.ts`):
+- Model on the adjacent `linearTeams` and `linearTeamsByProject` procedures. Input schemas:
+  - `linearProjects`: `linearCredsInput.extend({ teamId: z.string().min(1) })`
+  - `linearProjectsByProject`: `z.object({ projectId: z.string(), teamId: z.string().min(1) })`
+- Both procedures call `linearClient.getTeamProjects(input.teamId)` inside `withLinearCredentials({ apiKey }, ...)`, wrapped with `wrapIntegrationCall('Failed to fetch Linear projects', ...)`.
+- Return shape: the raw `LinearProject[]` (the TRPC serializer handles the rest; front-end treats it as searchable options).
+
+### 3. `LinearRouterAdapter.parseWebhook()` project-scope filter
+
+**Tests first** (`tests/unit/router/adapters/linear.test.ts`, extend):
+- Fixture: a router project config with `{ linear: { teamId: 'T1', projectId: 'P1', statuses: {} } }`.
+- Fixture: a router project config with `{ linear: { teamId: 'T1', statuses: {} } }` (no project scope).
+- `parseWebhook — Issue event with matching teamId and projectId is processed`: payload `{ type: 'Issue', action: 'update', data: { teamId: 'T1', id: 'i1', identifier: 'ENG-1', projectId: 'P1' } }`, `projectId: 'P1'` in config, expect a non-null `ParsedWebhookEvent`.
+- `parseWebhook — Issue event with matching teamId but different projectId is dropped`: payload `data.projectId = 'P2'`, `config.projectId = 'P1'`, expect `null` and a log entry whose message contains "project scope" and whose meta contains `{ configuredProjectId: 'P1', issueProjectId: 'P2', issueId: 'i1' }`.
+- `parseWebhook — Issue event with no projectId in payload is dropped when config.projectId is set`: payload `data.projectId` undefined, `config.projectId = 'P1'`, expect `null` and a log entry citing "issue has no project".
+- `parseWebhook — Issue event is processed when config has no projectId (current behavior)`: `config.projectId` undefined regardless of `data.projectId`, expect non-null event.
+- `parseWebhook — Comment event inspects issue.projectId`: payload `{ type: 'Comment', action: 'create', data: { issueId: 'i1', issue: { teamId: 'T1', projectId: 'P1' } } }` processed when `config.projectId === 'P1'`, dropped when `config.projectId === 'P2'`.
+- `parseWebhook — IssueLabel event inspects issue.projectId`: mirror the Comment case for IssueLabel payloads (Linear sends `data.issue.projectId` for label events too).
+- `parseWebhook — cross-team intersection: Issue event in matching project but mismatched teamId is dropped by the existing teamId lookup`: `data.teamId = 'T2'`, `config.teamId = 'T1'`, expect `null` (existing behavior unchanged — the project filter runs *after* the team-match, so sibling-team issues in the same project never survive).
+
+**Implementation** (`src/router/adapters/linear.ts`):
+- In `parseWebhook`, after the existing project lookup (`const project = config.projects.find((proj) => proj.linear?.teamId === teamId);`) and before the `isCommentEvent` branch, inspect `project.linear?.projectId`. If it is set, compute the payload's `issueProjectId`:
+  - For `Issue` / `IssueLabel` events: `data.projectId` (string | undefined).
+  - For `Comment` events: `(data.issue as Record<string, unknown>)?.projectId` (string | undefined).
+- If `project.linear.projectId !== issueProjectId`, log at `info` level with `{ reason: 'project scope mismatch' | 'issue has no project', configuredProjectId, issueProjectId, issueId, teamId, projectId: project.id, eventType: '${action}/${type}' }` and return `null`.
+- If `project.linear.projectId` is unset/empty, skip the filter entirely and preserve today's behavior.
+- Place the filter **before** building the `ParsedWebhookEvent` return value so no downstream step (self-authored check, reaction, dispatch, ack) fires for out-of-scope events.
+
+### 4. Log contract verification
+
+**Tests first** (same file):
+- `parseWebhook drop — log message matches agreed contract`: spy on `logger.info`, assert it was called with a message starting with `'LinearRouterAdapter: dropping event'` (exact wording is a convention, not a spec requirement, but pin it in tests so future changes are intentional).
+- `parseWebhook drop — log meta is useful for debugging`: assert the meta object contains the required fields listed above.
+
+**Implementation:**
+- Match the message text pinned by the test. No separate code change.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/linear/client.test.ts`: 3 tests for `getTeamProjects`.
+- [ ] `tests/unit/api/routers/integrationsDiscovery.test.ts`: 5 tests across `linearProjects` + `linearProjectsByProject`.
+- [ ] `tests/unit/router/adapters/linear.test.ts`: 8 tests covering the project-scope filter across Issue / Comment / IssueLabel events, match / mismatch / missing-projectId / no-scope-configured / cross-team.
+
+### Integration tests
+- None. The router filter is pure logic driven by the payload and the project config; no live Linear or DB fixture adds coverage.
+
+### Acceptance tests
+- [x] AC #1 (plan-AC): `parseWebhook` returns the same event shape as before when no project scope is configured.
+- [x] AC #2 (plan-AC): `parseWebhook` returns `null` and logs a drop entry for Issue/Comment/IssueLabel events whose issue is outside the configured project.
+- [x] AC #3 (plan-AC): The cross-team intersection is enforced because the teamId lookup runs before the project filter.
+- [x] AC #4 (plan-AC): `linearProjects` / `linearProjectsByProject` tRPC procedures return a list of `{ id, name, icon?, color? }` for the given team.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `linearClient.getTeamProjects(teamId)` returns an array of `{ id, name, icon?, color? }` for the given team via GraphQL.
+2. The tRPC router exposes `linearProjects` (raw credentials + teamId) and `linearProjectsByProject` (stored credentials + teamId) procedures that both return the team's projects.
+3. `LinearRouterAdapter.parseWebhook()` returns `null` for any Issue, Comment, or IssueLabel webhook whose issue's `projectId` does not equal the configured `LinearConfig.projectId` — including events for issues with no project.
+4. When `LinearConfig.projectId` is unset, `LinearRouterAdapter.parseWebhook()` produces exactly the same output it did before this plan (snapshot-equivalent for all existing test fixtures).
+5. Drop events produce a log entry at `info` level whose message identifies the drop and whose meta includes `configuredProjectId`, `issueProjectId`, `issueId`, `teamId`, `projectId` (CASCADE project), and `eventType`.
+6. The cross-team-project intersection holds: an issue whose `teamId` does not match `config.teamId` is dropped by the existing team lookup, so project-scoped filtering never sees sibling-team events.
+7. `linearProjectsByProject` returns `PRECONDITION_FAILED` when the project has no PM integration configured, and when the integration is not `linear`.
+8. All new/modified code has corresponding tests.
+9. `npm run build` passes.
+10. `npm test` passes.
+11. `npm run lint` passes.
+12. `npm run typecheck` passes.
+
+**Partial-state criterion:**
+- No wizard change yet — operators cannot save a `projectId` via the UI. A `projectId` can only be set by direct DB edit for smoke-testing. Plan 3 wires this properly.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `CHANGELOG.md` | Add a line under Unreleased: "Linear PM: router drops webhook events whose issue is outside the configured Linear Project scope; `linearProjects` tRPC discovery endpoint added for the wizard." |
+
+No README updates in this plan. The integration README + `CLAUDE.md` update + operator-facing wizard/webhook-panel copy all land together in plan 3.
+
+---
+
+## Out of Scope (this plan)
+
+- **Wizard UI project selector** — deferred to plan 3.
+- **Save payload change in the wizard** — deferred to plan 3.
+- **`LinearWebhookInfoPanel` copy update** — deferred to plan 3.
+- **Integration README update** — deferred to plan 3.
+- Linear **Initiatives** as a CASCADE scope selector (spec-level out of scope).
+- **Multi-team project scoping** (spec-level out of scope).
+- **"No project" as an explicit filter** (spec-level out of scope).
+- **Project-level label configuration** (spec-level out of scope).
+- **Workspace-level labels** as an alternative to team labels (spec-level out of scope).
+- **Migration tooling** (spec-level out of scope — change is purely additive).
+- Any change to **webhook signature verification, ack comment, or reaction** behavior beyond the scope-filter gating (spec-level out of scope).
+- Any change to **status mapping** configuration (spec-level out of scope).
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1
+- [x] AC #2
+- [x] AC #3
+- [x] AC #4
+- [x] AC #5
+- [x] AC #6
+- [x] AC #7
+- [x] AC #8
+- [x] AC #9
+- [x] AC #10
+- [x] AC #11
+- [x] AC #12

@@ -17,6 +17,7 @@ import type {
 	LinearCredentials,
 	LinearIssue,
 	LinearLabel,
+	LinearProject,
 	LinearReaction,
 	LinearTeam,
 	LinearUpdateIssueInput,
@@ -248,6 +249,13 @@ const TEAM_FIELDS = `
 	description
 `;
 
+const PROJECT_FIELDS = `
+	id
+	name
+	icon
+	color
+`;
+
 const ISSUE_FIELDS = `
 	id
 	identifier
@@ -295,6 +303,7 @@ export const linearClient = {
 
 	async listIssues(filter?: {
 		teamId?: string;
+		projectId?: string;
 		assigneeId?: string;
 		stateId?: string;
 		first?: number;
@@ -303,6 +312,7 @@ export const linearClient = {
 
 		const filterObj: Record<string, unknown> = {};
 		if (filter?.teamId) filterObj.team = { id: { eq: filter.teamId } };
+		if (filter?.projectId) filterObj.project = { id: { eq: filter.projectId } };
 		if (filter?.assigneeId) filterObj.assignee = { id: { eq: filter.assigneeId } };
 		if (filter?.stateId) filterObj.state = { id: { eq: filter.stateId } };
 
@@ -648,6 +658,36 @@ export const linearClient = {
 				description?: string | null;
 			}>
 		).map(mapLabel);
+	},
+
+	async getTeamProjects(teamId: string, first = 250): Promise<LinearProject[]> {
+		logger.debug('Fetching Linear team projects', { teamId, first });
+		const data = await linearGraphQL<{
+			team: { projects: { nodes: unknown[] } } | null;
+		}>(
+			`query GetTeamProjects($id: String!, $first: Int) {
+				team(id: $id) {
+					projects(first: $first) {
+						nodes {
+							${PROJECT_FIELDS}
+						}
+					}
+				}
+			}`,
+			{ id: teamId, first },
+		);
+		const nodes = (data.team?.projects.nodes ?? []) as Array<{
+			id?: string;
+			name?: string;
+			icon?: string | null;
+			color?: string | null;
+		}>;
+		return nodes.map((n) => ({
+			id: n.id ?? '',
+			name: n.name ?? '',
+			icon: n.icon ?? null,
+			color: n.color ?? null,
+		}));
 	},
 
 	// ===== User =====

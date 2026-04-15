@@ -37,6 +37,13 @@ export interface LinearTeamOption {
 	key: string;
 }
 
+export interface LinearProjectOption {
+	id: string;
+	name: string;
+	icon: string | null;
+	color: string | null;
+}
+
 export interface LinearTeamDetails {
 	states: Array<{ id: string; name: string; type: string }>;
 	labels: Array<{ id: string; name: string; color: string }>;
@@ -62,6 +69,8 @@ export interface WizardState {
 	jiraProjects: JiraProjectOption[];
 	linearTeamId: string;
 	linearTeams: LinearTeamOption[];
+	linearProjectId: string;
+	linearProjects: LinearProjectOption[];
 	// Step 4: Field mapping
 	trelloBoardDetails: TrelloBoardDetails | null;
 	jiraProjectDetails: JiraProjectDetails | null;
@@ -109,6 +118,8 @@ export type WizardAction =
 	| { type: 'SET_LINEAR_TEAMS'; teams: LinearTeamOption[] }
 	| { type: 'SET_LINEAR_TEAM_ID'; id: string }
 	| { type: 'SET_LINEAR_TEAM_DETAILS'; details: LinearTeamDetails | null }
+	| { type: 'SET_LINEAR_PROJECTS'; projects: LinearProjectOption[] }
+	| { type: 'SET_LINEAR_PROJECT_ID'; value: string }
 	| { type: 'SET_TRELLO_BOARD_DETAILS'; details: TrelloBoardDetails | null }
 	| { type: 'SET_JIRA_PROJECT_DETAILS'; details: JiraProjectDetails | null }
 	| { type: 'SET_TRELLO_LIST_MAPPING'; key: string; value: string }
@@ -165,6 +176,8 @@ export function createInitialState(): WizardState {
 		jiraProjects: [],
 		linearTeamId: '',
 		linearTeams: [],
+		linearProjectId: '',
+		linearProjects: [],
 		trelloBoardDetails: null,
 		jiraProjectDetails: null,
 		linearTeamDetails: null,
@@ -266,7 +279,16 @@ export const wizardReducer: Reducer<WizardState, WizardAction> = (state, action)
 				linearTeamId: action.id,
 				linearTeamDetails: null,
 				linearStatusMappings: {},
+				// A new team invalidates the project list and any chosen project —
+				// Linear projects are team-scoped, so the previous selection is
+				// not guaranteed to belong to the new team.
+				linearProjectId: '',
+				linearProjects: [],
 			};
+		case 'SET_LINEAR_PROJECTS':
+			return { ...state, linearProjects: action.projects };
+		case 'SET_LINEAR_PROJECT_ID':
+			return { ...state, linearProjectId: action.value };
 		case 'SET_LINEAR_TEAM_DETAILS':
 			return { ...state, linearTeamDetails: action.details };
 		case 'SET_TRELLO_BOARD_DETAILS':
@@ -405,6 +427,7 @@ export function buildEditState(
 			configuredKeys.has('JIRA_EMAIL') && configuredKeys.has('JIRA_API_TOKEN');
 	} else if (provider === 'linear') {
 		editState.linearTeamId = (initialConfig.teamId as string) ?? '';
+		editState.linearProjectId = (initialConfig.projectId as string) ?? '';
 
 		const statuses = initialConfig.statuses as Record<string, string> | undefined;
 		if (statuses) editState.linearStatusMappings = statuses;
@@ -454,6 +477,19 @@ export function areCredentialsReady(state: WizardState): boolean {
 	if (state.provider === 'jira')
 		return !!(state.jiraEmail && state.jiraApiToken && state.jiraBaseUrl);
 	return !!state.linearApiKey;
+}
+
+/**
+ * Build the Linear integration config payload from wizard state.
+ * Pure function so it can be unit-tested without the React runtime.
+ */
+export function buildLinearIntegrationConfig(state: WizardState): Record<string, unknown> {
+	return {
+		teamId: state.linearTeamId,
+		...(state.linearProjectId ? { projectId: state.linearProjectId } : {}),
+		statuses: state.linearStatusMappings,
+		...(Object.keys(state.linearLabels).length > 0 ? { labels: state.linearLabels } : {}),
+	};
 }
 
 /**

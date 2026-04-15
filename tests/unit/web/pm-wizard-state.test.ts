@@ -6,6 +6,7 @@ import type {
 import {
 	areCredentialsReady,
 	buildEditState,
+	buildLinearIntegrationConfig,
 	createInitialState,
 	deriveActiveWebhooks,
 	INITIAL_JIRA_LABELS,
@@ -705,6 +706,140 @@ describe('buildEditState', () => {
 		const result = buildEditState('unknown', {}, new Set<string>());
 		expect(result.provider).toBe('unknown');
 		expect(Object.keys(result).length).toBe(1);
+	});
+});
+
+// ============================================================================
+// Linear project scope — state reducer + edit-state hydration (spec 005)
+// ============================================================================
+
+describe('Linear project scope — createInitialState', () => {
+	it('linearProjectId defaults to empty string', () => {
+		const state = createInitialState();
+		expect(state.linearProjectId).toBe('');
+	});
+
+	it('linearProjects defaults to empty array', () => {
+		const state = createInitialState();
+		expect(state.linearProjects).toEqual([]);
+	});
+});
+
+describe('Linear project scope — wizardReducer', () => {
+	function initialState(): WizardState {
+		return createInitialState();
+	}
+
+	it('SET_LINEAR_PROJECTS replaces the list', () => {
+		const result = wizardReducer(initialState(), {
+			type: 'SET_LINEAR_PROJECTS',
+			projects: [
+				{ id: 'P1', name: 'Alpha', icon: null, color: null },
+				{ id: 'P2', name: 'Beta', icon: 'rocket', color: '#f00' },
+			],
+		});
+		expect(result.linearProjects).toEqual([
+			{ id: 'P1', name: 'Alpha', icon: null, color: null },
+			{ id: 'P2', name: 'Beta', icon: 'rocket', color: '#f00' },
+		]);
+	});
+
+	it('SET_LINEAR_PROJECT_ID sets the chosen id', () => {
+		const result = wizardReducer(initialState(), {
+			type: 'SET_LINEAR_PROJECT_ID',
+			value: 'P1',
+		});
+		expect(result.linearProjectId).toBe('P1');
+	});
+
+	it('SET_LINEAR_PROJECT_ID with empty string clears selection', () => {
+		const withValue = wizardReducer(initialState(), {
+			type: 'SET_LINEAR_PROJECT_ID',
+			value: 'P1',
+		});
+		const result = wizardReducer(withValue, {
+			type: 'SET_LINEAR_PROJECT_ID',
+			value: '',
+		});
+		expect(result.linearProjectId).toBe('');
+	});
+
+	it('SET_LINEAR_TEAM_ID resets linearProjectId and linearProjects', () => {
+		// Seed state with a chosen project + loaded project list
+		const seeded: WizardState = {
+			...initialState(),
+			linearTeamId: 'OLD-TEAM',
+			linearProjectId: 'P1',
+			linearProjects: [{ id: 'P1', name: 'Alpha', icon: null, color: null }],
+		};
+		const result = wizardReducer(seeded, {
+			type: 'SET_LINEAR_TEAM_ID',
+			id: 'NEW-TEAM',
+		});
+		expect(result.linearTeamId).toBe('NEW-TEAM');
+		expect(result.linearProjectId).toBe('');
+		expect(result.linearProjects).toEqual([]);
+	});
+});
+
+describe('Linear project scope — buildEditState hydration', () => {
+	it('hydrates linearProjectId from initialConfig.projectId when present', () => {
+		const result = buildEditState(
+			'linear',
+			{ teamId: 'T1', projectId: 'P1', statuses: {} },
+			new Set(['LINEAR_API_KEY']),
+		);
+		expect(result.linearProjectId).toBe('P1');
+	});
+
+	it('leaves linearProjectId unset when initialConfig has no projectId', () => {
+		const result = buildEditState(
+			'linear',
+			{ teamId: 'T1', statuses: {} },
+			new Set(['LINEAR_API_KEY']),
+		);
+		expect(result.linearProjectId ?? '').toBe('');
+	});
+});
+
+describe('buildLinearIntegrationConfig — save payload', () => {
+	function seed(overrides: Partial<WizardState> = {}): WizardState {
+		return {
+			...createInitialState(),
+			provider: 'linear',
+			linearTeamId: 'T1',
+			linearStatusMappings: { todo: 'S-TD' },
+			linearLabels: {},
+			...overrides,
+		};
+	}
+
+	it('omits projectId when linearProjectId is empty', () => {
+		const config = buildLinearIntegrationConfig(seed({ linearProjectId: '' }));
+		expect(config).not.toHaveProperty('projectId');
+		expect(config.teamId).toBe('T1');
+	});
+
+	it('includes projectId when linearProjectId is set', () => {
+		const config = buildLinearIntegrationConfig(seed({ linearProjectId: 'P1' }));
+		expect(config.projectId).toBe('P1');
+		expect(config.teamId).toBe('T1');
+	});
+
+	it('clearing a previously-set projectId yields a config without projectId', () => {
+		// Simulate edit mode: start with projectId set, user clears, we save.
+		const state = seed({ linearProjectId: '' }); // after clear
+		const config = buildLinearIntegrationConfig(state);
+		expect(config).not.toHaveProperty('projectId');
+	});
+
+	it('omits labels when linearLabels is empty; includes when populated', () => {
+		const bare = buildLinearIntegrationConfig(seed());
+		expect(bare).not.toHaveProperty('labels');
+		const withLabels = buildLinearIntegrationConfig(
+			seed({ linearLabels: { processing: 'cascade-processing' } }),
+		);
+		expect(withLabels).toHaveProperty('labels', { processing: 'cascade-processing' });
 	});
 });
 

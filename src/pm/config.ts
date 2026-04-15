@@ -56,6 +56,8 @@ export function getJiraConfig(project: ProjectConfig): JiraConfig | undefined {
 /** Linear-specific configuration (from project_integrations JSONB) */
 export interface LinearConfig {
 	teamId: string;
+	/** Optional Linear Project (initiative) ID that narrows scope within the team. */
+	projectId?: string;
 	statuses: Record<string, string>;
 	labels?: {
 		processing?: string;

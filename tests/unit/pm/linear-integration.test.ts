@@ -7,10 +7,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { getLinearConfig } from '../../../src/pm/config.js';
 import { LinearIntegration } from '../../../src/pm/linear/integration.js';
 import type { ProjectConfig } from '../../../src/types/index.js';
 
-function makeProject(statuses: Record<string, string>): ProjectConfig {
+function makeProject(
+	statuses: Record<string, string>,
+	overrides?: { projectId?: string },
+): ProjectConfig {
 	return {
 		id: 'test',
 		name: 'test',
@@ -19,6 +23,7 @@ function makeProject(statuses: Record<string, string>): ProjectConfig {
 		linear: {
 			teamId: 'team-1',
 			statuses,
+			...(overrides?.projectId !== undefined ? { projectId: overrides.projectId } : {}),
 		},
 	} as unknown as ProjectConfig;
 }
@@ -66,5 +71,35 @@ describe('LinearIntegration.resolveLifecycleConfig', () => {
 		const cfg = integration.resolveLifecycleConfig(project);
 		expect(cfg.statuses.debug).toBeUndefined();
 		expect(cfg.statuses.inProgress).toBe('s-ip');
+	});
+});
+
+describe('LinearConfig.projectId', () => {
+	it('getLinearConfig — returns config with projectId when set', () => {
+		const project = makeProject({ inProgress: 's-ip' }, { projectId: 'P1' });
+		expect(getLinearConfig(project)?.projectId).toBe('P1');
+	});
+
+	it('getLinearConfig — returns config without projectId when absent', () => {
+		const project = makeProject({ inProgress: 's-ip' });
+		expect(getLinearConfig(project)?.projectId).toBeUndefined();
+	});
+
+	it('LinearIntegration.createProvider — forwards projectId from LinearConfig to LinearPMProvider', () => {
+		const integration = new LinearIntegration();
+		const project = makeProject({ inProgress: 's-ip' }, { projectId: 'P1' });
+		const provider = integration.createProvider(project) as unknown as {
+			config: { projectId?: string };
+		};
+		expect(provider.config.projectId).toBe('P1');
+	});
+
+	it('LinearIntegration.createProvider — provider has undefined projectId when config has none', () => {
+		const integration = new LinearIntegration();
+		const project = makeProject({ inProgress: 's-ip' });
+		const provider = integration.createProvider(project) as unknown as {
+			config: { projectId?: string };
+		};
+		expect(provider.config.projectId).toBeUndefined();
 	});
 });

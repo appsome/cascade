@@ -145,12 +145,8 @@ export function PMWizard({
 		advanceToStep,
 		projectId,
 	);
-	const { linearTeamsMutation, linearDetailsMutation, handleTeamSelect } = useLinearDiscovery(
-		state,
-		dispatch,
-		advanceToStep,
-		projectId,
-	);
+	const { linearTeamsMutation, linearDetailsMutation, linearProjectsMutation, handleTeamSelect } =
+		useLinearDiscovery(state, dispatch, advanceToStep, projectId);
 	const { createLabelMutation, createMissingLabelsMutation } = useTrelloLabelCreation(
 		state,
 		dispatch,
@@ -331,8 +327,10 @@ export function PMWizard({
 					<LinearTeamStep
 						state={state}
 						onTeamSelect={handleTeamSelect}
+						dispatch={dispatch}
 						linearTeamsMutation={linearTeamsMutation}
 						linearDetailsMutation={linearDetailsMutation}
+						linearProjectsMutation={linearProjectsMutation}
 					/>
 				) : (
 					<JiraProjectStep

@@ -9,11 +9,13 @@ import { API_URL } from '@/lib/api.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { getCredentialRoles } from '../../../../src/config/integrationRoles.js';
 import type {
+	LinearProjectOption,
 	LinearTeamDetails,
 	LinearTeamOption,
 	WizardAction,
 	WizardState,
 } from './pm-wizard-state.js';
+import { buildLinearIntegrationConfig } from './pm-wizard-state.js';
 
 // ============================================================================
 // Trello Discovery
@@ -247,10 +249,34 @@ export function useLinearDiscovery(
 		},
 	});
 
+	const linearProjectsMutation = useMutation({
+		mutationFn: (teamId: string) => {
+			if (state.isEditing && state.hasStoredCredentials && !state.linearApiKey) {
+				return trpcClient.integrationsDiscovery.linearProjectsByProject.mutate({
+					projectId,
+					teamId,
+				});
+			}
+			if (!state.linearApiKey) {
+				throw new Error('Enter your API key before fetching projects');
+			}
+			return trpcClient.integrationsDiscovery.linearProjects.mutate({
+				apiKey: state.linearApiKey,
+				teamId,
+			});
+		},
+		onSuccess: (projects) =>
+			dispatch({
+				type: 'SET_LINEAR_PROJECTS',
+				projects: projects as LinearProjectOption[],
+			}),
+	});
+
 	const handleTeamSelect = (teamId: string) => {
 		dispatch({ type: 'SET_LINEAR_TEAM_ID', id: teamId });
 		if (teamId) {
 			linearDetailsMutation.mutate(teamId);
+			linearProjectsMutation.mutate(teamId);
 		}
 	};
 
@@ -280,10 +306,18 @@ export function useLinearDiscovery(
 		) {
 			linearDetailsMutation.mutate(state.linearTeamId);
 		}
+		if (
+			state.linearTeamId &&
+			state.linearProjects.length === 0 &&
+			canFetch &&
+			!linearProjectsMutation.isPending
+		) {
+			linearProjectsMutation.mutate(state.linearTeamId);
+		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [state.isEditing, state.linearTeamId, state.hasStoredCredentials]);
 
-	return { linearTeamsMutation, linearDetailsMutation, handleTeamSelect };
+	return { linearTeamsMutation, linearDetailsMutation, linearProjectsMutation, handleTeamSelect };
 }
 
 // ============================================================================
@@ -595,11 +629,7 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 					...(state.trelloCostFieldId ? { customFields: { cost: state.trelloCostFieldId } } : {}),
 				};
 			} else if (state.provider === 'linear') {
-				config = {
-					teamId: state.linearTeamId,
-					statuses: state.linearStatusMappings,
-					...(Object.keys(state.linearLabels).length > 0 ? { labels: state.linearLabels } : {}),
-				};
+				config = buildLinearIntegrationConfig(state);
 			} else {
 				config = {
 					projectKey: state.jiraProjectKey,
