@@ -463,5 +463,7 @@ Before submitting a new integration:
 ### Linear — operator setup
 
 Linear webhooks are configured **manually in Linear** (CASCADE cannot create them programmatically). The authoritative setup instructions — including the three event families CASCADE consumes (**Issues**, **Comments**, **Issue Labels**) and the inline signing-secret input — live in the dashboard PM wizard at `web/src/components/projects/pm-wizard-common-steps.tsx` (`LinearWebhookInfoPanel`). Any changes to the trigger handlers in `src/triggers/linear/` should be reflected there.
+
+A CASCADE project can optionally scope to a specific Linear **Project** (initiative) in the "Board / Project Selection" wizard step. When set, webhooks for issues outside that project are dropped by the router (Linear webhooks themselves remain team-scoped; the filter is applied by CASCADE). Leaving the selector empty preserves full-team behavior.
 | `github` | scm | `src/github/scm-integration.ts` | `src/router/adapters/github.ts` | `src/triggers/github/` |
 | `sentry` | alerting | `src/sentry/alerting-integration.ts` | `src/router/adapters/sentry.ts` | `src/triggers/sentry/` |

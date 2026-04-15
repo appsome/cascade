@@ -81,35 +81,67 @@ export function LinearCredentialsStep({
 export function LinearTeamStep({
 	state,
 	onTeamSelect,
+	dispatch,
 	linearTeamsMutation,
 	linearDetailsMutation,
+	linearProjectsMutation,
 }: {
 	state: WizardState;
 	onTeamSelect: (id: string) => void;
+	dispatch: React.Dispatch<WizardAction>;
 	linearTeamsMutation: UseMutationResult<unknown, Error, void, unknown>;
 	linearDetailsMutation: UseMutationResult<unknown, Error, string, unknown>;
+	linearProjectsMutation: UseMutationResult<unknown, Error, string, unknown>;
 }) {
 	return (
-		<div className="space-y-2">
-			<Label>Select Team</Label>
-			<SearchableSelect
-				options={state.linearTeams.map((t) => ({
-					label: t.name,
-					value: t.id,
-					detail: t.key,
-				}))}
-				value={state.linearTeamId}
-				onChange={onTeamSelect}
-				placeholder="Select a Linear team..."
-				isLoading={linearTeamsMutation.isPending}
-				error={linearTeamsMutation.isError ? (linearTeamsMutation.error as Error).message : null}
-				onRetry={() =>
-					(linearTeamsMutation as UseMutationResult<unknown, Error, void, unknown>).mutate()
-				}
-			/>
-			{state.linearTeamId && linearDetailsMutation.isPending && (
-				<div className="flex items-center gap-2 text-sm text-muted-foreground">
-					<Loader2 className="h-4 w-4 animate-spin" /> Loading team details...
+		<div className="space-y-4">
+			<div className="space-y-2">
+				<Label>Select Team</Label>
+				<SearchableSelect
+					options={state.linearTeams.map((t) => ({
+						label: t.name,
+						value: t.id,
+						detail: t.key,
+					}))}
+					value={state.linearTeamId}
+					onChange={onTeamSelect}
+					placeholder="Select a Linear team..."
+					isLoading={linearTeamsMutation.isPending}
+					error={linearTeamsMutation.isError ? (linearTeamsMutation.error as Error).message : null}
+					onRetry={() =>
+						(linearTeamsMutation as UseMutationResult<unknown, Error, void, unknown>).mutate()
+					}
+				/>
+				{state.linearTeamId && linearDetailsMutation.isPending && (
+					<div className="flex items-center gap-2 text-sm text-muted-foreground">
+						<Loader2 className="h-4 w-4 animate-spin" /> Loading team details...
+					</div>
+				)}
+			</div>
+
+			{state.linearTeamId && (
+				<div className="space-y-2">
+					<Label>Linear Project (optional)</Label>
+					<SearchableSelect
+						options={state.linearProjects.map((p) => ({
+							label: p.name,
+							value: p.id,
+						}))}
+						value={state.linearProjectId}
+						onChange={(v) => dispatch({ type: 'SET_LINEAR_PROJECT_ID', value: v })}
+						placeholder="No project scope — all team issues"
+						isLoading={linearProjectsMutation.isPending}
+						error={
+							linearProjectsMutation.isError
+								? (linearProjectsMutation.error as Error).message
+								: null
+						}
+						onRetry={() => linearProjectsMutation.mutate(state.linearTeamId)}
+					/>
+					<p className="text-xs text-muted-foreground">
+						Optional — leave empty to process all issues in this team. When set, CASCADE only
+						responds to issues that belong to this Linear Project.
+					</p>
 				</div>
 			)}
 		</div>

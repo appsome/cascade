@@ -128,3 +128,17 @@ describe('LinearWebhookInfoPanel — inline signing-secret field', () => {
 		expect(html).toContain('not configured');
 	});
 });
+
+describe('LinearWebhookInfoPanel — project scope callout', () => {
+	it('mentions project scope and explains CASCADE applies the filter', () => {
+		const html = render(baseProps);
+		expect(html.toLowerCase()).toContain('project scope');
+		expect(html.toLowerCase()).toContain('cascade applies');
+	});
+
+	it('clarifies the Linear webhook configuration is unchanged by a project scope', () => {
+		const html = render(baseProps);
+		// The callout makes it explicit that no Linear-side change is needed.
+		expect(html.toLowerCase()).toMatch(/team-scoped|unchanged/);
+	});
+});
