@@ -20,13 +20,16 @@ async function linearGraphQL(
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
-			Authorization: `Bearer ${apiKey}`,
+			// Linear personal API keys (lin_api_*) are sent bare; the `Bearer` prefix
+			// is only valid for OAuth tokens and triggers HTTP 400 with personal keys.
+			Authorization: apiKey,
 		},
 		body: JSON.stringify({ query, variables }),
 	});
 
 	if (!response.ok) {
-		throw new Error(`Linear API HTTP error ${response.status}`);
+		const body = await response.text().catch(() => '<no body>');
+		throw new Error(`Linear API HTTP error ${response.status}: ${body}`);
 	}
 
 	const json = (await response.json()) as {
