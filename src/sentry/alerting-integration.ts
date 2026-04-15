@@ -45,7 +45,7 @@ export class SentryAlertingIntegration implements AlertingIntegration {
 			return await fn();
 		} finally {
 			if (previous === undefined) {
-				process.env.SENTRY_API_TOKEN = undefined;
+				delete process.env.SENTRY_API_TOKEN;
 			} else {
 				process.env.SENTRY_API_TOKEN = previous;
 			}

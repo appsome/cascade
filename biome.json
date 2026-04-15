@@ -40,5 +40,17 @@
 			"!**/*.json",
 			"!web/src/index.css"
 		]
-	}
+	},
+	"overrides": [
+		{
+			"includes": ["tests/**", "src/**"],
+			"linter": {
+				"rules": {
+					"performance": {
+						"noDelete": "off"
+					}
+				}
+			}
+		}
+	]
 }
