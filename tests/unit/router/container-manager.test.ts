@@ -153,6 +153,11 @@ describe('extractProjectIdFromJob', () => {
 		expect(await extractProjectIdFromJob(job)).toBe('proj-jira');
 	});
 
+	it('returns projectId for linear jobs', async () => {
+		const job = { type: 'linear', projectId: 'proj-linear' } as unknown as CascadeJob;
+		expect(await extractProjectIdFromJob(job)).toBe('proj-linear');
+	});
+
 	it('returns projectId resolved from repo for github jobs', async () => {
 		const job = { type: 'github', repoFullName: 'owner/repo' } as CascadeJob;
 		mockFindProjectByRepo.mockResolvedValue({ id: 'proj-gh' } as never);
