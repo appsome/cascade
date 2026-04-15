@@ -18,6 +18,7 @@ export interface RouterProjectConfig {
 	};
 	linear?: {
 		teamId: string;
+		projectId?: string;
 	};
 }
 
@@ -108,6 +109,7 @@ export async function loadProjectConfig(): Promise<{
 						...(linearConfig && {
 							linear: {
 								teamId: linearConfig.teamId,
+								...(linearConfig.projectId ? { projectId: linearConfig.projectId } : {}),
 							},
 						}),
 					};

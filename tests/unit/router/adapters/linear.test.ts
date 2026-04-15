@@ -42,7 +42,10 @@ import type { RouterProjectConfig } from '../../../../src/router/config.js';
 import { loadProjectConfig } from '../../../../src/router/config.js';
 import { resolveLinearCredentials } from '../../../../src/router/platformClients/index.js';
 import type { TriggerRegistry } from '../../../../src/triggers/registry.js';
+import { logger } from '../../../../src/utils/logging.js';
 import { buildWorkItemRunsLink, getDashboardUrl } from '../../../../src/utils/runLink.js';
+
+const mockLoggerInfo = vi.mocked(logger.info);
 
 const mockProject: RouterProjectConfig = {
 	id: 'p1',
@@ -148,6 +151,170 @@ describe('LinearRouterAdapter', () => {
 		it('returns parsed event for update/Issue', async () => {
 			const result = await adapter.parseWebhook({ ...baseLinearPayload, action: 'update' });
 			expect(result?.eventType).toBe('update/Issue');
+		});
+	});
+
+	describe('parseWebhook — project scope filter', () => {
+		const scopedProject: RouterProjectConfig = {
+			id: 'p1',
+			repo: 'owner/repo',
+			pmType: 'linear',
+			linear: {
+				teamId: 'team-abc-123',
+				projectId: 'P1',
+			},
+		};
+
+		beforeEach(() => {
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [scopedProject],
+				fullProjects: [{ id: 'p1' } as never],
+			});
+			mockLoggerInfo.mockClear();
+		});
+
+		it('Issue event — processed when data.projectId matches configured projectId', async () => {
+			const result = await adapter.parseWebhook({
+				...baseLinearPayload,
+				data: { ...baseLinearPayload.data, projectId: 'P1' },
+			});
+			expect(result).not.toBeNull();
+			expect(result?.workItemId).toBe('issue-abc');
+		});
+
+		it('Issue event — dropped when data.projectId does not match configured projectId', async () => {
+			const result = await adapter.parseWebhook({
+				...baseLinearPayload,
+				data: { ...baseLinearPayload.data, projectId: 'P2' },
+			});
+			expect(result).toBeNull();
+			expect(mockLoggerInfo).toHaveBeenCalledWith(
+				expect.stringMatching(/LinearRouterAdapter: dropping event/),
+				expect.objectContaining({
+					reason: 'project scope mismatch',
+					configuredProjectId: 'P1',
+					issueProjectId: 'P2',
+					issueId: 'issue-abc',
+					teamId: 'team-abc-123',
+					projectId: 'p1',
+					eventType: 'create/Issue',
+				}),
+			);
+		});
+
+		it('Issue event — dropped when issue has no project and config has projectId', async () => {
+			const result = await adapter.parseWebhook(baseLinearPayload);
+			expect(result).toBeNull();
+			expect(mockLoggerInfo).toHaveBeenCalledWith(
+				expect.stringMatching(/LinearRouterAdapter: dropping event/),
+				expect.objectContaining({
+					reason: 'issue has no project',
+					configuredProjectId: 'P1',
+					issueProjectId: undefined,
+				}),
+			);
+		});
+
+		it('Issue event — processed regardless of projectId when config.projectId is unset', async () => {
+			vi.mocked(loadProjectConfig).mockResolvedValue({
+				projects: [mockProject],
+				fullProjects: [{ id: 'p1' } as never],
+			});
+			const resultWithProject = await adapter.parseWebhook({
+				...baseLinearPayload,
+				data: { ...baseLinearPayload.data, projectId: 'P-whatever' },
+			});
+			expect(resultWithProject).not.toBeNull();
+			const resultWithoutProject = await adapter.parseWebhook(baseLinearPayload);
+			expect(resultWithoutProject).not.toBeNull();
+			expect(mockLoggerInfo).not.toHaveBeenCalled();
+		});
+
+		it('Comment event — processed when data.issue.projectId matches configured projectId', async () => {
+			const payload = {
+				action: 'create',
+				type: 'Comment',
+				organizationId: 'org-123',
+				webhookTimestamp: Date.now(),
+				data: {
+					id: 'comment-xyz',
+					body: 'ok',
+					issueId: 'issue-abc',
+					teamId: 'team-abc-123',
+					issue: { id: 'issue-abc', teamId: 'team-abc-123', projectId: 'P1' },
+				},
+				url: 'https://linear.app/issue',
+			};
+			const result = await adapter.parseWebhook(payload);
+			expect(result).not.toBeNull();
+			expect(result?.isCommentEvent).toBe(true);
+		});
+
+		it('Comment event — dropped when data.issue.projectId differs from configured projectId', async () => {
+			const payload = {
+				action: 'create',
+				type: 'Comment',
+				organizationId: 'org-123',
+				webhookTimestamp: Date.now(),
+				data: {
+					id: 'comment-xyz',
+					body: 'ok',
+					issueId: 'issue-abc',
+					teamId: 'team-abc-123',
+					issue: { id: 'issue-abc', teamId: 'team-abc-123', projectId: 'P2' },
+				},
+				url: 'https://linear.app/issue',
+			};
+			const result = await adapter.parseWebhook(payload);
+			expect(result).toBeNull();
+			expect(mockLoggerInfo).toHaveBeenCalledWith(
+				expect.stringMatching(/LinearRouterAdapter: dropping event/),
+				expect.objectContaining({
+					reason: 'project scope mismatch',
+					configuredProjectId: 'P1',
+					issueProjectId: 'P2',
+					eventType: 'create/Comment',
+				}),
+			);
+		});
+
+		it('IssueLabel event — inspects data.projectId and drops on mismatch', async () => {
+			const payload = {
+				action: 'create',
+				type: 'IssueLabel',
+				organizationId: 'org-123',
+				webhookTimestamp: Date.now(),
+				data: {
+					id: 'label-link-1',
+					teamId: 'team-abc-123',
+					projectId: 'P2',
+					issueId: 'issue-abc',
+				},
+				url: 'https://linear.app/issue',
+			};
+			const result = await adapter.parseWebhook(payload);
+			expect(result).toBeNull();
+			expect(mockLoggerInfo).toHaveBeenCalledWith(
+				expect.stringMatching(/LinearRouterAdapter: dropping event/),
+				expect.objectContaining({
+					reason: 'project scope mismatch',
+					eventType: 'create/IssueLabel',
+				}),
+			);
+		});
+
+		it('cross-team intersection — Issue in matching project but wrong team is dropped by existing teamId lookup', async () => {
+			const result = await adapter.parseWebhook({
+				...baseLinearPayload,
+				data: { ...baseLinearPayload.data, teamId: 'team-different', projectId: 'P1' },
+			});
+			expect(result).toBeNull();
+			// Dropped by the existing "no project found for teamId" branch, not the new filter.
+			// No project-scope-specific log entry should fire:
+			expect(mockLoggerInfo).not.toHaveBeenCalledWith(
+				expect.stringMatching(/LinearRouterAdapter: dropping event/),
+				expect.any(Object),
+			);
 		});
 	});
 

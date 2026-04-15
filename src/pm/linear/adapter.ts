@@ -82,6 +82,7 @@ export class LinearPMProvider implements PMProvider {
 		const teamId = config.containerId || this.config.teamId;
 		const issue = await linearClient.createIssue({
 			teamId,
+			...(this.config.projectId ? { projectId: this.config.projectId } : {}),
 			title: config.title,
 			description: config.description,
 			...(config.labels?.length
@@ -121,6 +122,7 @@ export class LinearPMProvider implements PMProvider {
 		const teamId = containerId || this.config.teamId;
 		const issues = await linearClient.listIssues({
 			teamId,
+			...(this.config.projectId ? { projectId: this.config.projectId } : {}),
 			...(filter?.status
 				? {
 						stateId: this.config.statuses?.[filter.status] ?? filter.status,
@@ -217,6 +219,7 @@ export class LinearPMProvider implements PMProvider {
 
 		await linearClient.createIssue({
 			teamId: this.config.teamId,
+			...(this.config.projectId ? { projectId: this.config.projectId } : {}),
 			title: name,
 			description,
 			parentId,

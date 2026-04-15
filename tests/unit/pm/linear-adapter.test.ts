@@ -1,0 +1,122 @@
+/**
+ * LinearPMProvider — unit tests for project-scope propagation.
+ *
+ * Verifies listWorkItems, createWorkItem, and addChecklistItem honor
+ * LinearConfig.projectId when set, and preserve current behavior when not.
+ */
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { linearClient } from '../../../src/linear/client.js';
+import type { LinearConfig } from '../../../src/pm/config.js';
+import { LinearPMProvider } from '../../../src/pm/linear/adapter.js';
+
+const ISSUE = {
+	id: 'i1',
+	identifier: 'TEAM-1',
+	title: 't',
+	description: '',
+	url: 'https://linear.app/x/issue/TEAM-1',
+	state: { id: 's', name: 'Todo', type: 'unstarted', color: '#fff' },
+	labels: [],
+	team: { id: 'T1', key: 'TEAM', name: 'Team' },
+	assignee: null,
+	createdAt: '2024-01-01T00:00:00Z',
+	updatedAt: '2024-01-01T00:00:00Z',
+};
+
+function configOf(overrides: Partial<LinearConfig> = {}): LinearConfig {
+	return {
+		teamId: 'T1',
+		statuses: {},
+		...overrides,
+	};
+}
+
+describe('LinearPMProvider.listWorkItems — project scope', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('passes projectId to linearClient.listIssues when configured', async () => {
+		const spy = vi.spyOn(linearClient, 'listIssues').mockResolvedValue([]);
+		const provider = new LinearPMProvider(configOf({ projectId: 'P1' }));
+		await provider.listWorkItems('T1');
+		expect(spy).toHaveBeenCalledWith(expect.objectContaining({ teamId: 'T1', projectId: 'P1' }));
+	});
+
+	it('omits projectId when not configured', async () => {
+		const spy = vi.spyOn(linearClient, 'listIssues').mockResolvedValue([]);
+		const provider = new LinearPMProvider(configOf());
+		await provider.listWorkItems('T1');
+		const call = spy.mock.calls[0][0] ?? {};
+		expect(call).not.toHaveProperty('projectId');
+		expect(call).toMatchObject({ teamId: 'T1' });
+	});
+
+	it('passes projectId alongside status filter when both are configured', async () => {
+		const spy = vi.spyOn(linearClient, 'listIssues').mockResolvedValue([]);
+		const provider = new LinearPMProvider(
+			configOf({ projectId: 'P1', statuses: { backlog: 'S-BL' } }),
+		);
+		await provider.listWorkItems('T1', { status: 'backlog' });
+		expect(spy).toHaveBeenCalledWith(
+			expect.objectContaining({ teamId: 'T1', projectId: 'P1', stateId: 'S-BL' }),
+		);
+	});
+});
+
+describe('LinearPMProvider.createWorkItem — project scope', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('sets projectId on new issue when configured', async () => {
+		// biome-ignore lint/suspicious/noExplicitAny: test stub
+		const spy = vi.spyOn(linearClient, 'createIssue').mockResolvedValue(ISSUE as any);
+		const provider = new LinearPMProvider(configOf({ projectId: 'P1' }));
+		await provider.createWorkItem({ title: 'x' });
+		expect(spy).toHaveBeenCalledWith(
+			expect.objectContaining({ teamId: 'T1', projectId: 'P1', title: 'x' }),
+		);
+	});
+
+	it('omits projectId on new issue when not configured', async () => {
+		// biome-ignore lint/suspicious/noExplicitAny: test stub
+		const spy = vi.spyOn(linearClient, 'createIssue').mockResolvedValue(ISSUE as any);
+		const provider = new LinearPMProvider(configOf());
+		await provider.createWorkItem({ title: 'x' });
+		const call = spy.mock.calls[0][0];
+		expect(call).not.toHaveProperty('projectId');
+	});
+});
+
+describe('LinearPMProvider.addChecklistItem — project scope for sub-issues', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('sub-issue inherits projectId when configured', async () => {
+		// biome-ignore lint/suspicious/noExplicitAny: test stub
+		const spy = vi.spyOn(linearClient, 'createIssue').mockResolvedValue(ISSUE as any);
+		const provider = new LinearPMProvider(configOf({ projectId: 'P1' }));
+		await provider.addChecklistItem('subtasks-parent-123', 'child');
+		expect(spy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				teamId: 'T1',
+				projectId: 'P1',
+				parentId: 'parent-123',
+				title: 'child',
+			}),
+		);
+	});
+
+	it('sub-issue omits projectId when not configured', async () => {
+		// biome-ignore lint/suspicious/noExplicitAny: test stub
+		const spy = vi.spyOn(linearClient, 'createIssue').mockResolvedValue(ISSUE as any);
+		const provider = new LinearPMProvider(configOf());
+		await provider.addChecklistItem('subtasks-parent-123', 'child');
+		const call = spy.mock.calls[0][0];
+		expect(call).not.toHaveProperty('projectId');
+		expect(call).toMatchObject({ teamId: 'T1', parentId: 'parent-123', title: 'child' });
+	});
+});

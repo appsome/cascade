@@ -124,6 +124,7 @@ export default defineConfig({
 						'tests/unit/integrations/**/*.test.ts',
 						'tests/unit/github/**/*.test.ts',
 						'tests/unit/jira/**/*.test.ts',
+						'tests/unit/linear/**/*.test.ts',
 						'tests/unit/trello/**/*.test.ts',
 						'tests/unit/web/**/*.test.ts',
 						'tests/unit/webhook/**/*.test.ts',

@@ -652,4 +652,63 @@ export const integrationsDiscoveryRouter = router({
 				),
 			);
 		}),
+
+	/**
+	 * Fetch Linear projects scoped to a team using raw API key credentials.
+	 * Returns the list of Linear Projects accessible to the given team.
+	 */
+	linearProjects: protectedProcedure
+		.input(linearCredsInput.extend({ teamId: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.linearProjects called', {
+				orgId: ctx.effectiveOrgId,
+				teamId: input.teamId,
+			});
+			return withLinearCreds(input, 'Failed to fetch Linear projects', (creds) =>
+				withLinearCredentials(creds, () => linearClient.getTeamProjects(input.teamId)),
+			);
+		}),
+
+	/**
+	 * Fetch Linear projects scoped to a team using stored project credentials.
+	 * Resolves the API key from stored credentials and returns the team's projects.
+	 */
+	linearProjectsByProject: protectedProcedure
+		.input(z.object({ projectId: z.string(), teamId: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.linearProjectsByProject called', {
+				orgId: ctx.effectiveOrgId,
+				projectId: input.projectId,
+				teamId: input.teamId,
+			});
+			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
+			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'linear') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const apiKey = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'linear',
+				'api_key',
+			);
+			if (!apiKey) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Linear credentials not configured',
+				});
+			}
+			return wrapIntegrationCall('Failed to fetch Linear projects', () =>
+				withLinearCredentials({ apiKey }, () => linearClient.getTeamProjects(input.teamId)),
+			);
+		}),
 });

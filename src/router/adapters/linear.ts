@@ -78,10 +78,34 @@ export class LinearRouterAdapter implements RouterPlatformAdapter {
 		const workItemId = isCommentEvent
 			? (data.issueId as string | undefined)
 			: (data.id as string | undefined);
+		const eventType = `${p.action}/${p.type}`;
+
+		// Optional project-scope filter: when the CASCADE project has been narrowed
+		// to a specific Linear Project, drop webhook events whose issue is not in
+		// that project. Linear cannot scope webhooks to a project, so the filter
+		// runs here, after team-match.
+		const configuredProjectId = project.linear?.projectId;
+		if (configuredProjectId) {
+			const issueProjectId = isCommentEvent
+				? ((data.issue as Record<string, unknown> | undefined)?.projectId as string | undefined)
+				: (data.projectId as string | undefined);
+			if (issueProjectId !== configuredProjectId) {
+				logger.info('LinearRouterAdapter: dropping event outside project scope', {
+					reason: issueProjectId ? 'project scope mismatch' : 'issue has no project',
+					configuredProjectId,
+					issueProjectId,
+					issueId: workItemId,
+					teamId,
+					projectId: project.id,
+					eventType,
+				});
+				return null;
+			}
+		}
 
 		return {
 			projectIdentifier: teamId,
-			eventType: `${p.action}/${p.type}`,
+			eventType,
 			workItemId,
 			isCommentEvent,
 			projectId: project.id,

@@ -32,6 +32,13 @@ export interface LinearWorkflowState {
 	color: string;
 }
 
+export interface LinearProject {
+	id: string;
+	name: string;
+	icon: string | null;
+	color: string | null;
+}
+
 export interface LinearIssue {
 	id: string;
 	identifier: string;
@@ -80,6 +87,8 @@ export interface LinearCreateIssueInput {
 	title: string;
 	description?: string;
 	teamId: string;
+	/** Linear project (initiative) ID — when set, the new issue is placed into this project. */
+	projectId?: string;
 	parentId?: string;
 	assigneeId?: string;
 	stateId?: string;
