@@ -66,14 +66,19 @@ Operators see no change: the Trello wizard UX is identical, webhook URL is ident
 - `trelloManifest — category is 'pm'`
 - `trelloManifest — webhookRoute is '/trello/webhook'`
 - `trelloManifest — credentialRoles includes api_key + token (both required) + api_secret (optional)` — matches existing Trello roles.
-- `trelloManifest — verifyWebhookSignature delegates to makeHmacSha256Verifier with Trello's header name + prefix` — calls the shared factory, no bespoke code.
+- `trelloManifest — verifyWebhookSignature rejects when signature header is missing` — sanity.
+- `trelloManifest — verifyWebhookSignature accepts a valid signature built as HMAC-SHA1(body + callbackUrl)` — uses existing `verifyTrelloSignature`; callback URL is reconstructed from `host` + `x-forwarded-proto` headers.
+- `trelloManifest — verifyWebhookSignature returns true (opt-out) when secret is null` — matches existing opt-out behavior.
 - `trelloManifest — extractProjectIdFromJob returns projectId for { type: 'trello', projectId }`, null otherwise.
 - `trelloManifest — platformClientFactory returns a TrelloPlatformClient instance`.
 - `trelloManifest — triggerHandlers contains exactly the handlers from src/triggers/trello/` — confirms every existing trigger is wired.
 
+**Important:** Trello signs `HMAC-SHA1(rawBody + callbackUrl)` — it does **not** match the HMAC-SHA256 shape of the shared `makeHmacSha256Verifier` factory. The manifest wires the existing `verifyTrelloSignature` helper from `src/webhook/signatureVerification.ts` rather than introducing a new shared factory for a one-off scheme. Future HMAC-SHA1 providers could motivate a shared helper; Trello alone doesn't.
+
 **Implementation** (`src/integrations/pm/trello/manifest.ts`):
 - Import existing `TrelloIntegration`, `TrelloRouterAdapter`, Trello trigger handlers from `src/triggers/trello/`, `TrelloPlatformClient`.
-- Import `parseTrelloPayload` and `verifyTrelloWebhookSignature` — rewrite the verifier to use `makeHmacSha256Verifier({ headerName: 'x-trello-webhook', headerPrefix: '' })`.
+- Import `parseTrelloPayload` from the existing webhook parser module.
+- Build `verifyWebhookSignature` as a thin wrapper: extracts the `x-trello-webhook` header, reconstructs the callback URL from `host` + `x-forwarded-proto`, delegates to `verifyTrelloSignature(rawBody, callbackUrl, signature, secret)`. Returns `true` when `secret === null` (opt-out).
 - Import `registerPMProvider` from the registry; call at module top level.
 - Export the manifest for testing.
 
@@ -87,30 +92,65 @@ Operators see no change: the Trello wizard UX is identical, webhook URL is ident
 
 ### 2. Trello frontend wizard definition
 
+**Prerequisite — extend `ProviderWizardDefinition` with `useProviderHooks`.** The generic renderer landed in 006/1 passes `{state, dispatch, providerHooks?}` to each step component, but the existing Trello step components expect specific prop names (`onBoardSelect`, `boardsMutation`, etc.) that originate from the React hooks `useTrelloDiscovery` + `useTrelloLabelCreation` + `useTrelloCustomFieldCreation`. Those hooks must run inside a React component with access to parent wizard context (state, dispatch, projectId, advanceToStep) — they cannot be called from inside the generic renderer.
+
+Solution: add an optional field to `ProviderWizardDefinition`:
+```typescript
+useProviderHooks?: (ctx: {
+  state: WizardState;
+  dispatch: React.Dispatch<WizardAction>;
+  projectId: string | undefined;
+  advanceToStep: (step: number) => void;
+}) => Record<string, unknown>;
+```
+The parent `pm-wizard.tsx` calls `def.useProviderHooks?.(ctx)` once (conditionally on `def` being registered), storing the result in a local variable; passes it to `renderManifestStep` as `providerHooks`. Step components destructure `providerHooks` into the existing prop shape via a thin adapter — existing components stay unchanged.
+
+Update `web/src/components/projects/pm-providers/types.ts` to add the optional field. Plan 006/3 and 006/4 will rely on the same extension for JIRA and Linear.
+
 **Tests first** (`tests/unit/web/trello-wizard-provider.test.ts`):
+- `trelloProviderWizard — id and label`
 - `trelloProviderWizard — steps array has exactly 3 steps: credentials, board, fields`
 - `trelloProviderWizard — buildIntegrationConfig returns the same shape as the legacy save path` — snapshot against a fixture wizard state; must match byte-for-byte.
-- `trelloProviderWizard — isSetupComplete is false on empty state, true on well-configured state`.
+- `trelloProviderWizard — isSetupComplete reflects each step's completion predicate`
 - `trelloProviderWizard — registered in the frontend registry under id 'trello'` — verifies module-load registration.
+- `trelloProviderWizard — useProviderHooks returns { onBoardSelect, boardsMutation, boardDetailsMutation, onCreateLabel, onCreateAllMissingLabels, onCreateCostField, creatingSlot, creatingCostField }` — a render-hook test using `@testing-library/react-hooks` or vitest's `renderHook` shim.
 
 **Implementation** (`web/src/components/projects/pm-providers/trello/`):
-- `steps.tsx` — re-exports `TrelloCredentialsStep`, `TrelloBoardStep`, `TrelloFieldMappingStep` from the existing `pm-wizard-trello-steps.tsx` with no behavioral change. Future PRs can move the implementations physically into this folder; this plan just re-wires the references.
+- `adapters.tsx` — thin wrapper components that accept `{state, dispatch, providerHooks}`, destructure `providerHooks` into the legacy prop names, and render the existing `TrelloCredentialsStep` / `TrelloBoardStep` / `TrelloFieldMappingStep` from `pm-wizard-trello-steps.tsx` unchanged.
 - `wizard.ts`:
   ```typescript
-  import { TrelloCredentialsStep, TrelloBoardStep, TrelloFieldMappingStep } from './steps';
   export const trelloProviderWizard: ProviderWizardDefinition = {
     id: 'trello',
     label: 'Trello',
     steps: [
-      { id: 'credentials', title: 'Trello credentials', Component: TrelloCredentialsStep, isComplete: (s) => Boolean(s.trelloApiKey && s.trelloToken && s.verificationResult) },
-      { id: 'board',       title: 'Board',              Component: TrelloBoardStep,       isComplete: (s) => Boolean(s.trelloBoardId) },
-      { id: 'fields',      title: 'Field mappings',     Component: TrelloFieldMappingStep, isComplete: (s) => Object.keys(s.trelloListMappings).length > 0 },
+      { id: 'credentials', title: 'Trello credentials', Component: TrelloCredentialsStepAdapter, isComplete: (s) => Boolean(s.trelloApiKey && s.trelloToken && s.verificationResult) },
+      { id: 'board',       title: 'Board',              Component: TrelloBoardStepAdapter,       isComplete: (s) => Boolean(s.trelloBoardId) },
+      { id: 'fields',      title: 'Field mappings',     Component: TrelloFieldMappingStepAdapter, isComplete: (s) => Object.keys(s.trelloListMappings).length > 0 },
     ],
     buildIntegrationConfig: buildTrelloIntegrationConfig, // existing fn from pm-wizard-state
-    isSetupComplete: (s) => wizard.steps.every(step => step.isComplete(s)),
+    useProviderHooks: ({ state, dispatch, projectId, advanceToStep }) => {
+      // Compose the existing per-provider hooks. Parent wizard already creates one
+      // instance — plan 006/2 moves that instantiation here so the generic
+      // renderer doesn't need to know Trello specifics.
+      const discovery = useTrelloDiscovery(state, dispatch, advanceToStep, projectId);
+      const labels = useTrelloLabelCreation(state, dispatch);
+      const customField = useTrelloCustomFieldCreation(state, dispatch);
+      // ... return combined props object
+    },
+    isSetupComplete: (s) => /* every step's isComplete */,
   };
   ```
 - `index.ts` — `registerProviderWizard(trelloProviderWizard);`
+
+**Parent wizard wiring** (`web/src/components/projects/pm-wizard.tsx`):
+
+React's rules-of-hooks forbid calling hooks conditionally. To call a provider-specific hook like `useTrelloDiscovery` only when Trello is the active provider, the hook must live inside a component that only renders under that condition.
+
+Approach: extract the existing Trello + JIRA + Linear sections into a new child component `<ManifestProviderWizardSection>` (located at `web/src/components/projects/pm-providers/manifest-section.tsx`). When `getProviderWizard(state.provider)` returns a definition, `pm-wizard.tsx` renders `<ManifestProviderWizardSection def={def} state={state} dispatch={dispatch} projectId={projectId} advanceToStep={advanceToStep} />`. Inside that child, `def.useProviderHooks(ctx)` is called unconditionally (it's only rendered when `def` exists). The hook results drive step rendering.
+
+For the JIRA and Linear branches in `pm-wizard.tsx`, the existing `useJiraDiscovery` / `useLinearDiscovery` calls stay at the top of `pm-wizard.tsx`. They will be moved out when plans 006/3 and 006/4 migrate those providers. Trello's `useTrelloDiscovery` + `useTrelloLabelCreation` + `useTrelloCustomFieldCreation` calls move into `trelloProviderWizard.useProviderHooks` and are **removed from `pm-wizard.tsx`** as part of this plan — that's the "Trello migrates" part.
+
+This keeps the three providers independently on either legacy or manifest paths (no mixed state) without breaking rules-of-hooks.
 
 ### 3. Delete Trello-specific legacy registrations
 
