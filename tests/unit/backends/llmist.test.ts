@@ -15,13 +15,14 @@ vi.mock('../../../src/agents/capabilities/index.js', () => ({
 // backends/llmist → definitions → strategies → gadgets → pm/ → webhook-handler
 // → triggers/agent-execution → agents/registry → new LlmistEngine() (still loading)
 vi.mock('../../../src/agents/definitions/index.js', () => ({
-	loadAgentDefinition: vi.fn(() => ({ engine: {} })),
+	loadBuiltinDefinition: vi.fn(() => ({ engine: {} })),
 	resolveAgentDefinition: vi.fn(async () => ({ engine: {} })),
 }));
 
 vi.mock('../../../src/agents/definitions/profiles.js', () => ({
 	getAgentProfile: vi.fn(() => ({
 		getLlmistGadgets: vi.fn(() => []),
+		finishHooks: {},
 	})),
 }));
 
@@ -363,6 +364,7 @@ describe('LlmistEngine.execute', () => {
 		const mockGetLlmistGadgets = vi.fn().mockReturnValue([]);
 		mockGetAgentProfile.mockReturnValue({
 			getLlmistGadgets: mockGetLlmistGadgets,
+			finishHooks: {},
 		} as ReturnType<typeof getAgentProfile>);
 
 		const engine = new LlmistEngine();

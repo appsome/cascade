@@ -15,6 +15,11 @@ const {
 	mockJiraGetIssueTypesForProject,
 	mockJiraGetFields,
 	mockJiraCreateCustomField,
+	mockLinearGetMe,
+	mockLinearGetTeams,
+	mockLinearGetTeamWorkflowStates,
+	mockLinearGetTeamLabels,
+	mockLinearGetTeamProjects,
 	mockGetAuthenticated,
 	mockVerifyProjectOrgAccess,
 	mockGetIntegrationCredentialOrNull,
@@ -33,6 +38,11 @@ const {
 	mockJiraGetIssueTypesForProject: vi.fn(),
 	mockJiraGetFields: vi.fn(),
 	mockJiraCreateCustomField: vi.fn(),
+	mockLinearGetMe: vi.fn(),
+	mockLinearGetTeams: vi.fn(),
+	mockLinearGetTeamWorkflowStates: vi.fn(),
+	mockLinearGetTeamLabels: vi.fn(),
+	mockLinearGetTeamProjects: vi.fn(),
 	mockGetAuthenticated: vi.fn(),
 	mockVerifyProjectOrgAccess: vi.fn(),
 	mockGetIntegrationCredentialOrNull: vi.fn(),
@@ -67,6 +77,20 @@ vi.mock('../../../../src/jira/client.js', () => ({
 		getIssueTypesForProject: mockJiraGetIssueTypesForProject,
 		getFields: mockJiraGetFields,
 		createCustomField: mockJiraCreateCustomField,
+	},
+}));
+
+vi.mock('../../../../src/linear/client.js', () => ({
+	withLinearCredentials: (...args: unknown[]) => {
+		const cb = args[1] as () => unknown;
+		return cb();
+	},
+	linearClient: {
+		getMe: mockLinearGetMe,
+		getTeams: mockLinearGetTeams,
+		getTeamWorkflowStates: mockLinearGetTeamWorkflowStates,
+		getTeamLabels: mockLinearGetTeamLabels,
+		getTeamProjects: mockLinearGetTeamProjects,
 	},
 }));
 
@@ -116,6 +140,22 @@ describe('integrationsDiscoveryRouter', () => {
 		// Default: org access check passes
 		mockVerifyProjectOrgAccess.mockResolvedValue(undefined);
 		mockFetch.mockReset();
+		// Reset the credential mock so leftover mockResolvedValueOnce values from
+		// earlier tests don't leak into the next test's code path.
+		mockGetIntegrationCredentialOrNull.mockReset();
+		// Default: *ByProject endpoints find a PM integration row for the project.
+		// Individual tests override to simulate missing-integration or wrong-provider cases.
+		mockGetIntegrationByProjectAndCategory.mockReset();
+		mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+			id: 1,
+			projectId: 'proj-1',
+			category: 'pm',
+			provider: 'trello',
+			config: { baseUrl: 'https://myorg.atlassian.net' },
+			triggers: {},
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		});
 	});
 
 	// ── Auth ─────────────────────────────────────────────────────────────
@@ -179,6 +219,37 @@ describe('integrationsDiscoveryRouter', () => {
 			const caller = createCaller({ user: null, effectiveOrgId: null });
 			await expectTRPCError(
 				caller.jiraProjectDetailsByProject({ projectId: 'proj-1', projectKey: 'PROJ' }),
+				'UNAUTHORIZED',
+			);
+		});
+
+		it('verifyLinear throws UNAUTHORIZED when not authenticated', async () => {
+			const caller = createCaller({ user: null, effectiveOrgId: null });
+			await expectTRPCError(caller.verifyLinear({ apiKey: 'lin_api_test' }), 'UNAUTHORIZED');
+		});
+
+		it('linearTeams throws UNAUTHORIZED when not authenticated', async () => {
+			const caller = createCaller({ user: null, effectiveOrgId: null });
+			await expectTRPCError(caller.linearTeams({ apiKey: 'lin_api_test' }), 'UNAUTHORIZED');
+		});
+
+		it('linearTeamsByProject throws UNAUTHORIZED when not authenticated', async () => {
+			const caller = createCaller({ user: null, effectiveOrgId: null });
+			await expectTRPCError(caller.linearTeamsByProject({ projectId: 'proj-1' }), 'UNAUTHORIZED');
+		});
+
+		it('linearTeamDetails throws UNAUTHORIZED when not authenticated', async () => {
+			const caller = createCaller({ user: null, effectiveOrgId: null });
+			await expectTRPCError(
+				caller.linearTeamDetails({ apiKey: 'lin_api_test', teamId: 'team-1' }),
+				'UNAUTHORIZED',
+			);
+		});
+
+		it('linearTeamDetailsByProject throws UNAUTHORIZED when not authenticated', async () => {
+			const caller = createCaller({ user: null, effectiveOrgId: null });
+			await expectTRPCError(
+				caller.linearTeamDetailsByProject({ projectId: 'proj-1', teamId: 'team-1' }),
 				'UNAUTHORIZED',
 			);
 		});
@@ -573,6 +644,7 @@ describe('integrationsDiscoveryRouter', () => {
 				.mockResolvedValueOnce('stored@example.com')
 				.mockResolvedValueOnce('stored-token');
 			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				provider: 'jira',
 				config: { baseUrl: 'https://myorg.atlassian.net' },
 			});
 			const projects = [{ key: 'PROJ', name: 'My Project' }];
@@ -588,6 +660,7 @@ describe('integrationsDiscoveryRouter', () => {
 		it('throws NOT_FOUND when email credential is missing', async () => {
 			mockGetIntegrationCredentialOrNull.mockResolvedValue(null);
 			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				provider: 'jira',
 				config: { baseUrl: 'https://myorg.atlassian.net' },
 			});
 
@@ -601,7 +674,7 @@ describe('integrationsDiscoveryRouter', () => {
 			mockGetIntegrationCredentialOrNull
 				.mockResolvedValueOnce('stored@example.com')
 				.mockResolvedValueOnce('stored-token');
-			mockGetIntegrationByProjectAndCategory.mockResolvedValue({ config: {} });
+			mockGetIntegrationByProjectAndCategory.mockResolvedValue({ provider: 'jira', config: {} });
 
 			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
 			await expect(caller.jiraProjectsByProject({ projectId: 'proj-1' })).rejects.toMatchObject({
@@ -638,6 +711,7 @@ describe('integrationsDiscoveryRouter', () => {
 				.mockResolvedValueOnce('stored@example.com')
 				.mockResolvedValueOnce('stored-token');
 			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				provider: 'jira',
 				config: { baseUrl: 'https://myorg.atlassian.net' },
 			});
 			mockJiraSearchProjects.mockRejectedValue(new Error('Connection refused'));
@@ -657,6 +731,7 @@ describe('integrationsDiscoveryRouter', () => {
 				.mockResolvedValueOnce('stored@example.com')
 				.mockResolvedValueOnce('stored-token');
 			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				provider: 'jira',
 				config: { baseUrl: 'https://myorg.atlassian.net' },
 			});
 			const statuses = [{ name: 'To Do', id: 'status-1' }];
@@ -687,6 +762,7 @@ describe('integrationsDiscoveryRouter', () => {
 		it('throws NOT_FOUND when credentials are missing', async () => {
 			mockGetIntegrationCredentialOrNull.mockResolvedValue(null);
 			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				provider: 'jira',
 				config: { baseUrl: 'https://myorg.atlassian.net' },
 			});
 
@@ -727,6 +803,7 @@ describe('integrationsDiscoveryRouter', () => {
 				.mockResolvedValueOnce('stored@example.com')
 				.mockResolvedValueOnce('stored-token');
 			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				provider: 'jira',
 				config: { baseUrl: 'https://myorg.atlassian.net' },
 			});
 			mockJiraGetProjectStatuses.mockRejectedValue(new Error('Project not found'));
@@ -957,6 +1034,358 @@ describe('integrationsDiscoveryRouter', () => {
 		it('rejects empty token', async () => {
 			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
 			await expect(caller.verifyGithubToken({ token: '' })).rejects.toThrow();
+		});
+	});
+
+	// ── verifyLinear ─────────────────────────────────────────────────────
+
+	describe('verifyLinear', () => {
+		const linearCredsInput = { apiKey: 'lin_api_test' };
+
+		it('returns id, name, and displayName on success', async () => {
+			mockLinearGetMe.mockResolvedValue({
+				id: 'linear-user-123',
+				name: 'Linear User',
+				displayName: 'linearuser',
+				email: 'linear@example.com',
+				avatarUrl: null,
+				active: true,
+			});
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.verifyLinear(linearCredsInput);
+
+			expect(result).toEqual({
+				id: 'linear-user-123',
+				name: 'Linear User',
+				displayName: 'linearuser',
+			});
+		});
+
+		it('wraps API failure in BAD_REQUEST', async () => {
+			mockLinearGetMe.mockRejectedValue(new Error('Invalid API key'));
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.verifyLinear(linearCredsInput)).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+			});
+		});
+
+		it('rejects empty apiKey', async () => {
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.verifyLinear({ apiKey: '' })).rejects.toThrow();
+		});
+	});
+
+	// ── linearTeams ───────────────────────────────────────────────────────
+
+	describe('linearTeams', () => {
+		const linearCredsInput = { apiKey: 'lin_api_test' };
+
+		it('returns teams list on success', async () => {
+			const teams = [
+				{ id: 'team-1', name: 'Engineering', key: 'ENG', description: null },
+				{ id: 'team-2', name: 'Design', key: 'DES', description: 'Design team' },
+			];
+			mockLinearGetTeams.mockResolvedValue(teams);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.linearTeams(linearCredsInput);
+
+			expect(result).toEqual(teams);
+		});
+
+		it('wraps API failure in BAD_REQUEST', async () => {
+			mockLinearGetTeams.mockRejectedValue(new Error('Network error'));
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.linearTeams(linearCredsInput)).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+			});
+		});
+	});
+
+	// ── linearTeamsByProject ──────────────────────────────────────────────
+
+	describe('linearTeamsByProject', () => {
+		beforeEach(() => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				id: 1,
+				projectId: 'proj-1',
+				category: 'pm',
+				provider: 'linear',
+				config: { teamId: 'team-1' },
+				triggers: {},
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			});
+		});
+
+		it('returns teams using stored project credentials', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValueOnce('stored-api-key');
+			const teams = [{ id: 'team-1', name: 'Engineering', key: 'ENG', description: null }];
+			mockLinearGetTeams.mockResolvedValue(teams);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.linearTeamsByProject({ projectId: 'proj-1' });
+
+			expect(mockVerifyProjectOrgAccess).toHaveBeenCalledWith('proj-1', mockUser.orgId);
+			expect(result).toEqual(teams);
+		});
+
+		it('throws NOT_FOUND when apiKey credential is missing', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValue(null);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.linearTeamsByProject({ projectId: 'proj-1' })).rejects.toMatchObject({
+				code: 'NOT_FOUND',
+			});
+		});
+
+		it('propagates org access denial', async () => {
+			const { TRPCError } = await import('@trpc/server');
+			mockVerifyProjectOrgAccess.mockRejectedValue(
+				new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' }),
+			);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearTeamsByProject({ projectId: 'other-org-proj' }),
+			).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+		});
+
+		it('wraps Linear API failure in BAD_REQUEST', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValueOnce('stored-api-key');
+			mockLinearGetTeams.mockRejectedValue(new Error('API error'));
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.linearTeamsByProject({ projectId: 'proj-1' })).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+			});
+		});
+	});
+
+	// ── linearTeamDetails ─────────────────────────────────────────────────
+
+	describe('linearTeamDetails', () => {
+		const linearCredsInput = { apiKey: 'lin_api_test' };
+
+		it('returns states and labels on success', async () => {
+			const states = [
+				{ id: 'state-1', name: 'Todo', type: 'unstarted', color: '#aaa' },
+				{ id: 'state-2', name: 'In Progress', type: 'started', color: '#bbb' },
+			];
+			const labels = [
+				{ id: 'label-1', name: 'Bug', color: '#f00', description: null },
+				{ id: 'label-2', name: 'Feature', color: '#0f0', description: 'New feature' },
+			];
+			mockLinearGetTeamWorkflowStates.mockResolvedValue(states);
+			mockLinearGetTeamLabels.mockResolvedValue(labels);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.linearTeamDetails({ ...linearCredsInput, teamId: 'team-1' });
+
+			expect(result).toEqual({ states, labels });
+			expect(mockLinearGetTeamWorkflowStates).toHaveBeenCalledWith('team-1');
+			expect(mockLinearGetTeamLabels).toHaveBeenCalledWith('team-1');
+		});
+
+		it('wraps API failure in BAD_REQUEST', async () => {
+			mockLinearGetTeamWorkflowStates.mockRejectedValue(new Error('Team not found'));
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearTeamDetails({ ...linearCredsInput, teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+		});
+
+		it('rejects empty teamId', async () => {
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.linearTeamDetails({ ...linearCredsInput, teamId: '' })).rejects.toThrow();
+		});
+	});
+
+	// ── linearTeamDetailsByProject ────────────────────────────────────────
+
+	describe('linearTeamDetailsByProject', () => {
+		beforeEach(() => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				id: 1,
+				projectId: 'proj-1',
+				category: 'pm',
+				provider: 'linear',
+				config: { teamId: 'team-1' },
+				triggers: {},
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			});
+		});
+
+		it('returns team details using stored project credentials', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValueOnce('stored-api-key');
+			const states = [{ id: 'state-1', name: 'Todo', type: 'unstarted', color: '#aaa' }];
+			const labels = [{ id: 'label-1', name: 'Bug', color: '#f00', description: null }];
+			mockLinearGetTeamWorkflowStates.mockResolvedValue(states);
+			mockLinearGetTeamLabels.mockResolvedValue(labels);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.linearTeamDetailsByProject({
+				projectId: 'proj-1',
+				teamId: 'team-1',
+			});
+
+			expect(mockVerifyProjectOrgAccess).toHaveBeenCalledWith('proj-1', mockUser.orgId);
+			expect(result).toEqual({ states, labels });
+			expect(mockLinearGetTeamWorkflowStates).toHaveBeenCalledWith('team-1');
+			expect(mockLinearGetTeamLabels).toHaveBeenCalledWith('team-1');
+		});
+
+		it('throws NOT_FOUND when apiKey credential is missing', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValue(null);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearTeamDetailsByProject({ projectId: 'proj-1', teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'NOT_FOUND' });
+		});
+
+		it('propagates org access denial', async () => {
+			const { TRPCError } = await import('@trpc/server');
+			mockVerifyProjectOrgAccess.mockRejectedValue(
+				new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' }),
+			);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearTeamDetailsByProject({ projectId: 'other-org-proj', teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'FORBIDDEN' });
+		});
+
+		it('rejects empty teamId', async () => {
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearTeamDetailsByProject({ projectId: 'proj-1', teamId: '' }),
+			).rejects.toThrow();
+		});
+
+		it('wraps Linear API failure in BAD_REQUEST', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValueOnce('stored-api-key');
+			mockLinearGetTeamWorkflowStates.mockRejectedValue(new Error('Team not found'));
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearTeamDetailsByProject({ projectId: 'proj-1', teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+		});
+	});
+
+	// ── linearProjects ────────────────────────────────────────────────────
+
+	describe('linearProjects', () => {
+		const linearCredsInput = { apiKey: 'lin_api_test' };
+
+		it('returns team projects on success', async () => {
+			const projects = [
+				{ id: 'P1', name: 'Alpha', icon: 'rocket', color: '#ff0000' },
+				{ id: 'P2', name: 'Beta', icon: null, color: null },
+			];
+			mockLinearGetTeamProjects.mockResolvedValue(projects);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.linearProjects({ ...linearCredsInput, teamId: 'T1' });
+
+			expect(result).toEqual(projects);
+			expect(mockLinearGetTeamProjects).toHaveBeenCalledWith('T1');
+		});
+
+		it('rejects empty teamId', async () => {
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(caller.linearProjects({ ...linearCredsInput, teamId: '' })).rejects.toThrow();
+		});
+
+		it('wraps API failure in BAD_REQUEST', async () => {
+			mockLinearGetTeamProjects.mockRejectedValue(new Error('Network error'));
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearProjects({ ...linearCredsInput, teamId: 'T1' }),
+			).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+		});
+	});
+
+	// ── linearProjectsByProject ───────────────────────────────────────────
+
+	describe('linearProjectsByProject', () => {
+		beforeEach(() => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValue({
+				id: 1,
+				projectId: 'proj-1',
+				category: 'pm',
+				provider: 'linear',
+				config: { teamId: 'team-1' },
+				triggers: {},
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			});
+		});
+
+		it('returns projects using stored project credentials', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValueOnce('stored-api-key');
+			const projects = [{ id: 'P1', name: 'Alpha', icon: null, color: null }];
+			mockLinearGetTeamProjects.mockResolvedValue(projects);
+
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			const result = await caller.linearProjectsByProject({
+				projectId: 'proj-1',
+				teamId: 'team-1',
+			});
+
+			expect(mockVerifyProjectOrgAccess).toHaveBeenCalledWith('proj-1', mockUser.orgId);
+			expect(mockLinearGetTeamProjects).toHaveBeenCalledWith('team-1');
+			expect(result).toEqual(projects);
+		});
+
+		it('throws NOT_FOUND when no PM integration exists', async () => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValueOnce(null);
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearProjectsByProject({ projectId: 'proj-1', teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'NOT_FOUND' });
+		});
+
+		it('throws NOT_FOUND when provider is not linear', async () => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValueOnce({
+				id: 2,
+				projectId: 'proj-1',
+				category: 'pm',
+				provider: 'jira',
+				config: {},
+				triggers: {},
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			});
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearProjectsByProject({ projectId: 'proj-1', teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'NOT_FOUND' });
+		});
+
+		it('throws NOT_FOUND when apiKey credential is missing', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValue(null);
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearProjectsByProject({ projectId: 'proj-1', teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'NOT_FOUND' });
+		});
+
+		it('wraps Linear API failure in BAD_REQUEST', async () => {
+			mockGetIntegrationCredentialOrNull.mockResolvedValueOnce('stored-api-key');
+			mockLinearGetTeamProjects.mockRejectedValue(new Error('API error'));
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.linearProjectsByProject({ projectId: 'proj-1', teamId: 'team-1' }),
+			).rejects.toMatchObject({ code: 'BAD_REQUEST' });
 		});
 	});
 

@@ -1,3 +1,6 @@
+import { useQuery } from '@tanstack/react-query';
+import { HelpCircle } from 'lucide-react';
+import { useState } from 'react';
 import { ENGINE_SECRETS } from '@/components/projects/engine-secrets.js';
 import { ProjectSecretField } from '@/components/projects/project-secret-field.js';
 import { useProjectUpdate } from '@/components/projects/use-project-update.js';
@@ -22,9 +25,6 @@ import {
 	TooltipTrigger,
 } from '@/components/ui/tooltip.js';
 import { trpc } from '@/lib/trpc.js';
-import { useQuery } from '@tanstack/react-query';
-import { HelpCircle } from 'lucide-react';
-import { useState } from 'react';
 
 interface Project {
 	id: string;
@@ -42,7 +42,6 @@ function capitalize(s: string): string {
 	return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: multiple query dependencies and per-engine tab rendering for credentials and settings
 export function ProjectHarnessForm({ project }: { project: Project }) {
 	const updateMutation = useProjectUpdate(project.id);
 	const enginesQuery = useQuery(trpc.agentConfigs.engines.queryOptions());

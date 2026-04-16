@@ -5,34 +5,34 @@
  * These are the building blocks composed by the YAML contextPipeline arrays.
  */
 
-import { execFileSync } from 'node:child_process';
-
-import { ListDirectory } from '../../gadgets/ListDirectory.js';
 import { formatCheckStatus } from '../../gadgets/github/core/getPRChecks.js';
+import { ListDirectory } from '../../gadgets/ListDirectory.js';
 import { readWorkItem, readWorkItemWithMedia } from '../../gadgets/pm/core/readWorkItem.js';
 import { formatSentryEvent } from '../../gadgets/sentry/core/format.js';
+import type { Todo } from '../../gadgets/todo/storage.js';
 import {
 	formatTodoList,
 	getNextId,
 	initTodoSession,
 	saveTodos,
 } from '../../gadgets/todo/storage.js';
-import type { Todo } from '../../gadgets/todo/storage.js';
 import { githubClient } from '../../github/client.js';
 import { getJiraConfig, getTrelloConfig } from '../../pm/config.js';
-import { MAX_IMAGES_PER_WORK_ITEM, getPMProviderOrNull } from '../../pm/index.js';
+import { getPMProviderOrNull, MAX_IMAGES_PER_WORK_ITEM } from '../../pm/index.js';
 import { getSentryClient } from '../../sentry/client.js';
 import type { AgentInput, ProjectConfig } from '../../types/index.js';
 import { parseRepoFullName } from '../../utils/repo.js';
-import { resolveSquintDbPath } from '../../utils/squintDb.js';
 import type { ContextInjection, LogWriter } from '../contracts/index.js';
 import {
+	countSkipsByReason,
+	extractPRDiffs,
 	formatPRComments,
 	formatPRDetails,
 	formatPRDiff,
+	formatPRDiffContext,
 	formatPRIssueComments,
 	formatPRReviews,
-	readPRFileContents,
+	formatSkippedFilesInjection,
 } from '../shared/prFormatting.js';
 import type { ContextFile } from '../utils/setup.js';
 
@@ -80,33 +80,6 @@ export function fetchContextFilesStep(params: FetchContextParams): ContextInject
 		result: file.content,
 		description: `Pre-fetched ${file.path}`,
 	}));
-}
-
-export function fetchSquintStep(params: FetchContextParams): ContextInjection[] {
-	const squintDb = resolveSquintDbPath(params.repoDir);
-	if (!squintDb) return [];
-
-	try {
-		const output = execFileSync('squint', ['overview', '-d', squintDb], {
-			encoding: 'utf-8',
-			timeout: 30_000,
-		});
-		if (!output?.trim()) return [];
-
-		return [
-			{
-				toolName: 'SquintOverview',
-				params: {
-					comment: 'Pre-fetching Squint codebase overview for context',
-					database: squintDb,
-				},
-				result: output,
-				description: 'Pre-fetched Squint codebase overview',
-			},
-		];
-	} catch {
-		return [];
-	}
 }
 
 export async function fetchWorkItemStep(params: FetchContextParams): Promise<ContextInjection[]> {
@@ -225,20 +198,36 @@ export async function fetchPRContextStep(params: FetchContextParams): Promise<Co
 		description: 'Pre-fetched CI check status',
 	});
 
-	// Read full contents of changed files
-	params.logWriter('INFO', 'Reading PR file contents', { fileCount: prDiff.length });
-	const fileContents = await readPRFileContents(params.repoDir, prDiff);
-	params.logWriter('INFO', 'File contents loaded', {
-		included: fileContents.included.length,
-		skipped: fileContents.skipped.length,
+	// Total changed files (now complete — `getPRDiff` paginates beyond the first 100).
+	params.logWriter('INFO', 'Total changed files in PR', { totalChangedFiles: prDiff.length });
+
+	// Compact per-file diffs (scales with PR size, not repo size). Files that
+	// don't fit the budget or can't be diffed are surfaced in a separate
+	// SKIPPED FILES injection so the agent can decide whether to fetch them.
+	const diffContext = extractPRDiffs(prDiff);
+	const skipReasons = countSkipsByReason(diffContext.skipped);
+	params.logWriter('INFO', 'PR context prepared', {
+		included: diffContext.included.length,
+		skipped: diffContext.skipped.length,
+		skipReasons,
 	});
 
-	for (const file of fileContents.included) {
+	injections.push({
+		toolName: 'GetPRDiffContext',
+		params: { comment: 'Pre-fetching compact per-file diffs for review', owner, repo, prNumber },
+		result: formatPRDiffContext(diffContext),
+		description: 'Pre-fetched PR diff context',
+	});
+
+	if (diffContext.skipped.length > 0) {
 		injections.push({
-			toolName: 'ReadFile',
-			params: { comment: `Pre-fetching ${file.path} for review`, filePath: file.path },
-			result: `path=${file.path}\n\n${file.content}`,
-			description: `Pre-fetched ${file.path}`,
+			toolName: 'SkippedFiles',
+			params: {
+				comment: 'PR files omitted from the compact context — fetch on demand if relevant',
+				prNumber,
+			},
+			result: formatSkippedFilesInjection(diffContext.skipped, prNumber),
+			description: 'Skipped files',
 		});
 	}
 

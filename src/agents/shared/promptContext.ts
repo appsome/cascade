@@ -1,35 +1,49 @@
-import { getJiraConfig, getTrelloConfig } from '../../pm/config.js';
+import { getJiraConfig, getLinearConfig, getTrelloConfig } from '../../pm/config.js';
 import { getPMProviderOrNull } from '../../pm/index.js';
 import type { ProjectConfig } from '../../types/index.js';
-import { resolveSquintDbPath } from '../../utils/squintDb.js';
 import type { PromptContext } from '../prompts/index.js';
 
 function getListIds(project: ProjectConfig) {
 	const trelloConfig = getTrelloConfig(project);
 	const jiraConfig = getJiraConfig(project);
+	const linearConfig = getLinearConfig(project);
 
 	return {
-		backlogListId: trelloConfig?.lists?.backlog ?? jiraConfig?.statuses?.backlog,
-		todoListId: trelloConfig?.lists?.todo ?? jiraConfig?.statuses?.todo,
-		inProgressListId: trelloConfig?.lists?.inProgress ?? jiraConfig?.statuses?.inProgress,
-		inReviewListId: trelloConfig?.lists?.inReview ?? jiraConfig?.statuses?.inReview,
-		doneListId: trelloConfig?.lists?.done ?? jiraConfig?.statuses?.done,
-		mergedListId: trelloConfig?.lists?.merged ?? jiraConfig?.statuses?.merged,
+		backlogListId:
+			trelloConfig?.lists?.backlog ??
+			jiraConfig?.statuses?.backlog ??
+			linearConfig?.statuses?.backlog,
+		todoListId:
+			trelloConfig?.lists?.todo ?? jiraConfig?.statuses?.todo ?? linearConfig?.statuses?.todo,
+		inProgressListId:
+			trelloConfig?.lists?.inProgress ??
+			jiraConfig?.statuses?.inProgress ??
+			linearConfig?.statuses?.inProgress,
+		inReviewListId:
+			trelloConfig?.lists?.inReview ??
+			jiraConfig?.statuses?.inReview ??
+			linearConfig?.statuses?.inReview,
+		doneListId:
+			trelloConfig?.lists?.done ?? jiraConfig?.statuses?.done ?? linearConfig?.statuses?.done,
+		mergedListId:
+			trelloConfig?.lists?.merged ?? jiraConfig?.statuses?.merged ?? linearConfig?.statuses?.merged,
 		debugListId: trelloConfig?.lists?.debug,
 		processedLabelId: trelloConfig?.labels?.processed,
-		autoLabelId: trelloConfig?.labels?.auto ?? jiraConfig?.labels?.auto,
+		autoLabelId:
+			trelloConfig?.labels?.auto ?? jiraConfig?.labels?.auto ?? linearConfig?.labels?.auto,
 	};
 }
 
 function getPromptTerminology(pmType: string | undefined) {
 	const isJira = pmType === 'jira';
+	const isLinear = pmType === 'linear';
 
 	return {
-		workItemNoun: isJira ? 'issue' : 'card',
-		workItemNounPlural: isJira ? 'issues' : 'cards',
-		workItemNounCap: isJira ? 'Issue' : 'Card',
-		workItemNounPluralCap: isJira ? 'Issues' : 'Cards',
-		pmName: isJira ? 'JIRA' : 'Trello',
+		workItemNoun: isJira || isLinear ? 'issue' : 'card',
+		workItemNounPlural: isJira || isLinear ? 'issues' : 'cards',
+		workItemNounCap: isJira || isLinear ? 'Issue' : 'Card',
+		workItemNounPluralCap: isJira || isLinear ? 'Issues' : 'Cards',
+		pmName: isJira ? 'JIRA' : isLinear ? 'Linear' : 'Trello',
 	};
 }
 
@@ -52,12 +66,10 @@ export function buildPromptContext(
 		originalWorkItemUrl: string;
 		detectedAgentType: string;
 	},
-	repoDir?: string,
 ): PromptContext {
 	const pmProvider = getPMProviderOrNull();
 	const listIds = getListIds(project);
 	const terminology = getPromptTerminology(pmProvider?.type);
-	const squintEnabled = repoDir ? resolveSquintDbPath(repoDir) !== null : false;
 
 	return {
 		workItemId,
@@ -68,7 +80,6 @@ export function buildPromptContext(
 		pmType: pmProvider?.type,
 		...terminology,
 		maxInFlightItems: project.maxInFlightItems ?? 1,
-		squintEnabled,
 		...(prContext && {
 			prNumber: prContext.prNumber,
 			prBranch: prContext.prBranch,

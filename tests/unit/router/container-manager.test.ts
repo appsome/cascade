@@ -153,6 +153,11 @@ describe('extractProjectIdFromJob', () => {
 		expect(await extractProjectIdFromJob(job)).toBe('proj-jira');
 	});
 
+	it('returns projectId for linear jobs', async () => {
+		const job = { type: 'linear', projectId: 'proj-linear' } as unknown as CascadeJob;
+		expect(await extractProjectIdFromJob(job)).toBe('proj-linear');
+	});
+
 	it('returns projectId resolved from repo for github jobs', async () => {
 		const job = { type: 'github', repoFullName: 'owner/repo' } as CascadeJob;
 		mockFindProjectByRepo.mockResolvedValue({ id: 'proj-gh' } as never);
@@ -215,7 +220,7 @@ describe('buildWorkerEnv', () => {
 		process.env.SENTRY_DSN = 'https://sentry.example.com/1';
 		const env = await buildWorkerEnv(makeJob() as never);
 		expect(env).toContain('SENTRY_DSN=https://sentry.example.com/1');
-		process.env.SENTRY_DSN = undefined;
+		delete process.env.SENTRY_DSN;
 	});
 
 	it('forwards CASCADE_DASHBOARD_URL when set', async () => {

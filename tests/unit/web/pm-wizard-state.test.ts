@@ -1,19 +1,20 @@
 import { describe, expect, it } from 'vitest';
-
+import type {
+	WizardAction,
+	WizardState,
+} from '../../../web/src/components/projects/pm-wizard-state.js';
 import {
-	INITIAL_JIRA_LABELS,
 	areCredentialsReady,
 	buildEditState,
+	buildLinearIntegrationConfig,
 	createInitialState,
+	deriveActiveWebhooks,
+	INITIAL_JIRA_LABELS,
 	isStep1Complete,
 	isStep2Complete,
 	isStep3Complete,
 	isStep4Complete,
 	wizardReducer,
-} from '../../../web/src/components/projects/pm-wizard-state.js';
-import type {
-	WizardAction,
-	WizardState,
 } from '../../../web/src/components/projects/pm-wizard-state.js';
 
 // ============================================================================
@@ -45,6 +46,7 @@ describe('createInitialState', () => {
 		expect(state.jiraLabels).toEqual(INITIAL_JIRA_LABELS);
 		expect(state.jiraCostFieldId).toBe('');
 		expect(state.isEditing).toBe(false);
+		expect(state.previousProvider).toBeUndefined();
 	});
 });
 
@@ -61,7 +63,7 @@ describe('wizardReducer', () => {
 		return wizardReducer(state, action);
 	}
 
-	it('SET_PROVIDER resets to initial state with new provider', () => {
+	it('SET_PROVIDER (not editing) resets to initial state with new provider', () => {
 		const state = {
 			...initialState(),
 			trelloApiKey: 'my-api-key',
@@ -72,6 +74,57 @@ describe('wizardReducer', () => {
 		// Should have been reset
 		expect(next.trelloApiKey).toBe('');
 		expect(next.trelloBoardId).toBe('');
+		expect(next.isEditing).toBe(false);
+		expect(next.previousProvider).toBeUndefined();
+	});
+
+	it('SET_PROVIDER (editing) preserves isEditing + previousProvider and clears provider-specific fields', () => {
+		const state: WizardState = {
+			...initialState(),
+			provider: 'trello',
+			isEditing: true,
+			previousProvider: 'trello',
+			hasStoredCredentials: true,
+			trelloApiKey: 'key',
+			trelloToken: 'tok',
+			trelloBoardId: 'board-1',
+			trelloListMappings: { todo: 'list-1' },
+			trelloLabelMappings: { processing: 'label-1' },
+			trelloCostFieldId: 'cf-1',
+			verificationResult: { provider: 'trello', display: '@user' },
+			verifyError: null,
+		};
+		const next = dispatch(state, { type: 'SET_PROVIDER', provider: 'linear' });
+
+		// New provider is set, edit mode carries over
+		expect(next.provider).toBe('linear');
+		expect(next.isEditing).toBe(true);
+		expect(next.previousProvider).toBe('trello');
+
+		// Credentials + verification + hasStoredCredentials are cleared
+		expect(next.trelloApiKey).toBe('');
+		expect(next.trelloToken).toBe('');
+		expect(next.linearApiKey).toBe('');
+		expect(next.verificationResult).toBeNull();
+		expect(next.verifyError).toBeNull();
+		expect(next.hasStoredCredentials).toBe(false);
+
+		// Provider-specific fields cleared
+		expect(next.trelloBoardId).toBe('');
+		expect(next.trelloListMappings).toEqual({});
+		expect(next.trelloLabelMappings).toEqual({});
+		expect(next.trelloCostFieldId).toBe('');
+	});
+
+	it('SET_PROVIDER (editing) with no previousProvider set leaves previousProvider undefined', () => {
+		const state: WizardState = {
+			...initialState(),
+			provider: 'trello',
+			isEditing: true,
+		};
+		const next = dispatch(state, { type: 'SET_PROVIDER', provider: 'jira' });
+		expect(next.isEditing).toBe(true);
+		expect(next.previousProvider).toBeUndefined();
 	});
 
 	it('SET_TRELLO_API_KEY clears verification', () => {
@@ -277,6 +330,15 @@ describe('wizardReducer', () => {
 		expect(next.isEditing).toBe(true);
 		expect(next.provider).toBe('jira');
 		expect(next.jiraBaseUrl).toBe('https://example.atlassian.net');
+	});
+
+	it('INIT_EDIT records previousProvider matching the loaded provider', () => {
+		const state = initialState();
+		const next = dispatch(state, {
+			type: 'INIT_EDIT',
+			state: { provider: 'trello', trelloBoardId: 'board-1' },
+		});
+		expect(next.previousProvider).toBe('trello');
 	});
 
 	it('ADD_TRELLO_BOARD_LABEL appends a label to trelloBoardDetails.labels', () => {
@@ -644,5 +706,194 @@ describe('buildEditState', () => {
 		const result = buildEditState('unknown', {}, new Set<string>());
 		expect(result.provider).toBe('unknown');
 		expect(Object.keys(result).length).toBe(1);
+	});
+});
+
+// ============================================================================
+// Linear project scope — state reducer + edit-state hydration (spec 005)
+// ============================================================================
+
+describe('Linear project scope — createInitialState', () => {
+	it('linearProjectId defaults to empty string', () => {
+		const state = createInitialState();
+		expect(state.linearProjectId).toBe('');
+	});
+
+	it('linearProjects defaults to empty array', () => {
+		const state = createInitialState();
+		expect(state.linearProjects).toEqual([]);
+	});
+});
+
+describe('Linear project scope — wizardReducer', () => {
+	function initialState(): WizardState {
+		return createInitialState();
+	}
+
+	it('SET_LINEAR_PROJECTS replaces the list', () => {
+		const result = wizardReducer(initialState(), {
+			type: 'SET_LINEAR_PROJECTS',
+			projects: [
+				{ id: 'P1', name: 'Alpha', icon: null, color: null },
+				{ id: 'P2', name: 'Beta', icon: 'rocket', color: '#f00' },
+			],
+		});
+		expect(result.linearProjects).toEqual([
+			{ id: 'P1', name: 'Alpha', icon: null, color: null },
+			{ id: 'P2', name: 'Beta', icon: 'rocket', color: '#f00' },
+		]);
+	});
+
+	it('SET_LINEAR_PROJECT_ID sets the chosen id', () => {
+		const result = wizardReducer(initialState(), {
+			type: 'SET_LINEAR_PROJECT_ID',
+			value: 'P1',
+		});
+		expect(result.linearProjectId).toBe('P1');
+	});
+
+	it('SET_LINEAR_PROJECT_ID with empty string clears selection', () => {
+		const withValue = wizardReducer(initialState(), {
+			type: 'SET_LINEAR_PROJECT_ID',
+			value: 'P1',
+		});
+		const result = wizardReducer(withValue, {
+			type: 'SET_LINEAR_PROJECT_ID',
+			value: '',
+		});
+		expect(result.linearProjectId).toBe('');
+	});
+
+	it('SET_LINEAR_TEAM_ID resets linearProjectId and linearProjects', () => {
+		// Seed state with a chosen project + loaded project list
+		const seeded: WizardState = {
+			...initialState(),
+			linearTeamId: 'OLD-TEAM',
+			linearProjectId: 'P1',
+			linearProjects: [{ id: 'P1', name: 'Alpha', icon: null, color: null }],
+		};
+		const result = wizardReducer(seeded, {
+			type: 'SET_LINEAR_TEAM_ID',
+			id: 'NEW-TEAM',
+		});
+		expect(result.linearTeamId).toBe('NEW-TEAM');
+		expect(result.linearProjectId).toBe('');
+		expect(result.linearProjects).toEqual([]);
+	});
+});
+
+describe('Linear project scope — buildEditState hydration', () => {
+	it('hydrates linearProjectId from initialConfig.projectId when present', () => {
+		const result = buildEditState(
+			'linear',
+			{ teamId: 'T1', projectId: 'P1', statuses: {} },
+			new Set(['LINEAR_API_KEY']),
+		);
+		expect(result.linearProjectId).toBe('P1');
+	});
+
+	it('leaves linearProjectId unset when initialConfig has no projectId', () => {
+		const result = buildEditState(
+			'linear',
+			{ teamId: 'T1', statuses: {} },
+			new Set(['LINEAR_API_KEY']),
+		);
+		expect(result.linearProjectId ?? '').toBe('');
+	});
+});
+
+describe('buildLinearIntegrationConfig — save payload', () => {
+	function seed(overrides: Partial<WizardState> = {}): WizardState {
+		return {
+			...createInitialState(),
+			provider: 'linear',
+			linearTeamId: 'T1',
+			linearStatusMappings: { todo: 'S-TD' },
+			linearLabels: {},
+			...overrides,
+		};
+	}
+
+	it('omits projectId when linearProjectId is empty', () => {
+		const config = buildLinearIntegrationConfig(seed({ linearProjectId: '' }));
+		expect(config).not.toHaveProperty('projectId');
+		expect(config.teamId).toBe('T1');
+	});
+
+	it('includes projectId when linearProjectId is set', () => {
+		const config = buildLinearIntegrationConfig(seed({ linearProjectId: 'P1' }));
+		expect(config.projectId).toBe('P1');
+		expect(config.teamId).toBe('T1');
+	});
+
+	it('clearing a previously-set projectId yields a config without projectId', () => {
+		// Simulate edit mode: start with projectId set, user clears, we save.
+		const state = seed({ linearProjectId: '' }); // after clear
+		const config = buildLinearIntegrationConfig(state);
+		expect(config).not.toHaveProperty('projectId');
+	});
+
+	it('omits labels when linearLabels is empty; includes when populated', () => {
+		const bare = buildLinearIntegrationConfig(seed());
+		expect(bare).not.toHaveProperty('labels');
+		const withLabels = buildLinearIntegrationConfig(
+			// Linear labels are stored as UUIDs (the Linear API rejects names for
+			// issueUpdate.labelIds). Wizard dropdowns populate from the team's labels.
+			seed({ linearLabels: { processing: '11111111-1111-4111-8111-111111111111' } }),
+		);
+		expect(withLabels).toHaveProperty('labels', {
+			processing: '11111111-1111-4111-8111-111111111111',
+		});
+	});
+});
+
+// ============================================================================
+// deriveActiveWebhooks
+// ============================================================================
+
+describe('deriveActiveWebhooks', () => {
+	it('maps Trello webhooks via callbackURL + active', () => {
+		const result = deriveActiveWebhooks('trello', {
+			trello: [
+				{ id: 1, callbackURL: 'https://hook/trello', active: true },
+				{ id: 2, callbackURL: 'https://hook/trello-2', active: false },
+			],
+		});
+
+		expect(result).toEqual([
+			{ id: '1', url: 'https://hook/trello', active: true },
+			{ id: '2', url: 'https://hook/trello-2', active: false },
+		]);
+	});
+
+	it('maps JIRA webhooks via url + enabled (renamed to active)', () => {
+		const result = deriveActiveWebhooks('jira', {
+			jira: [{ id: 'abc', url: 'https://hook/jira', enabled: true }],
+		});
+
+		expect(result).toEqual([{ id: 'abc', url: 'https://hook/jira', active: true }]);
+	});
+
+	it('returns empty array for Linear (manual webhook setup)', () => {
+		const result = deriveActiveWebhooks('linear', {
+			trello: [{ id: 1, callbackURL: 'irrelevant', active: true }],
+			jira: [{ id: 1, url: 'irrelevant', enabled: true }],
+		});
+
+		expect(result).toEqual([]);
+	});
+
+	it('returns empty array when webhooksData is undefined', () => {
+		expect(deriveActiveWebhooks('trello', undefined)).toEqual([]);
+		expect(deriveActiveWebhooks('jira', undefined)).toEqual([]);
+		expect(deriveActiveWebhooks('linear', undefined)).toEqual([]);
+	});
+
+	it('coerces numeric IDs to strings', () => {
+		const result = deriveActiveWebhooks('trello', {
+			trello: [{ id: 42, callbackURL: 'u', active: true }],
+		});
+		expect(result[0].id).toBe('42');
+		expect(typeof result[0].id).toBe('string');
 	});
 });

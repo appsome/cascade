@@ -1,0 +1,200 @@
+---
+id: 005
+slug: linear-project-scope
+plan: 1
+plan_slug: scope-config-and-outbound
+level: plan
+parent_spec: docs/specs/005-linear-project-scope.md
+depends_on: []
+status: done
+---
+
+# 005/1: Foundation — `LinearConfig.projectId`, client filter, provider outbound scope
+
+> Part 1 of 3 in the 005-linear-project-scope plan. See [parent spec](../../specs/005-linear-project-scope.md).
+
+## Summary
+
+This plan introduces the configuration shape and the outbound (code → Linear) half of the feature. It adds an optional `projectId` field to `LinearConfig`, threads it through `LinearIntegration.createProvider`, extends `linearClient.listIssues()` and `linearClient.createIssue()` to honor a project filter / project assignment, and updates `LinearPMProvider.listWorkItems()`, `LinearPMProvider.createWorkItem()`, and the checklist sub-issue creation path in `LinearPMProvider.addChecklistItem()` so every outbound write/read respects the configured project scope when one is set.
+
+No operator-visible behavior changes from this plan alone. No existing project has a `projectId` in its `LinearConfig` (the wizard doesn't write one until plan 3), and the code treats absence of `projectId` exactly as today. This plan ships a **dormant** enhancement that unlocks plans 2 and 3 and is reviewable in isolation via unit tests that pass a `LinearConfig` with `projectId` set and assert the shape of outbound Linear API calls.
+
+**Components delivered:**
+- `src/pm/config.ts` — `LinearConfig.projectId?: string` field.
+- `src/linear/types.ts` — `LinearCreateIssueInput.projectId?: string` passthrough.
+- `src/linear/client.ts` — `listIssues` accepts `projectId`; `createIssue` already accepts `input.projectId` via the GraphQL `IssueCreateInput`, confirm end-to-end.
+- `src/pm/linear/adapter.ts` — `LinearPMProvider` reads `config.projectId`, applies it in `listWorkItems`, `createWorkItem`, and `addChecklistItem` (for sub-issues).
+- `src/pm/linear/integration.ts` — no logic change beyond continuing to pass the full `LinearConfig` to `LinearPMProvider` constructor (already happens). Add a smoke test asserting this.
+- `tests/unit/pm/linear-adapter.test.ts` — new file.
+- `tests/unit/linear/client.test.ts` — extend (if exists) or add.
+- `tests/unit/pm/linear-integration.test.ts` — extend.
+
+**Deferred to later plans in this spec:**
+- Webhook-side inbound scope filter (plan 2).
+- tRPC `linearProjects` discovery endpoint (plan 2).
+- Wizard UI project selector, save payload change, webhook info panel copy (plan 3).
+- All operator-visible documentation (README, CHANGELOG) except the plan-internal CHANGELOG stub (plan 3).
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #8** (listing operations return only issues in the configured project when a project scope is set, and all team issues when it is not) — **full** at the provider layer. Triggers and gadgets that call `LinearPMProvider.listWorkItems()` inherit this for free.
+- **Spec AC #9** (new issues, including checklist sub-issues, are placed into the configured Linear Project when a scope is set, and into no project when it is not) — **full** at the provider layer. All issue-creation paths through `LinearPMProvider` respect `config.projectId`.
+- **Spec AC #10** (existing Linear integration without project scope works end-to-end with no behavior change) — **partial (this plan provides the outbound half — `LinearConfig` without `projectId` behaves exactly as before; plan 2 provides the router-side half; plan 3 preserves wizard save-payload compatibility)**.
+
+---
+
+## Depends On
+
+- None. This plan can ship first.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. `LinearConfig.projectId` field
+
+**Tests first** (`tests/unit/pm/linear-integration.test.ts`, extend existing):
+- `getLinearConfig — returns config with projectId when set`: given a `ProjectConfig` whose `pm.type = 'linear'` and `project.linear = { teamId: 'T1', projectId: 'P1', statuses: {} }`, `getLinearConfig(project)?.projectId === 'P1'`.
+- `getLinearConfig — returns config without projectId when absent`: given the same shape minus `projectId`, `getLinearConfig(project)?.projectId === undefined`.
+- `LinearIntegration.createProvider — forwards projectId from LinearConfig to LinearPMProvider`: construct a provider from a config with `projectId` set, assert `(provider as any).config.projectId === 'P1'`. (Use an explicit field-read test — do NOT mock the provider constructor.)
+
+**Implementation** (`src/pm/config.ts`):
+- Extend the `LinearConfig` interface to add `projectId?: string`. Place it directly after `teamId` for readability.
+- No runtime change — TypeScript-only.
+
+**Implementation** (`src/pm/linear/integration.ts`):
+- No code change required. `createProvider` already passes the full `LinearConfig` to `LinearPMProvider`'s constructor. Verify via the added test above.
+
+### 2. `linearClient.listIssues()` accepts `projectId` filter
+
+**Tests first** (`tests/unit/linear/client.test.ts`, extend or create):
+- `listIssues — includes project.id.eq when projectId passed`: stub the GraphQL transport, call `linearClient.listIssues({ teamId: 'T1', projectId: 'P1' })`, assert the query variables contain `filter.project.id.eq === 'P1'` and `filter.team.id.eq === 'T1'`.
+- `listIssues — omits project filter when projectId absent`: call `linearClient.listIssues({ teamId: 'T1' })`, assert `filter.project` is not present in the variables.
+- `listIssues — sends no filter at all when neither teamId nor projectId passed`: call `linearClient.listIssues({})`, assert `filter` is `undefined` in variables.
+
+**Implementation** (`src/linear/client.ts`):
+- Extend the `filter` parameter type of `listIssues` to include `projectId?: string`.
+- In the body, when `filter?.projectId` is set, add `filterObj.project = { id: { eq: filter.projectId } }` alongside the existing team/assignee/state guards.
+
+### 3. `linearClient.createIssue()` passes `projectId` through
+
+**Tests first** (`tests/unit/linear/client.test.ts`, extend):
+- `createIssue — forwards projectId in input`: stub GraphQL transport, call `linearClient.createIssue({ teamId: 'T1', projectId: 'P1', title: 't' })`, assert the mutation's `input` variable contains `projectId: 'P1'`.
+- `createIssue — omits projectId when not supplied`: call `linearClient.createIssue({ teamId: 'T1', title: 't' })`, assert the `input` variable does not contain `projectId`.
+
+**Implementation** (`src/linear/types.ts`):
+- Extend `LinearCreateIssueInput` to include `projectId?: string`. Document with a one-line comment: `/** Linear project (initiative) ID — when set, the new issue is placed into this project. */`.
+
+**Implementation** (`src/linear/client.ts`):
+- No code change in `createIssue`. It already passes the `input` object through to the GraphQL mutation. The type extension is sufficient.
+
+### 4. `LinearPMProvider.listWorkItems()` applies project filter
+
+**Tests first** (`tests/unit/pm/linear-adapter.test.ts`, NEW FILE):
+- `listWorkItems — passes projectId when configured`: instantiate `new LinearPMProvider({ teamId: 'T1', projectId: 'P1', statuses: {} })`, stub `linearClient.listIssues`, call `provider.listWorkItems('T1')`, assert the stub was called with `{ teamId: 'T1', projectId: 'P1', ... }`.
+- `listWorkItems — omits projectId when not configured`: same but with `projectId` absent; assert the stub call has no `projectId` key.
+- `listWorkItems — still applies status filter when both are set`: with `filter = { status: 'backlog' }`, assert the stub receives both `projectId: 'P1'` and the resolved `stateId`.
+
+**Implementation** (`src/pm/linear/adapter.ts`):
+- In `listWorkItems`, after the existing `teamId` resolution and before/with the `filter.status` handling, pass `projectId: this.config.projectId` through to `linearClient.listIssues()`. Spread cleanly so the absent case produces no extra key.
+
+### 5. `LinearPMProvider.createWorkItem()` + `addChecklistItem()` set `projectId`
+
+**Tests first** (`tests/unit/pm/linear-adapter.test.ts`, same file):
+- `createWorkItem — sets projectId when configured`: with config `{ teamId: 'T1', projectId: 'P1', statuses: {} }`, stub `linearClient.createIssue`, call `provider.createWorkItem({ title: 'x' })`, assert the stub call contains `projectId: 'P1'`.
+- `createWorkItem — omits projectId when not configured`: same with `projectId` absent; assert the stub call has no `projectId` key.
+- `addChecklistItem — sub-issue inherits projectId when configured`: with `projectId` in config, call `provider.addChecklistItem('subtasks-parent-123', 'child', false)`, assert `linearClient.createIssue` was called with `projectId: 'P1'` (and `parentId: 'parent-123'`).
+- `addChecklistItem — omits projectId for sub-issue when not configured`: same with `projectId` absent; assert no `projectId` in the stub call.
+
+**Implementation** (`src/pm/linear/adapter.ts`):
+- In `createWorkItem`, add `...(this.config.projectId ? { projectId: this.config.projectId } : {})` to the `linearClient.createIssue({...})` call.
+- In `addChecklistItem`, same spread added to the `linearClient.createIssue({...})` call that constructs the sub-issue.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/pm/linear-integration.test.ts`: 3 tests covering the `LinearConfig.projectId` field + `createProvider` pass-through.
+- [ ] `tests/unit/linear/client.test.ts`: 5 tests covering `listIssues` filter behavior and `createIssue` input pass-through (create new file if one does not exist).
+- [ ] `tests/unit/pm/linear-adapter.test.ts` (NEW): 6 tests covering `listWorkItems`, `createWorkItem`, `addChecklistItem` project-scope behavior.
+
+### Integration tests
+- None in this plan. The feature is testable at the unit level with stubbed `linearClient` calls; adding a live-Linear integration test is disproportionate to the risk.
+
+### Acceptance tests
+- [x] AC #1: `LinearConfig.projectId` type compiles and is optional.
+- [x] AC #2: `linearClient.listIssues()` filter variables include `project.id.eq` exactly when `projectId` is supplied.
+- [x] AC #3: `linearClient.createIssue()` mutation input includes `projectId` exactly when supplied.
+- [x] AC #4: `LinearPMProvider.listWorkItems()` propagates `config.projectId` to the client.
+- [x] AC #5: `LinearPMProvider.createWorkItem()` sets `projectId` on new issues when `config.projectId` is set.
+- [x] AC #6: `LinearPMProvider.addChecklistItem()` sets `projectId` on sub-issues when `config.projectId` is set.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `LinearConfig` exposes an optional `projectId: string` field; existing code paths that don't reference it compile and run unchanged.
+2. `linearClient.listIssues()` includes `project.id.eq` in the GraphQL filter variables exactly when a `projectId` is passed; absent otherwise.
+3. `linearClient.createIssue()` passes `projectId` through to the GraphQL mutation input exactly when provided.
+4. `LinearPMProvider.listWorkItems()` propagates `config.projectId` to `linearClient.listIssues()` when set, omits it when not.
+5. `LinearPMProvider.createWorkItem()` assigns new issues to the configured project when `config.projectId` is set, and to no project when not.
+6. `LinearPMProvider.addChecklistItem()` assigns newly-created sub-issues to the configured project when `config.projectId` is set.
+7. When `config.projectId` is not set, every outbound call has the exact same shape as before this plan (verify via snapshot-style assertions on the stub calls).
+8. All new/modified code has corresponding tests.
+9. `npm run build` passes.
+10. `npm test` passes (unit projects).
+11. `npm run lint` passes.
+12. `npm run typecheck` passes.
+
+**Partial-state criterion:**
+- The `LinearConfig.projectId` field is readable throughout the outbound code path, but no operator-facing surface writes it yet. Existing installations with no `projectId` in their config see zero behavior change.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `CHANGELOG.md` | Add an entry under an Unreleased heading: "Linear PM: `LinearConfig.projectId` added as optional field; when set, outbound list/create operations scope to the Linear Project. No operator-facing surface writes this yet (see later plans). Existing installations: no behavior change." |
+
+No other doc updates in this plan. Integration README + wizard README-like copy lands with plan 3 (the operator-facing ship).
+
+---
+
+## Out of Scope (this plan)
+
+- **Webhook-side inbound scope filter** — deferred to plan 2.
+- **tRPC `linearProjects` discovery endpoint** — deferred to plan 2.
+- **Wizard UI project selector** — deferred to plan 3.
+- **Save payload change in the wizard** — deferred to plan 3.
+- **`LinearWebhookInfoPanel` copy update** — deferred to plan 3.
+- **Integration README update** — deferred to plan 3.
+- Linear **Initiatives** as a CASCADE scope selector (spec-level out of scope).
+- **Multi-team project scoping** (spec-level out of scope).
+- **"No project" as an explicit filter** (spec-level out of scope).
+- **Project-level label configuration** (spec-level out of scope).
+- **Workspace-level labels** as an alternative to team labels (spec-level out of scope).
+- **Migration tooling** (spec-level out of scope — change is purely additive).
+- Any change to **webhook signature verification, ack comment, or reaction** behavior (spec-level out of scope).
+- Any change to **status mapping** configuration (spec-level out of scope).
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1
+- [x] AC #2
+- [x] AC #3
+- [x] AC #4
+- [x] AC #5
+- [x] AC #6
+- [x] AC #7
+- [x] AC #8
+- [x] AC #9
+- [x] AC #10
+- [x] AC #11
+- [x] AC #12

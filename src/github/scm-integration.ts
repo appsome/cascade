@@ -4,13 +4,10 @@
  * Encapsulates GitHub SCM credential resolution and validation
  * into a unified integration class following the IntegrationModule pattern.
  *
- * Consolidates:
- * - `hasScmIntegration()` logic from src/github/integration.ts
- * - `hasScmPersonaToken()` logic from src/github/integration.ts
- * - `withGitHubToken()` usage from src/github/client.ts
- *
- * Backward compatibility: the standalone functions in src/github/integration.ts
- * remain exported and continue to work identically.
+ * Provides:
+ * - `hasIntegration()` — checks if at least one token (implementer or reviewer) is configured
+ * - `hasPersonaToken()` — checks if a specific persona token is configured
+ * - `withCredentials()` — runs a function within the implementer token credential scope
  */
 
 import { getIntegrationCredential, getIntegrationCredentialOrNull } from '../config/provider.js';
@@ -32,8 +29,8 @@ export class GitHubSCMIntegration implements SCMIntegration {
 
 		// Check if either token is available (some agents only need one)
 		const [impl, rev] = await Promise.all([
-			getIntegrationCredentialOrNull(projectId, 'scm', 'implementer_token'),
-			getIntegrationCredentialOrNull(projectId, 'scm', 'reviewer_token'),
+			getIntegrationCredentialOrNull(projectId, 'scm', 'github', 'implementer_token'),
+			getIntegrationCredentialOrNull(projectId, 'scm', 'github', 'reviewer_token'),
 		]);
 
 		return impl !== null || rev !== null;
@@ -44,7 +41,7 @@ export class GitHubSCMIntegration implements SCMIntegration {
 	 */
 	async hasPersonaToken(projectId: string, persona: 'implementer' | 'reviewer'): Promise<boolean> {
 		const role = persona === 'implementer' ? 'implementer_token' : 'reviewer_token';
-		const token = await getIntegrationCredentialOrNull(projectId, 'scm', role);
+		const token = await getIntegrationCredentialOrNull(projectId, 'scm', 'github', role);
 		return token !== null;
 	}
 
@@ -53,7 +50,7 @@ export class GitHubSCMIntegration implements SCMIntegration {
 	 * GitHub credential scope. Follows the same pattern as TrelloIntegration.withCredentials().
 	 */
 	async withCredentials<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-		const token = await getIntegrationCredential(projectId, 'scm', 'implementer_token');
+		const token = await getIntegrationCredential(projectId, 'scm', 'github', 'implementer_token');
 		return withGitHubToken(token, fn);
 	}
 }

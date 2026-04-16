@@ -6,6 +6,7 @@ import '../integrations/bootstrap.js';
 import { initPrompts } from '../agents/prompts/index.js';
 import { registerBuiltInEngines } from '../backends/bootstrap.js';
 import { initAgentMessages } from '../config/agentMessages.js';
+import { validateCredentialMasterKey } from '../db/crypto.js';
 import { seedAgentDefinitions } from '../db/seeds/seedAgentDefinitions.js';
 import { registerBuiltInTriggers } from '../triggers/builtins.js';
 import { createTriggerRegistry } from '../triggers/registry.js';
@@ -14,11 +15,13 @@ import {
 	createWebhookHandler,
 	parseGitHubPayload,
 	parseJiraPayload,
+	parseLinearPayload,
 	parseSentryPayload,
 	parseTrelloPayload,
 } from '../webhook/webhookHandlers.js';
 import { GitHubRouterAdapter, injectEventType } from './adapters/github.js';
 import { JiraRouterAdapter } from './adapters/jira.js';
+import { LinearRouterAdapter } from './adapters/linear.js';
 import { SentryRouterAdapter } from './adapters/sentry.js';
 import { TrelloRouterAdapter } from './adapters/trello.js';
 import { startCancelListener, stopCancelListener } from './cancel-listener.js';
@@ -27,6 +30,7 @@ import { processRouterWebhook } from './webhook-processor.js';
 import {
 	verifyGitHubWebhookSignature,
 	verifyJiraWebhookSignature,
+	verifyLinearWebhookSignature,
 	verifySentryWebhookSignature,
 	verifyTrelloWebhookSignature,
 } from './webhookVerification.js';
@@ -166,6 +170,30 @@ app.post(
 	}),
 );
 
+// Linear webhook verification
+app.get('/linear/webhook', (c) => {
+	return c.text('OK', 200);
+});
+
+// Linear webhook handler
+app.post(
+	'/linear/webhook',
+	createWebhookHandler({
+		source: 'linear',
+		parsePayload: parseLinearPayload,
+		verifySignature: verifyLinearWebhookSignature,
+		processWebhook: async (payload) => {
+			const adapter = new LinearRouterAdapter();
+			const result = await processRouterWebhook(adapter, payload, triggerRegistry);
+			return {
+				processed: result.shouldProcess,
+				projectId: result.projectId,
+				decisionReason: result.decisionReason,
+			};
+		},
+	}),
+);
+
 // Graceful shutdown
 async function shutdown(signal: string): Promise<void> {
 	logger.info('Received shutdown signal', { signal });
@@ -192,6 +220,12 @@ process.on('unhandledRejection', (reason) => {
 // Start server and worker processor
 async function startRouter(): Promise<void> {
 	const port = Number(process.env.PORT) || 3000;
+
+	const keyValidation = validateCredentialMasterKey();
+	if (!keyValidation.valid) {
+		logger.error('Invalid CREDENTIAL_MASTER_KEY', { reason: keyValidation.reason });
+		process.exit(1);
+	}
 
 	// Seed built-in agent definitions to DB, then initialize in-memory caches
 	logger.info('Seeding agent definitions...');

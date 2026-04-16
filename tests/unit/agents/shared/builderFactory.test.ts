@@ -1,9 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../../src/utils/squintDb.js', () => ({
-	resolveSquintDbPath: vi.fn().mockReturnValue(null),
-}));
-
 vi.mock('../../../../src/config/compactionConfig.js', () => ({
 	getCompactionConfig: vi.fn().mockReturnValue({ maxTokens: 100000, strategy: 'hybrid' }),
 }));
@@ -29,12 +25,10 @@ vi.mock('../../../../src/gadgets/sessionState.js', async (importOriginal) => {
 	};
 });
 
-vi.mock('../../../../src/agents/shared/capabilities.js', () => ({
+vi.mock('../../../../src/agents/definitions/index.js', () => ({
 	getAgentCapabilities: vi.fn().mockResolvedValue({
-		canEditFiles: true,
-		canCreatePR: true,
-		canUpdateChecklists: true,
-		isReadOnly: false,
+		required: ['fs:read', 'fs:write', 'shell:exec', 'session:ctrl'],
+		optional: [],
 	}),
 }));
 
@@ -80,16 +74,11 @@ vi.mock('llmist', () => ({
 
 import { execSync } from 'node:child_process';
 import { AgentBuilder, BudgetPricingUnavailableError } from 'llmist';
-import {
-	createConfiguredBuilder,
-	isSquintEnabled,
-} from '../../../../src/agents/shared/builderFactory.js';
-import { getAgentCapabilities } from '../../../../src/agents/shared/capabilities.js';
+import { getAgentCapabilities } from '../../../../src/agents/definitions/index.js';
+import { createConfiguredBuilder } from '../../../../src/agents/shared/builderFactory.js';
 import { initSessionState, setReadOnlyFs } from '../../../../src/gadgets/sessionState.js';
-import { resolveSquintDbPath } from '../../../../src/utils/squintDb.js';
 
 const mockExecSync = vi.mocked(execSync);
-const mockResolveSquintDbPath = vi.mocked(resolveSquintDbPath);
 const mockInitSessionState = vi.mocked(initSessionState);
 const mockSetReadOnlyFs = vi.mocked(setReadOnlyFs);
 const mockGetAgentCapabilities = vi.mocked(getAgentCapabilities);
@@ -125,30 +114,12 @@ function createBaseOptions(overrides?: object) {
 }
 
 beforeEach(() => {
-	mockResolveSquintDbPath.mockReturnValue(null);
-
 	// Reset all mock builder methods to return the builder instance
 	for (const key of Object.keys(mockBuilderInstance)) {
 		(mockBuilderInstance as Record<string, ReturnType<typeof vi.fn>>)[key].mockReturnValue(
 			mockBuilderInstance,
 		);
 	}
-});
-
-// ============================================================================
-// isSquintEnabled
-// ============================================================================
-
-describe('isSquintEnabled', () => {
-	it('returns false when resolveSquintDbPath returns null', () => {
-		mockResolveSquintDbPath.mockReturnValue(null);
-		expect(isSquintEnabled('/repo')).toBe(false);
-	});
-
-	it('returns true when resolveSquintDbPath returns a path', () => {
-		mockResolveSquintDbPath.mockReturnValue('/repo/.squint.db');
-		expect(isSquintEnabled('/repo')).toBe(true);
-	});
 });
 
 // ============================================================================
@@ -322,10 +293,8 @@ describe('createConfiguredBuilder', () => {
 
 	it('calls setReadOnlyFs(true) when agent is read-only', async () => {
 		mockGetAgentCapabilities.mockResolvedValueOnce({
-			canEditFiles: false,
-			canCreatePR: false,
-			canUpdateChecklists: false,
-			isReadOnly: true,
+			required: ['fs:read', 'session:ctrl'],
+			optional: [],
 		});
 		const options = createBaseOptions({ agentType: 'review' });
 		await createConfiguredBuilder(options);
@@ -334,10 +303,8 @@ describe('createConfiguredBuilder', () => {
 
 	it('does not call setReadOnlyFs when agent has write access', async () => {
 		mockGetAgentCapabilities.mockResolvedValueOnce({
-			canEditFiles: true,
-			canCreatePR: true,
-			canUpdateChecklists: true,
-			isReadOnly: false,
+			required: ['fs:read', 'fs:write', 'shell:exec', 'session:ctrl'],
+			optional: [],
 		});
 		const options = createBaseOptions();
 		await createConfiguredBuilder(options);

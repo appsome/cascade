@@ -1,6 +1,6 @@
 import os from 'node:os';
 
-import { LLMist, type ModelSpec, createLogger } from 'llmist';
+import { createLogger, LLMist, type ModelSpec } from 'llmist';
 
 import { createIntegrationChecker } from '../../agents/capabilities/index.js';
 import { getAgentProfile } from '../../agents/definitions/profiles.js';
@@ -65,7 +65,10 @@ export class LlmistEngine implements AgentEngine {
 
 		// Create per-execution llmist logger and tracking state
 		const llmistLogger = createLogger({ minLevel: getLogLevel() });
-		const trackingContext = createTrackingContext(agentType);
+		const trackingContext = createTrackingContext(
+			agentType,
+			profile.finishHooks.requiresReview ? 'review' : 'default',
+		);
 		const llmCallAccumulator: AccumulatedLlmCall[] = [];
 
 		// Create a LLM call logger for raw request/response file logging.

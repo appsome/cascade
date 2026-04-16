@@ -1,12 +1,15 @@
-import { Label } from '@/components/ui/label.js';
-import { trpc } from '@/lib/trpc.js';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle, Globe, Loader2, XCircle } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState } from 'react';
+import { Label } from '@/components/ui/label.js';
+import { trpc } from '@/lib/trpc.js';
 import { SaveStep, WebhookStep } from './pm-wizard-common-steps.js';
 import {
 	useJiraCustomFieldCreation,
 	useJiraDiscovery,
+	useLinearDiscovery,
+	useLinearLabelCreation,
+	useLinearWebhookInfo,
 	useSaveMutation,
 	useTrelloCustomFieldCreation,
 	useTrelloDiscovery,
@@ -20,9 +23,16 @@ import {
 	JiraProjectStep,
 } from './pm-wizard-jira-steps.js';
 import {
+	LINEAR_LABEL_DEFAULTS,
+	LinearCredentialsStep,
+	LinearFieldMappingStep,
+	LinearTeamStep,
+} from './pm-wizard-linear-steps.js';
+import {
 	areCredentialsReady,
 	buildEditState,
 	createInitialState,
+	deriveActiveWebhooks,
 	isStep1Complete,
 	isStep2Complete,
 	isStep3Complete,
@@ -49,6 +59,21 @@ const STEP_TITLES = [
 	'Webhooks',
 	'Save',
 ] as const;
+
+const PROVIDER_LABELS: Record<'trello' | 'jira' | 'linear', string> = {
+	trello: 'Trello',
+	jira: 'JIRA',
+	linear: 'Linear',
+};
+
+function confirmProviderSwitch(
+	from: 'trello' | 'jira' | 'linear',
+	to: 'trello' | 'jira' | 'linear',
+): boolean {
+	return window.confirm(
+		`Switch PM provider from ${PROVIDER_LABELS[from]} to ${PROVIDER_LABELS[to]}?\n\nYou'll need to re-enter credentials and re-map fields for ${PROVIDER_LABELS[to]}. The old provider's credentials will be deleted when you save.`,
+	);
+}
 
 // ============================================================================
 // Main PMWizard Component
@@ -122,14 +147,25 @@ export function PMWizard({
 		advanceToStep,
 		projectId,
 	);
+	const { linearTeamsMutation, linearDetailsMutation, linearProjectsMutation, handleTeamSelect } =
+		useLinearDiscovery(state, dispatch, advanceToStep, projectId);
 	const { createLabelMutation, createMissingLabelsMutation } = useTrelloLabelCreation(
 		state,
 		dispatch,
 	);
+	const {
+		createLabelMutation: createLinearLabelMutation,
+		createMissingLabelsMutation: createMissingLinearLabelsMutation,
+	} = useLinearLabelCreation(state, dispatch);
 	const { createCustomFieldMutation } = useTrelloCustomFieldCreation(state, dispatch);
 	const { createJiraCustomFieldMutation } = useJiraCustomFieldCreation(state, dispatch);
 	const webhookManagement = useWebhookManagement(projectId, state);
+	const { webhookUrl: linearWebhookUrl } = useLinearWebhookInfo();
 	const { saveMutation } = useSaveMutation(projectId, state);
+
+	const linearWebhookSecretCredential = credentialsQuery.data?.find(
+		(c) => c.envVarKey === 'LINEAR_WEBHOOK_SECRET',
+	);
 
 	// ---- Label creation handlers ----
 
@@ -177,6 +213,34 @@ export function PMWizard({
 		}
 	};
 
+	const handleCreateLinearLabel = (slot: string) => {
+		const defaults = LINEAR_LABEL_DEFAULTS[slot];
+		if (!defaults) return;
+		setCreatingSlot(slot);
+		createLinearLabelMutation.mutate(
+			{ name: defaults.name, color: defaults.color, slot },
+			{ onSettled: () => setCreatingSlot(null) },
+		);
+	};
+
+	const handleCreateAllMissingLinearLabels = () => {
+		const existingLabelNames = new Set(
+			(state.linearTeamDetails?.labels ?? []).map((l) => l.name.toLowerCase()),
+		);
+		const labelsToCreate = Object.entries(LINEAR_LABEL_DEFAULTS)
+			.filter(([slot, { name }]) => {
+				if (state.linearLabels[slot]) return false;
+				return !existingLabelNames.has(name.toLowerCase());
+			})
+			.map(([slot, { name, color }]) => ({ slot, name, color }));
+		if (labelsToCreate.length > 0) {
+			setCreatingSlot('__batch__');
+			createMissingLinearLabelsMutation.mutate(labelsToCreate, {
+				onSettled: () => setCreatingSlot(null),
+			});
+		}
+	};
+
 	// ---- Step status ----
 
 	const credsReady = areCredentialsReady(state);
@@ -191,18 +255,7 @@ export function PMWizard({
 	}
 
 	// ---- Active webhooks for this provider ----
-	const activeWebhooks =
-		state.provider === 'trello'
-			? (webhooksQuery.data?.trello ?? []).map((w) => ({
-					id: String(w.id),
-					url: w.callbackURL,
-					active: w.active,
-				}))
-			: (webhooksQuery.data?.jira ?? []).map((w) => ({
-					id: String(w.id),
-					url: w.url,
-					active: w.enabled,
-				}));
+	const activeWebhooks = deriveActiveWebhooks(state.provider, webhooksQuery.data);
 
 	// ---- Render ----
 
@@ -219,12 +272,13 @@ export function PMWizard({
 				<div className="space-y-2">
 					<Label>Provider</Label>
 					<div className="flex gap-2">
-						{(['trello', 'jira'] as const).map((p) => (
+						{(['trello', 'jira', 'linear'] as const).map((p) => (
 							<button
 								key={p}
 								type="button"
-								disabled={state.isEditing}
 								onClick={() => {
+									if (p === state.provider) return;
+									if (state.isEditing && !confirmProviderSwitch(state.provider, p)) return;
 									dispatch({ type: 'SET_PROVIDER', provider: p });
 									advanceToStep(2);
 								}}
@@ -232,9 +286,9 @@ export function PMWizard({
 									state.provider === p
 										? 'border-primary bg-primary/5 text-foreground'
 										: 'border-input text-muted-foreground hover:text-foreground hover:bg-accent/50'
-								} ${state.isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
+								}`}
 							>
-								{p === 'trello' ? 'Trello' : 'JIRA'}
+								{PROVIDER_LABELS[p]}
 							</button>
 						))}
 					</div>
@@ -251,6 +305,8 @@ export function PMWizard({
 			>
 				{state.provider === 'trello' ? (
 					<TrelloCredentialsStep state={state} dispatch={dispatch} />
+				) : state.provider === 'linear' ? (
+					<LinearCredentialsStep state={state} dispatch={dispatch} />
 				) : (
 					<JiraCredentialsStep state={state} dispatch={dispatch} />
 				)}
@@ -301,6 +357,15 @@ export function PMWizard({
 						boardsMutation={boardsMutation}
 						boardDetailsMutation={boardDetailsMutation}
 					/>
+				) : state.provider === 'linear' ? (
+					<LinearTeamStep
+						state={state}
+						onTeamSelect={handleTeamSelect}
+						dispatch={dispatch}
+						linearTeamsMutation={linearTeamsMutation}
+						linearDetailsMutation={linearDetailsMutation}
+						linearProjectsMutation={linearProjectsMutation}
+					/>
 				) : (
 					<JiraProjectStep
 						state={state}
@@ -329,6 +394,14 @@ export function PMWizard({
 						creatingSlot={creatingSlot}
 						creatingCostField={creatingCostField}
 					/>
+				) : state.provider === 'linear' ? (
+					<LinearFieldMappingStep
+						state={state}
+						dispatch={dispatch}
+						onCreateLabel={handleCreateLinearLabel}
+						onCreateAllMissingLabels={handleCreateAllMissingLinearLabels}
+						creatingSlot={creatingSlot}
+					/>
 				) : (
 					<JiraFieldMappingStep
 						state={state}
@@ -351,6 +424,9 @@ export function PMWizard({
 					state={state}
 					webhooksQuery={webhooksQuery}
 					activeWebhooks={activeWebhooks}
+					linearWebhookUrl={linearWebhookUrl}
+					projectId={projectId}
+					linearWebhookSecretCredential={linearWebhookSecretCredential}
 					{...webhookManagement}
 				/>
 			</WizardStep>

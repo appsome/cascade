@@ -5,7 +5,6 @@
  * All commands run as windows within a single control session.
  */
 import { Gadget, z } from 'llmist';
-import { type TmuxControlClient, getControlClient } from './TmuxControlClient.js';
 import {
 	DEFAULT_TIMEOUT_MS,
 	DEFAULT_WAIT_MS,
@@ -18,6 +17,7 @@ import {
 import { CommandFailedError } from './errors.js';
 import { validateGitCommand } from './gitValidation.js';
 import { addPendingNotice } from './sessionNotices.js';
+import { getControlClient, type TmuxControlClient } from './TmuxControlClient.js';
 import { sanitizeSessionName, sleep } from './utils.js';
 
 export class TmuxGadget extends Gadget({
@@ -124,31 +124,6 @@ Commands are interpreted by bash, so pipes, &&, ||, redirects, and globs all wor
 			output:
 				'session=test-run status=exited exit_code=0\n\n> project@1.0.0 test\n> vitest run\n\n✓ 15 tests passed',
 			comment: 'Run tests - command completed within 120s wait period',
-		},
-		{
-			params: {
-				action: 'start',
-				comment: 'Exploring vehicle service module dependencies',
-				session: 'squint-modules',
-				command: 'squint modules show backend.services.vehicles --json',
-				wait: 15000,
-			},
-			output:
-				'session=squint-modules status=exited exit_code=0\n\n{"path":"backend.services.vehicles","description":"Vehicle business logic","files":["src/services/vehicles.service.ts"],"dependencies":["backend.data.models","shared-types.entities.vehicles"],"dependents":["backend.api.vehicles"]}',
-			comment:
-				"Use squint to see a module's files, dependencies, and dependents before reading code",
-		},
-		{
-			params: {
-				action: 'start',
-				comment: 'Tracing vehicle search data flow',
-				session: 'squint-features',
-				command: 'squint features show vehicle-inventory --json',
-				wait: 15000,
-			},
-			output:
-				'session=squint-features status=exited exit_code=0\n\n{"slug":"vehicle-inventory","description":"Vehicle CRUD and search","flows":["VehicleController.getAll -> VehicleService.getAll -> VehicleModel.findAll"],"modules":["backend.api.vehicles","backend.services.vehicles","backend.data.models"]}',
-			comment: 'Use squint to trace how data flows through the system before exploring code',
 		},
 		{
 			params: {

@@ -13,6 +13,7 @@ import { mockPersonaIdentities } from '../../helpers/mockPersonas.js';
 vi.mock('../../../src/db/repositories/prWorkItemsRepository.js', () => ({
 	lookupWorkItemForPR: vi.fn(),
 }));
+
 import { lookupWorkItemForPR } from '../../../src/db/repositories/prWorkItemsRepository.js';
 import { checkTriggerEnabled } from '../../../src/triggers/shared/trigger-check.js';
 
@@ -162,6 +163,7 @@ describe('PRReviewSubmittedTrigger', () => {
 					prNumber: 42,
 					prBranch: 'feature/test',
 					repoFullName: 'owner/repo',
+					headSha: 'sha123',
 					triggerCommentId: 100,
 					triggerCommentBody: 'Please fix the bug',
 					triggerCommentPath: '',
@@ -298,6 +300,7 @@ describe('PRReviewSubmittedTrigger', () => {
 					prNumber: 42,
 					prBranch: 'feature/test',
 					repoFullName: 'owner/repo',
+					headSha: 'sha123',
 					triggerCommentId: 200,
 					triggerCommentBody: 'Left some inline comments',
 					triggerCommentPath: '',

@@ -13,6 +13,7 @@
 import {
 	GitHubPlatformClient,
 	JiraPlatformClient,
+	LinearPlatformClient,
 	TrelloPlatformClient,
 } from './platformClients/index.js';
 
@@ -91,14 +92,39 @@ export async function deleteJiraAck(
 }
 
 // ---------------------------------------------------------------------------
+// Linear — delegates to LinearPlatformClient
+// ---------------------------------------------------------------------------
+
+export async function postLinearAck(
+	projectId: string,
+	issueId: string,
+	message: string,
+): Promise<string | null> {
+	const client = new LinearPlatformClient(projectId);
+	const result = await client.postComment(issueId, message);
+	return typeof result === 'string' ? result : null;
+}
+
+export async function deleteLinearAck(
+	projectId: string,
+	issueId: string,
+	commentId: string,
+): Promise<void> {
+	const client = new LinearPlatformClient(projectId);
+	await client.deleteComment(issueId, commentId);
+}
+
+// ---------------------------------------------------------------------------
 // Bot identity resolution — re-exported from bot-identity-resolvers.ts
 // for backward compatibility with pm/ integrations and router/trello.ts.
 // ---------------------------------------------------------------------------
 
 export {
 	_resetJiraBotCache,
+	_resetLinearBotCache,
 	_resetTrelloBotCache,
 	resolveJiraBotAccountId,
+	resolveLinearBotUserId,
 	resolveTrelloBotMemberId,
 } from './bot-identity-resolvers.js';
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock DB repositories first (must be before imports)
 vi.mock('../../../src/db/repositories/configRepository.js', () => ({
@@ -6,7 +6,9 @@ vi.mock('../../../src/db/repositories/configRepository.js', () => ({
 	findProjectByBoardIdFromDb: vi.fn(),
 	findProjectByRepoFromDb: vi.fn(),
 	findProjectByJiraProjectKeyFromDb: vi.fn(),
+	findProjectByLinearTeamIdFromDb: vi.fn(),
 	findProjectByIdFromDb: vi.fn(),
+	findProjectWithConfigByLinearTeamId: vi.fn(),
 }));
 
 vi.mock('../../../src/db/repositories/credentialsRepository.js', () => ({
@@ -25,6 +27,8 @@ vi.mock('../../../src/config/configCache.js', () => ({
 		setProjectByRepo: vi.fn(),
 		getProjectByJiraKey: vi.fn(),
 		setProjectByJiraKey: vi.fn(),
+		getProjectByLinearTeamId: vi.fn(),
+		setProjectByLinearTeamId: vi.fn(),
 		getOrgIdForProject: vi.fn(),
 		setOrgIdForProject: vi.fn(),
 		invalidate: vi.fn(),
@@ -38,6 +42,7 @@ import {
 	findProjectByBoardId,
 	findProjectById,
 	findProjectByJiraProjectKey,
+	findProjectByLinearTeamId,
 	findProjectByRepo,
 	getAllProjectCredentials,
 	getIntegrationCredential,
@@ -51,6 +56,7 @@ import {
 	findProjectByBoardIdFromDb,
 	findProjectByIdFromDb,
 	findProjectByJiraProjectKeyFromDb,
+	findProjectByLinearTeamIdFromDb,
 	findProjectByRepoFromDb,
 	loadConfigFromDb,
 } from '../../../src/db/repositories/configRepository.js';
@@ -253,6 +259,41 @@ describe('config/provider', () => {
 		});
 	});
 
+	describe('findProjectByLinearTeamId', () => {
+		it('returns cached project when available', async () => {
+			vi.mocked(configCache.getProjectByLinearTeamId).mockReturnValue(mockProject);
+
+			const result = await findProjectByLinearTeamId('team-abc123');
+
+			expect(result).toBe(mockProject);
+			expect(findProjectByLinearTeamIdFromDb).not.toHaveBeenCalled();
+		});
+
+		it('loads project from DB when not cached', async () => {
+			vi.mocked(configCache.getProjectByLinearTeamId).mockReturnValue(null);
+			vi.mocked(findProjectByLinearTeamIdFromDb).mockResolvedValue(mockProject);
+
+			const result = await findProjectByLinearTeamId('team-abc123');
+
+			expect(result).toBe(mockProject);
+			expect(findProjectByLinearTeamIdFromDb).toHaveBeenCalledWith('team-abc123');
+			expect(configCache.setProjectByLinearTeamId).toHaveBeenCalledWith('team-abc123', mockProject);
+		});
+
+		it('caches undefined when project not found', async () => {
+			vi.mocked(configCache.getProjectByLinearTeamId).mockReturnValue(null);
+			vi.mocked(findProjectByLinearTeamIdFromDb).mockResolvedValue(undefined);
+
+			const result = await findProjectByLinearTeamId('nonexistent-team');
+
+			expect(result).toBeUndefined();
+			expect(configCache.setProjectByLinearTeamId).toHaveBeenCalledWith(
+				'nonexistent-team',
+				undefined,
+			);
+		});
+	});
+
 	describe('findProjectById', () => {
 		it('does not use cache for by-id lookups', async () => {
 			vi.mocked(findProjectByIdFromDb).mockResolvedValue(mockProject);
@@ -280,7 +321,7 @@ describe('config/provider', () => {
 			setEnvCredential('TRELLO_API_KEY', 'env-key');
 			vi.mocked(resolveProjectCredential).mockResolvedValue('db-value');
 
-			const result = await getIntegrationCredential('proj1', 'pm', 'api_key');
+			const result = await getIntegrationCredential('proj1', 'pm', 'trello', 'api_key');
 
 			// env vars are ignored without CASCADE_CREDENTIAL_KEYS; DB is always used
 			expect(result).toBe('db-value');
@@ -290,7 +331,7 @@ describe('config/provider', () => {
 		it('resolves from project_credentials via envVarKey mapping', async () => {
 			vi.mocked(resolveProjectCredential).mockResolvedValue('db-value');
 
-			const result = await getIntegrationCredential('proj1', 'pm', 'api_key');
+			const result = await getIntegrationCredential('proj1', 'pm', 'trello', 'api_key');
 
 			expect(result).toBe('db-value');
 			expect(resolveProjectCredential).toHaveBeenCalledWith('proj1', 'TRELLO_API_KEY');
@@ -299,16 +340,16 @@ describe('config/provider', () => {
 		it('throws when credential not found', async () => {
 			vi.mocked(resolveProjectCredential).mockResolvedValue(null);
 
-			await expect(getIntegrationCredential('proj1', 'pm', 'api_key')).rejects.toThrow(
-				"Integration credential 'pm/api_key' not found for project 'proj1'",
+			await expect(getIntegrationCredential('proj1', 'pm', 'trello', 'api_key')).rejects.toThrow(
+				"Integration credential 'pm/trello/api_key' not found for project 'proj1'",
 			);
 		});
 
 		it('throws without DB fallback when CASCADE_CREDENTIAL_KEYS is set (worker context)', async () => {
 			setEnvCredential('CASCADE_CREDENTIAL_KEYS', 'OTHER_KEY');
 
-			await expect(getIntegrationCredential('proj1', 'pm', 'api_key')).rejects.toThrow(
-				"Integration credential 'pm/api_key' not found for project 'proj1'",
+			await expect(getIntegrationCredential('proj1', 'pm', 'trello', 'api_key')).rejects.toThrow(
+				"Integration credential 'pm/trello/api_key' not found for project 'proj1'",
 			);
 			expect(resolveProjectCredential).not.toHaveBeenCalled();
 		});
@@ -319,7 +360,12 @@ describe('config/provider', () => {
 			setEnvCredential('GITHUB_TOKEN_IMPLEMENTER', 'env-token');
 			vi.mocked(resolveProjectCredential).mockResolvedValue('db-token');
 
-			const result = await getIntegrationCredentialOrNull('proj1', 'scm', 'implementer_token');
+			const result = await getIntegrationCredentialOrNull(
+				'proj1',
+				'scm',
+				'github',
+				'implementer_token',
+			);
 
 			// env vars are ignored without CASCADE_CREDENTIAL_KEYS; DB is always used
 			expect(result).toBe('db-token');
@@ -329,7 +375,12 @@ describe('config/provider', () => {
 		it('returns null when credential not found', async () => {
 			vi.mocked(resolveProjectCredential).mockResolvedValue(null);
 
-			const result = await getIntegrationCredentialOrNull('proj1', 'scm', 'implementer_token');
+			const result = await getIntegrationCredentialOrNull(
+				'proj1',
+				'scm',
+				'github',
+				'implementer_token',
+			);
 
 			expect(result).toBeNull();
 		});
@@ -337,7 +388,12 @@ describe('config/provider', () => {
 		it('returns value from project_credentials via envVarKey mapping', async () => {
 			vi.mocked(resolveProjectCredential).mockResolvedValue('db-token');
 
-			const result = await getIntegrationCredentialOrNull('proj1', 'scm', 'implementer_token');
+			const result = await getIntegrationCredentialOrNull(
+				'proj1',
+				'scm',
+				'github',
+				'implementer_token',
+			);
 
 			expect(result).toBe('db-token');
 			expect(resolveProjectCredential).toHaveBeenCalledWith('proj1', 'GITHUB_TOKEN_IMPLEMENTER');
@@ -346,7 +402,12 @@ describe('config/provider', () => {
 		it('returns null without DB fallback when CASCADE_CREDENTIAL_KEYS is set (worker context)', async () => {
 			setEnvCredential('CASCADE_CREDENTIAL_KEYS', 'OTHER_KEY');
 
-			const result = await getIntegrationCredentialOrNull('proj1', 'scm', 'implementer_token');
+			const result = await getIntegrationCredentialOrNull(
+				'proj1',
+				'scm',
+				'github',
+				'implementer_token',
+			);
 
 			expect(result).toBeNull();
 			expect(resolveProjectCredential).not.toHaveBeenCalled();
@@ -453,7 +514,7 @@ describe('config/provider', () => {
 			};
 			setCredentialResolver(mockResolver);
 
-			const result = await getIntegrationCredential('proj1', 'pm', 'api_key');
+			const result = await getIntegrationCredential('proj1', 'pm', 'trello', 'api_key');
 
 			expect(result).toBe('injected-value');
 			expect(mockResolver.resolve).toHaveBeenCalledWith('proj1', 'TRELLO_API_KEY');

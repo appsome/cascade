@@ -54,8 +54,8 @@
 	"author": "Zbigniew Sobiecki",
 	"license": "MIT",
 	"dependencies": {
-		"@anthropic-ai/claude-agent-sdk": "^0.2.42",
-		"@hono/node-server": "^1.13.7",
+		"@anthropic-ai/claude-agent-sdk": "^0.2.91",
+		"@hono/node-server": "^1.19.13",
 		"@hono/trpc-server": "^0.4.2",
 		"@llmist/cli": "^16.0.3",
 		"@oclif/core": "^4.8.0",
@@ -73,7 +73,7 @@
 		"dockerode": "^4.0.9",
 		"drizzle-orm": "^0.45.1",
 		"eta": "^4.5.0",
-		"hono": "^4.12.7",
+		"hono": "^4.12.12",
 		"jira.js": "^5.3.0",
 		"js-yaml": "^4.1.1",
 		"llmist": "^16.0.4",
@@ -83,10 +83,10 @@
 		"pg": "^8.18.0",
 		"trello.js": "^1.2.8",
 		"zangief": "^1.0.5",
-		"zod": "^3.24.1"
+		"zod": "^3.25.0"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^1.9.4",
+		"@biomejs/biome": "^2.4.10",
 		"@commitlint/cli": "^20.1.0",
 		"@commitlint/config-conventional": "^20.0.0",
 		"@testing-library/dom": "^10.4.1",
@@ -130,5 +130,11 @@
 	},
 	"engines": {
 		"node": ">=22.0.0"
+	},
+	"overrides": {
+		"lodash": "^4.18.1",
+		"lodash-es": "^4.18.1",
+		"brace-expansion": "^2.0.3",
+		"axios": "^1.15.0"
 	}
 }

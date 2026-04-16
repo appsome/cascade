@@ -2,11 +2,20 @@
  * Custom hooks for PM Wizard mutations and side-effects.
  * Each hook encapsulates one concern to keep the main orchestrator thin.
  */
-import { API_URL } from '@/lib/api.js';
-import { trpc, trpcClient } from '@/lib/trpc.js';
+
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import type { WizardAction, WizardState } from './pm-wizard-state.js';
+import { API_URL } from '@/lib/api.js';
+import { trpc, trpcClient } from '@/lib/trpc.js';
+import { getCredentialRoles } from '../../../../src/config/integrationRoles.js';
+import type {
+	LinearProjectOption,
+	LinearTeamDetails,
+	LinearTeamOption,
+	WizardAction,
+	WizardState,
+} from './pm-wizard-state.js';
+import { buildLinearIntegrationConfig } from './pm-wizard-state.js';
 
 // ============================================================================
 // Trello Discovery
@@ -187,6 +196,131 @@ export function useJiraDiscovery(
 }
 
 // ============================================================================
+// Linear Discovery
+// ============================================================================
+
+export function useLinearDiscovery(
+	state: WizardState,
+	dispatch: React.Dispatch<WizardAction>,
+	advanceToStep: (step: number) => void,
+	projectId: string,
+) {
+	const linearTeamsMutation = useMutation({
+		mutationFn: () => {
+			if (state.isEditing && state.hasStoredCredentials && !state.linearApiKey) {
+				return trpcClient.integrationsDiscovery.linearTeamsByProject.mutate({ projectId });
+			}
+			if (!state.linearApiKey) {
+				throw new Error('Enter your API key before fetching teams');
+			}
+			return trpcClient.integrationsDiscovery.linearTeams.mutate({
+				apiKey: state.linearApiKey,
+			});
+		},
+		onSuccess: (teams) =>
+			dispatch({
+				type: 'SET_LINEAR_TEAMS',
+				teams: teams as LinearTeamOption[],
+			}),
+	});
+
+	const linearDetailsMutation = useMutation({
+		mutationFn: (teamId: string) => {
+			if (state.isEditing && state.hasStoredCredentials && !state.linearApiKey) {
+				return trpcClient.integrationsDiscovery.linearTeamDetailsByProject.mutate({
+					projectId,
+					teamId,
+				});
+			}
+			if (!state.linearApiKey) {
+				throw new Error('Enter your API key before fetching team details');
+			}
+			return trpcClient.integrationsDiscovery.linearTeamDetails.mutate({
+				apiKey: state.linearApiKey,
+				teamId,
+			});
+		},
+		onSuccess: (details) => {
+			dispatch({
+				type: 'SET_LINEAR_TEAM_DETAILS',
+				details: details as LinearTeamDetails,
+			});
+			advanceToStep(4);
+		},
+	});
+
+	const linearProjectsMutation = useMutation({
+		mutationFn: (teamId: string) => {
+			if (state.isEditing && state.hasStoredCredentials && !state.linearApiKey) {
+				return trpcClient.integrationsDiscovery.linearProjectsByProject.mutate({
+					projectId,
+					teamId,
+				});
+			}
+			if (!state.linearApiKey) {
+				throw new Error('Enter your API key before fetching projects');
+			}
+			return trpcClient.integrationsDiscovery.linearProjects.mutate({
+				apiKey: state.linearApiKey,
+				teamId,
+			});
+		},
+		onSuccess: (projects) =>
+			dispatch({
+				type: 'SET_LINEAR_PROJECTS',
+				projects: projects as LinearProjectOption[],
+			}),
+	});
+
+	const handleTeamSelect = (teamId: string) => {
+		dispatch({ type: 'SET_LINEAR_TEAM_ID', id: teamId });
+		if (teamId) {
+			linearDetailsMutation.mutate(teamId);
+			linearProjectsMutation.mutate(teamId);
+		}
+	};
+
+	// Auto-fetch teams when verification result changes
+	// biome-ignore lint/correctness/useExhaustiveDependencies: intentionally trigger only on verification result change
+	useEffect(() => {
+		if (!state.verificationResult || state.provider !== 'linear') return;
+		if (state.linearTeams.length === 0 && !linearTeamsMutation.isPending) {
+			linearTeamsMutation.mutate();
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [state.verificationResult]);
+
+	// In edit mode, auto-fetch team list and details
+	// biome-ignore lint/correctness/useExhaustiveDependencies: intentionally trigger on edit mode and stored creds
+	useEffect(() => {
+		if (!state.isEditing || state.provider !== 'linear') return;
+		const canFetch = state.linearApiKey ? true : state.hasStoredCredentials;
+		if (canFetch && state.linearTeams.length === 0 && !linearTeamsMutation.isPending) {
+			linearTeamsMutation.mutate();
+		}
+		if (
+			state.linearTeamId &&
+			!state.linearTeamDetails &&
+			canFetch &&
+			!linearDetailsMutation.isPending
+		) {
+			linearDetailsMutation.mutate(state.linearTeamId);
+		}
+		if (
+			state.linearTeamId &&
+			state.linearProjects.length === 0 &&
+			canFetch &&
+			!linearProjectsMutation.isPending
+		) {
+			linearProjectsMutation.mutate(state.linearTeamId);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [state.isEditing, state.linearTeamId, state.hasStoredCredentials]);
+
+	return { linearTeamsMutation, linearDetailsMutation, linearProjectsMutation, handleTeamSelect };
+}
+
+// ============================================================================
 // Verification
 // ============================================================================
 
@@ -208,6 +342,15 @@ export function useVerification(
 				});
 				return { provider: 'trello' as const, result };
 			}
+			if (provider === 'linear') {
+				if (!state.linearApiKey) {
+					throw new Error('Enter your API key before verifying');
+				}
+				const result = await trpcClient.integrationsDiscovery.verifyLinear.mutate({
+					apiKey: state.linearApiKey,
+				});
+				return { provider: 'linear' as const, result };
+			}
 			if (!state.jiraEmail || !state.jiraApiToken) {
 				throw new Error('Enter both credentials before verifying');
 			}
@@ -226,6 +369,12 @@ export function useVerification(
 				dispatch({
 					type: 'SET_VERIFICATION',
 					result: { provider: 'trello', display: `@${r.username} (${r.fullName})` },
+				});
+			} else if (provider === 'linear') {
+				const r = result as { name: string; displayName: string };
+				dispatch({
+					type: 'SET_VERIFICATION',
+					result: { provider: 'linear', display: r.displayName || r.name },
 				});
 			} else {
 				const r = result as { displayName: string; emailAddress: string };
@@ -293,6 +442,22 @@ export function useWebhookManagement(projectId: string, state: WizardState) {
 		createWebhookMutation,
 		deleteWebhookMutation,
 	};
+}
+
+// ============================================================================
+// Linear Webhook Info (display-only)
+// ============================================================================
+
+export function useLinearWebhookInfo() {
+	const callbackBaseUrl =
+		API_URL ||
+		(typeof window !== 'undefined' ? window.location.origin.replace(':5173', ':3000') : '');
+
+	const webhookUrl = callbackBaseUrl
+		? `${callbackBaseUrl}/linear/webhook`
+		: '<YOUR_CASCADE_HOST>/linear/webhook';
+
+	return { webhookUrl };
 }
 
 // ============================================================================
@@ -453,7 +618,7 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 	const queryClient = useQueryClient();
 
 	const saveMutation = useMutation({
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: handles two provider types + credential persisting
+		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: handles three provider types + credential persisting
 		mutationFn: async () => {
 			let config: Record<string, unknown>;
 			if (state.provider === 'trello') {
@@ -463,6 +628,8 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 					labels: state.trelloLabelMappings,
 					...(state.trelloCostFieldId ? { customFields: { cost: state.trelloCostFieldId } } : {}),
 				};
+			} else if (state.provider === 'linear') {
+				config = buildLinearIntegrationConfig(state);
 			} else {
 				config = {
 					projectKey: state.jiraProjectKey,
@@ -501,6 +668,15 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 						name: 'Trello Token',
 					});
 				}
+			} else if (state.provider === 'linear') {
+				if (state.linearApiKey) {
+					await trpcClient.projects.credentials.set.mutate({
+						projectId,
+						envVarKey: 'LINEAR_API_KEY',
+						value: state.linearApiKey,
+						name: 'Linear API Key',
+					});
+				}
 			} else {
 				if (state.jiraEmail) {
 					await trpcClient.projects.credentials.set.mutate({
@@ -532,6 +708,16 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 				});
 			}
 
+			// If the user switched provider mid-edit, clean up the old provider's credentials.
+			if (state.previousProvider && state.previousProvider !== state.provider) {
+				const oldKeys = getCredentialRoles(state.previousProvider).map((r) => r.envVarKey);
+				await Promise.all(
+					oldKeys.map((envVarKey) =>
+						trpcClient.projects.credentials.delete.mutate({ projectId, envVarKey }),
+					),
+				);
+			}
+
 			return result;
 		},
 		onSuccess: () => {
@@ -548,4 +734,66 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 	});
 
 	return { saveMutation };
+}
+
+// ============================================================================
+// Linear Label Creation
+// ============================================================================
+
+export function useLinearLabelCreation(state: WizardState, dispatch: React.Dispatch<WizardAction>) {
+	const createLabelMutation = useMutation({
+		mutationFn: (vars: { name: string; color?: string; slot: string }) => {
+			if (!state.linearApiKey || !state.linearTeamId) {
+				throw new Error('Missing credentials or team selection');
+			}
+			return trpcClient.integrationsDiscovery.createLinearLabel.mutate({
+				apiKey: state.linearApiKey,
+				teamId: state.linearTeamId,
+				name: vars.name,
+				color: vars.color,
+			});
+		},
+		onSuccess: (label, vars) => {
+			dispatch({ type: 'ADD_LINEAR_TEAM_LABEL', label });
+			dispatch({ type: 'SET_LINEAR_LABEL', key: vars.slot, value: label.id });
+		},
+		onError: (error) => {
+			console.error('Failed to create Linear label:', error);
+			alert(`Failed to create label: ${error instanceof Error ? error.message : String(error)}`);
+		},
+	});
+
+	const createMissingLabelsMutation = useMutation({
+		mutationFn: (labelsToCreate: Array<{ slot: string; name: string; color?: string }>) => {
+			if (!state.linearApiKey || !state.linearTeamId) {
+				throw new Error('Missing credentials or team selection');
+			}
+			return trpcClient.integrationsDiscovery.createLinearLabels.mutate({
+				apiKey: state.linearApiKey,
+				teamId: state.linearTeamId,
+				labels: labelsToCreate.map(({ name, color }) => ({ name, color })),
+			});
+		},
+		onSuccess: (result, labelsToCreate) => {
+			for (const label of result.successes) {
+				const slot = labelsToCreate.find((l) => l.name === label.name)?.slot;
+				if (slot) {
+					dispatch({ type: 'ADD_LINEAR_TEAM_LABEL', label });
+					dispatch({ type: 'SET_LINEAR_LABEL', key: slot, value: label.id });
+				}
+			}
+			if (result.errors.length > 0) {
+				const errorMsg = result.errors.map((e) => `${e.name}: ${e.error}`).join('\n');
+				alert(
+					`Some labels failed to create:\n${errorMsg}\n\n${result.successes.length} label(s) created successfully.`,
+				);
+			}
+		},
+		onError: (error) => {
+			console.error('Failed to create Linear labels:', error);
+			alert(`Failed to create labels: ${error instanceof Error ? error.message : String(error)}`);
+		},
+	});
+
+	return { createLabelMutation, createMissingLabelsMutation };
 }

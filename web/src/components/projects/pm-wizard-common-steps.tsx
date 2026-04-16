@@ -2,7 +2,7 @@
  * Provider-agnostic step renderer components for PMWizard:
  * WebhookStep and SaveStep.
  */
-import { Label } from '@/components/ui/label.js';
+
 import type { UseMutationResult } from '@tanstack/react-query';
 import {
 	AlertCircle,
@@ -16,7 +16,9 @@ import {
 	Trash2,
 } from 'lucide-react';
 import { useState } from 'react';
+import { Label } from '@/components/ui/label.js';
 import type { WizardState } from './pm-wizard-state.js';
+import { type ProjectCredentialMeta, ProjectSecretField } from './project-secret-field.js';
 
 // ============================================================================
 // WebhookStep
@@ -50,11 +52,115 @@ function CopyButton({ text }: { text: string }) {
 			className="inline-flex items-center gap-1 shrink-0 rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
 			title="Copy to clipboard"
 		>
-			{copied ? <Check className="h-3 w-3 text-green-600" /> : <Clipboard className="h-3 w-3" />}
+			{copied ? (
+				<Check className="h-3 w-3 text-green-600 dark:text-green-400" />
+			) : (
+				<Clipboard className="h-3 w-3" />
+			)}
 			{copied ? 'Copied' : 'Copy'}
 		</button>
 	);
 }
+
+// ============================================================================
+// LinearWebhookInfoPanel
+// ============================================================================
+
+export function LinearWebhookInfoPanel({
+	webhookUrl,
+	projectId,
+	webhookSecretCredential,
+}: {
+	webhookUrl: string;
+	projectId: string;
+	webhookSecretCredential?: ProjectCredentialMeta;
+}) {
+	return (
+		<div className="space-y-4">
+			<div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 dark:border-blue-900/50 dark:bg-blue-900/20">
+				<div className="flex items-start gap-2">
+					<Info className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+					<div className="space-y-2">
+						<p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+							Manual Webhook Setup Required
+						</p>
+						<p className="text-xs text-blue-600 dark:text-blue-400">
+							Linear webhooks must be configured manually in your Linear team settings. CASCADE
+							cannot create them programmatically.
+						</p>
+					</div>
+				</div>
+			</div>
+
+			<div className="space-y-2">
+				<Label>Your CASCADE Webhook URL</Label>
+				<div className="flex items-center gap-2 rounded-md border bg-muted px-3 py-2">
+					<span className="flex-1 font-mono text-xs break-all">{webhookUrl}</span>
+					<CopyButton text={webhookUrl} />
+				</div>
+			</div>
+
+			<ProjectSecretField
+				projectId={projectId}
+				envVarKey="LINEAR_WEBHOOK_SECRET"
+				label="Webhook Signing Secret (optional)"
+				description="Paste the signing secret from your Linear webhook. CASCADE verifies HMAC-SHA256 on every incoming Linear webhook request when this is set; verification is skipped if left blank."
+				placeholder="lin_wh_..."
+				credential={webhookSecretCredential}
+			/>
+
+			<div className="space-y-2">
+				<p className="text-xs text-muted-foreground font-medium">Setup instructions:</p>
+				<ol className="list-decimal list-inside space-y-1 text-xs text-muted-foreground pl-1">
+					<li>
+						Go to{' '}
+						<a
+							href="https://linear.app/settings/api"
+							target="_blank"
+							rel="noopener noreferrer"
+							className="underline hover:text-foreground"
+						>
+							linear.app/settings/api
+						</a>{' '}
+						and navigate to <strong>Webhooks</strong>
+					</li>
+					<li>Click &quot;New webhook&quot; and enter the URL above</li>
+					<li>
+						Enable these events (each maps to a CASCADE trigger handler):
+						<ul className="list-disc list-inside ml-4 mt-1 space-y-0.5">
+							<li>
+								<strong>Issues</strong> — status transitions drive CASCADE&apos;s splitting,
+								planning, and implementation agents
+							</li>
+							<li>
+								<strong>Comments</strong> — @mentions of the CASCADE bot trigger a response agent
+							</li>
+							<li>
+								<strong>Issue Labels</strong> — adding the &quot;Ready to Process&quot; label starts
+								an agent on the issue
+							</li>
+						</ul>
+					</li>
+					<li>Select your team and save — webhooks are team-scoped in Linear</li>
+					<li>
+						If you set a signing secret in Linear, paste it into the field above so CASCADE can
+						verify webhook authenticity
+					</li>
+				</ol>
+			</div>
+
+			<p className="text-xs text-muted-foreground">
+				If you also set a Linear <strong>project scope</strong> in the Board / Project Selection
+				step, CASCADE applies that filter on its side after receiving each webhook — your Linear
+				webhook configuration stays team-scoped and unchanged.
+			</p>
+		</div>
+	);
+}
+
+// ============================================================================
+// WebhookStep
+// ============================================================================
 
 export function WebhookStep({
 	state,
@@ -63,6 +169,9 @@ export function WebhookStep({
 	callbackBaseUrl,
 	createWebhookMutation,
 	deleteWebhookMutation,
+	linearWebhookUrl,
+	projectId,
+	linearWebhookSecretCredential,
 }: {
 	state: WizardState;
 	webhooksQuery: WebhooksQueryProps;
@@ -70,7 +179,21 @@ export function WebhookStep({
 	callbackBaseUrl: string;
 	createWebhookMutation: UseMutationResult<unknown, Error, void, unknown>;
 	deleteWebhookMutation: UseMutationResult<unknown, Error, string, unknown>;
+	linearWebhookUrl?: string;
+	projectId: string;
+	linearWebhookSecretCredential?: ProjectCredentialMeta;
 }) {
+	// Linear uses a display-only panel — no create/delete buttons
+	if (state.provider === 'linear') {
+		return (
+			<LinearWebhookInfoPanel
+				webhookUrl={linearWebhookUrl ?? `${callbackBaseUrl}/linear/webhook`}
+				projectId={projectId}
+				webhookSecretCredential={linearWebhookSecretCredential}
+			/>
+		);
+	}
+
 	const isTrello = state.provider === 'trello';
 	const providerName = isTrello ? 'Trello' : 'JIRA';
 

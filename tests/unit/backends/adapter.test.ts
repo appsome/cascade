@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	mockAgentLoggerModule,
 	mockCascadeEnvModule,
@@ -120,7 +120,7 @@ import {
 	cleanupLogFile,
 	createFileLogger,
 } from '../../../src/utils/fileLogger.js';
-import { clearWatchdogCleanup, setWatchdogCleanup } from '../../../src/utils/lifecycle.js';
+import { clearWatchdogCleanup } from '../../../src/utils/lifecycle.js';
 import { logger } from '../../../src/utils/logging.js';
 import { cleanupTempDir } from '../../../src/utils/repo.js';
 
@@ -302,7 +302,7 @@ describe('executeWithEngine', () => {
 	});
 
 	it('includes log buffer in result', async () => {
-		const loggerInstance = setupMocks();
+		const _loggerInstance = setupMocks();
 		const engine = makeMockBackend();
 		vi.mocked(engine.execute).mockResolvedValue({
 			success: true,
@@ -333,6 +333,22 @@ describe('executeWithEngine', () => {
 		await executeWithEngine(engine, 'implementation', input);
 
 		expect(mockSetupRepository).not.toHaveBeenCalled();
+	});
+
+	it('forwards prNumber and headSha (as prHeadSha) from input to setupRepository', async () => {
+		setupMocks();
+		const engine = makeMockBackend();
+		const sha = '96f5136213d7a435e4b6e27b3d868f7b622b3dc0';
+		const input = makeInput({ prNumber: 1092, headSha: sha });
+
+		await executeWithEngine(engine, 'implementation', input);
+
+		expect(mockSetupRepository).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prNumber: 1092,
+				prHeadSha: sha,
+			}),
+		);
 	});
 
 	it('cleans up resources in finally block', async () => {
@@ -854,6 +870,9 @@ describe('executeWithEngine', () => {
 
 		it('calls recordReviewSubmission when sidecar exists for review agent', async () => {
 			setupMocks();
+			mockGetAgentProfile.mockReturnValue(
+				makeMockProfile({ finishHooks: { requiresReview: true } }),
+			);
 			const engine = makeMockBackend();
 			writeSidecarAtInjectedPath(engine, {
 				reviewUrl: 'https://github.com/o/r/pull/1#pullrequestreview-99',
@@ -873,6 +892,9 @@ describe('executeWithEngine', () => {
 
 		it('injects CASCADE_REVIEW_SIDECAR_PATH into projectSecrets for review agent', async () => {
 			setupMocks();
+			mockGetAgentProfile.mockReturnValue(
+				makeMockProfile({ finishHooks: { requiresReview: true } }),
+			);
 			const engine = makeMockBackend();
 			const input = makeInput();
 
@@ -951,6 +973,9 @@ describe('executeWithEngine', () => {
 
 		it('clears initialCommentId when sidecar has ackCommentDeleted: true', async () => {
 			setupMocks();
+			mockGetAgentProfile.mockReturnValue(
+				makeMockProfile({ finishHooks: { requiresReview: true } }),
+			);
 			const engine = makeMockBackend();
 			writeSidecarAtInjectedPath(engine, {
 				reviewUrl: 'https://github.com/o/r/pull/1#pullrequestreview-42',

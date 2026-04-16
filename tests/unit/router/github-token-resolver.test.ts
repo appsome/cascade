@@ -11,6 +11,13 @@ vi.mock('../../../src/config/projects.js', () => ({
 	getProjectGitHubToken: vi.fn(),
 }));
 
+// Mock getPersonaForAgentType for persona-based token selection tests
+vi.mock('../../../src/github/personas.js', () => ({
+	getPersonaForAgentType: vi.fn((agentType: string) =>
+		agentType === 'review' ? 'reviewer' : 'implementer',
+	),
+}));
+
 // Mock config cache (imported transitively)
 vi.mock('../../../src/config/configCache.js', () => ({
 	configCache: {
@@ -36,10 +43,13 @@ vi.mock('../../../src/utils/logging.js', () => ({
 
 import { getProjectGitHubToken } from '../../../src/config/projects.js';
 import { findProjectByRepo, getIntegrationCredential } from '../../../src/config/provider.js';
+import { getPersonaForAgentType } from '../../../src/github/personas.js';
 import {
 	resolveGitHubTokenForAck,
 	resolveGitHubTokenForAckByAgent,
 } from '../../../src/router/github-token-resolver.js';
+
+const mockGetPersonaForAgentType = vi.mocked(getPersonaForAgentType);
 
 const mockGetIntegrationCredential = vi.mocked(getIntegrationCredential);
 const mockGetProjectGitHubToken = vi.mocked(getProjectGitHubToken);
@@ -53,7 +63,7 @@ const MOCK_CREDENTIALS: Record<string, string> = {
 };
 
 beforeEach(() => {
-	mockGetIntegrationCredential.mockImplementation(async (_projectId, category, role) => {
+	mockGetIntegrationCredential.mockImplementation(async (_projectId, category, _provider, role) => {
 		const value = MOCK_CREDENTIALS[`${category}/${role}`];
 		if (value) return value;
 		throw new Error(`Credential '${category}/${role}' not found`);
@@ -97,12 +107,14 @@ describe('resolveGitHubTokenForAck', () => {
 
 describe('resolveGitHubTokenForAckByAgent', () => {
 	it('returns reviewer token for review agent type', async () => {
-		mockGetIntegrationCredential.mockImplementation(async (_projectId, category, role) => {
-			if (category === 'scm' && role === 'reviewer_token') return 'test-reviewer-token';
-			const value = MOCK_CREDENTIALS[`${category}/${role}`];
-			if (value) return value;
-			throw new Error(`Credential '${category}/${role}' not found`);
-		});
+		mockGetIntegrationCredential.mockImplementation(
+			async (_projectId, category, _provider, role) => {
+				if (category === 'scm' && role === 'reviewer_token') return 'test-reviewer-token';
+				const value = MOCK_CREDENTIALS[`${category}/${role}`];
+				if (value) return value;
+				throw new Error(`Credential '${category}/${role}' not found`);
+			},
+		);
 
 		const result = await resolveGitHubTokenForAckByAgent('owner/repo', 'review');
 
@@ -138,10 +150,12 @@ describe('resolveGitHubTokenForAckByAgent', () => {
 	});
 
 	it('skips findProjectByRepo when pre-resolved project is provided', async () => {
-		mockGetIntegrationCredential.mockImplementation(async (_projectId, category, role) => {
-			if (category === 'scm' && role === 'reviewer_token') return 'test-reviewer-token';
-			throw new Error(`Credential '${category}/${role}' not found`);
-		});
+		mockGetIntegrationCredential.mockImplementation(
+			async (_projectId, category, _provider, role) => {
+				if (category === 'scm' && role === 'reviewer_token') return 'test-reviewer-token';
+				throw new Error(`Credential '${category}/${role}' not found`);
+			},
+		);
 
 		const preResolvedProject = {
 			id: 'test',
@@ -183,5 +197,32 @@ describe('resolveGitHubTokenForAckByAgent', () => {
 		expect(result?.token).toBe('test-github-token');
 		expect(mockFindProjectByRepo).not.toHaveBeenCalled();
 		expect(mockGetProjectGitHubToken).toHaveBeenCalledWith(preResolvedProject);
+	});
+
+	it('delegates to getPersonaForAgentType for reviewer token selection', async () => {
+		mockGetPersonaForAgentType.mockReturnValueOnce('reviewer');
+		mockGetIntegrationCredential.mockImplementation(
+			async (_projectId, category, _provider, role) => {
+				if (category === 'scm' && role === 'reviewer_token') return 'custom-reviewer-token';
+				throw new Error(`Credential '${category}/${role}' not found`);
+			},
+		);
+
+		const result = await resolveGitHubTokenForAckByAgent('owner/repo', 'custom-review-agent');
+
+		expect(result).not.toBeNull();
+		expect(result?.token).toBe('custom-reviewer-token');
+		expect(mockGetPersonaForAgentType).toHaveBeenCalledWith('custom-review-agent');
+	});
+
+	it('delegates to getPersonaForAgentType for implementer token selection', async () => {
+		mockGetPersonaForAgentType.mockReturnValueOnce('implementer');
+
+		const result = await resolveGitHubTokenForAckByAgent('owner/repo', 'custom-impl-agent');
+
+		expect(result).not.toBeNull();
+		expect(result?.token).toBe('test-github-token');
+		expect(mockGetPersonaForAgentType).toHaveBeenCalledWith('custom-impl-agent');
+		expect(mockGetProjectGitHubToken).toHaveBeenCalled();
 	});
 });

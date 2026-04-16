@@ -33,7 +33,7 @@ export default class WebhooksList extends DashboardCommand {
 
 			const result = await this.client.webhooks.list.query({
 				projectId: args.projectId,
-				callbackBaseUrl: this.config_.serverUrl || undefined,
+				callbackBaseUrl: this.cliConfig.serverUrl || undefined,
 				oneTimeTokens: Object.keys(oneTimeTokens).length > 0 ? oneTimeTokens : undefined,
 			});
 
@@ -89,6 +89,16 @@ export default class WebhooksList extends DashboardCommand {
 				this.log(`  URL: ${result.sentry.url}`);
 				this.log(`  Webhook secret: ${result.sentry.webhookSecretSet ? 'configured' : 'not set'}`);
 				this.log(`  ${result.sentry.note}`);
+			} else {
+				this.log('  (not configured)');
+			}
+
+			this.log('');
+			this.log('Linear webhook:');
+			if (result.linear) {
+				this.log(`  URL: ${result.linear.url}`);
+				this.log(`  Webhook secret: ${result.linear.webhookSecretSet ? 'configured' : 'not set'}`);
+				this.log(`  ${result.linear.note}`);
 			} else {
 				this.log('  (not configured)');
 			}

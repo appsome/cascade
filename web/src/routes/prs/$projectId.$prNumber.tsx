@@ -1,10 +1,10 @@
+import { useQuery } from '@tanstack/react-query';
+import { createRoute } from '@tanstack/react-router';
+import { ExternalLink } from 'lucide-react';
 import { WorkItemCostChart } from '@/components/runs/work-item-cost-chart.js';
 import { WorkItemDurationChart } from '@/components/runs/work-item-duration-chart.js';
 import { WorkItemRunsTable } from '@/components/runs/work-item-runs-table.js';
 import { trpc } from '@/lib/trpc.js';
-import { useQuery } from '@tanstack/react-query';
-import { createRoute } from '@tanstack/react-router';
-import { ExternalLink } from 'lucide-react';
 import { rootRoute } from '../__root.js';
 
 function PRRunsPage() {
@@ -63,7 +63,7 @@ function PRRunsPage() {
 					</div>
 					{runningCount > 0 && (
 						<div>
-							<span className="font-medium text-blue-600">{runningCount}</span>
+							<span className="font-medium text-blue-600 dark:text-blue-400">{runningCount}</span>
 							<span className="ml-1 text-muted-foreground">running</span>
 						</div>
 					)}

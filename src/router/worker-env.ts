@@ -23,7 +23,7 @@ export async function extractProjectIdFromJob(data: CascadeJob): Promise<string 
 	// Use type assertion since dashboard jobs are cast to CascadeJob
 	const jobData = data as unknown as { type: string; projectId?: string; repoFullName?: string };
 
-	if (jobData.type === 'trello' || jobData.type === 'jira') {
+	if (jobData.type === 'trello' || jobData.type === 'jira' || jobData.type === 'linear') {
 		return jobData.projectId ?? null;
 	}
 	if (jobData.type === 'github') {

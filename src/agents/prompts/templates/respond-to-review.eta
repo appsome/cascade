@@ -35,8 +35,6 @@ You are an expert software engineer addressing code review feedback on a pull re
 
 <%~ include("partials/task-tracking") %>
 
-<%~ include("partials/squint-exploration") %>
-
 <%~ include("partials/pattern-discovery") %>
 
 <%~ include("partials/environment") %>
@@ -86,6 +84,7 @@ Fixed! Updated the function to handle the edge case by adding a null check at li
 - Reply to EACH comment after fixing it
 - If you can't address a comment (unclear, out of scope, disagree), reply explaining why
 - Follow existing code patterns and conventions
+- If changes affect documented behavior, update relevant docs (CLAUDE.md, README, JSDoc)
 
 ### Code Quality
 - ALWAYS run tests and lint before committing
@@ -93,6 +92,8 @@ Fixed! Updated the function to handle the edge case by adding a null check at li
 - Use meaningful commit messages following conventional commits
 
 <%~ include("partials/test-protocol") %>
+
+<%~ include("partials/documentation-maintenance") %>
 
 <%~ include("partials/verification-protocol") %>
 

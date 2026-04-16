@@ -1,5 +1,5 @@
 import { getAgentProfile } from '../agents/definitions/profiles.js';
-import { type PipelineContext, executeAgentPipeline } from '../agents/shared/executionPipeline.js';
+import { executeAgentPipeline, type PipelineContext } from '../agents/shared/executionPipeline.js';
 import { setupRepository } from '../agents/shared/repository.js';
 import { finalizeEngineRun, tryCreateRun } from '../agents/shared/runTracking.js';
 import { createAgentLogger } from '../agents/utils/logging.js';
@@ -28,6 +28,8 @@ async function resolveRepoDir(
 		project: input.project,
 		log,
 		agentType,
+		prNumber: input.prNumber,
+		prHeadSha: input.headSha,
 		prBranch: input.prBranch,
 		warmTsCache: true,
 	});
@@ -47,8 +49,6 @@ export async function executeWithEngine(
 		setupRepoDir: (log) => resolveRepoDir(input, log, agentType),
 
 		skipRepoDeletion: Boolean(input.logDir),
-
-		squintDbUrl: input.project.squintDbUrl,
 
 		finalizeRun: (runId, fileLogger, outcome) =>
 			finalizeEngineRun(runId, fileLogger, {

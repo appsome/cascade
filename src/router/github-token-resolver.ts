@@ -9,6 +9,7 @@
 
 import { getProjectGitHubToken } from '../config/projects.js';
 import { findProjectByRepo, getIntegrationCredential } from '../config/provider.js';
+import { getPersonaForAgentType } from '../github/personas.js';
 import type { ProjectConfig } from '../types/index.js';
 import { logger } from '../utils/logging.js';
 
@@ -57,8 +58,14 @@ export async function resolveGitHubTokenForAckByAgent(
 	if (!resolvedProject) return null;
 
 	try {
-		if (agentType === 'review') {
-			const token = await getIntegrationCredential(resolvedProject.id, 'scm', 'reviewer_token');
+		const persona = getPersonaForAgentType(agentType);
+		if (persona === 'reviewer') {
+			const token = await getIntegrationCredential(
+				resolvedProject.id,
+				'scm',
+				'github',
+				'reviewer_token',
+			);
 			return { token, project: resolvedProject };
 		}
 		const token = await getProjectGitHubToken(resolvedProject);

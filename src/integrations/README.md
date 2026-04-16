@@ -14,7 +14,7 @@ branching in shared code.
 
 ```
 IntegrationModule (base contract)
-├── PMIntegration       — project management (Trello, JIRA)
+├── PMIntegration       — project management (Trello, JIRA, Linear)
 ├── SCMIntegration      — source control (GitHub)
 └── AlertingIntegration — monitoring/alerting (Sentry)
 ```
@@ -27,7 +27,7 @@ IntegrationModule (base contract)
 | `src/integrations/registry.ts` | `IntegrationRegistry` class + `integrationRegistry` singleton |
 | `src/integrations/scm.ts` | `SCMIntegration` interface (SCM-specific extension) |
 | `src/integrations/alerting.ts` | `AlertingIntegration` interface (alerting-specific extension) |
-| `src/integrations/bootstrap.ts` | **One place** — registers all 4 built-in integrations |
+| `src/integrations/bootstrap.ts` | **One place** — registers all 5 built-in integrations |
 | `src/integrations/index.ts` | Public barrel exports |
 | `src/pm/integration.ts` | `PMIntegration` interface (PM-specific extension) |
 | `src/pm/registry.ts` | `PMIntegrationRegistry` singleton (PM-specific; backward compat) |
@@ -95,8 +95,8 @@ Implementation: `src/sentry/alerting-integration.ts` (`SentryAlertingIntegration
 
 ## Adding a new integration — step by step
 
-The example below adds a hypothetical **Linear** PM integration. Adapt the names for your actual
-provider and category.
+The example below uses **Linear** as a PM integration (already implemented — see
+`src/pm/linear/integration.ts`). Adapt the names for your actual provider and category.
 
 ### Step 1 — Implement the interface
 
@@ -124,7 +124,7 @@ export class LinearIntegration implements PMIntegration {
   async hasIntegration(projectId: string): Promise<boolean> {
     const provider = await getIntegrationProvider(projectId, 'pm');
     if (provider !== 'linear') return false;
-    const key = await getIntegrationCredentialOrNull(projectId, 'pm', 'api_key');
+    const key = await getIntegrationCredentialOrNull(projectId, 'pm', 'linear', 'api_key');
     return key !== null;
   }
 
@@ -133,7 +133,7 @@ export class LinearIntegration implements PMIntegration {
   }
 
   async withCredentials<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-    const apiKey = await getIntegrationCredential(projectId, 'pm', 'api_key');
+    const apiKey = await getIntegrationCredential(projectId, 'pm', 'linear', 'api_key');
     // set process.env.LINEAR_API_KEY, call fn, restore
     const prev = process.env.LINEAR_API_KEY;
     process.env.LINEAR_API_KEY = apiKey;
@@ -458,5 +458,12 @@ Before submitting a new integration:
 |----------|----------|-------------|---------|---------|
 | `trello` | pm | `src/pm/trello/integration.ts` | `src/router/adapters/trello.ts` | `src/triggers/trello/` |
 | `jira` | pm | `src/pm/jira/integration.ts` | `src/router/adapters/jira.ts` | `src/triggers/jira/` |
+| `linear` | pm | `src/pm/linear/integration.ts` | `src/router/adapters/linear.ts` | `src/triggers/linear/` |
+
+### Linear — operator setup
+
+Linear webhooks are configured **manually in Linear** (CASCADE cannot create them programmatically). The authoritative setup instructions — including the three event families CASCADE consumes (**Issues**, **Comments**, **Issue Labels**) and the inline signing-secret input — live in the dashboard PM wizard at `web/src/components/projects/pm-wizard-common-steps.tsx` (`LinearWebhookInfoPanel`). Any changes to the trigger handlers in `src/triggers/linear/` should be reflected there.
+
+A CASCADE project can optionally scope to a specific Linear **Project** (initiative) in the "Board / Project Selection" wizard step. When set, webhooks for issues outside that project are dropped by the router (Linear webhooks themselves remain team-scoped; the filter is applied by CASCADE). Leaving the selector empty preserves full-team behavior.
 | `github` | scm | `src/github/scm-integration.ts` | `src/router/adapters/github.ts` | `src/triggers/github/` |
 | `sentry` | alerting | `src/sentry/alerting-integration.ts` | `src/router/adapters/sentry.ts` | `src/triggers/sentry/` |

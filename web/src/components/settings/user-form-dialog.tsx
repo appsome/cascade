@@ -1,9 +1,9 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog.js';
 import { Input } from '@/components/ui/input.js';
 import { Label } from '@/components/ui/label.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
 
 interface User {
 	id: string;
@@ -118,7 +118,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
 							id="user-role"
 							value={role}
 							onChange={(e) => setRole(e.target.value as 'member' | 'admin')}
-							className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+							className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-card dark:text-foreground [&_option]:bg-card"
 						>
 							<option value="member">Member</option>
 							<option value="admin">Admin</option>

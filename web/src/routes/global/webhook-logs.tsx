@@ -1,10 +1,10 @@
-import { WebhookLogDetailDialog } from '@/components/webhooklogs/webhooklog-detail-dialog.js';
-import { WebhookLogsTable } from '@/components/webhooklogs/webhooklogs-table.js';
-import { trpc } from '@/lib/trpc.js';
 import { useQuery } from '@tanstack/react-query';
 import { createRoute, useNavigate, useSearch } from '@tanstack/react-router';
 import { useState } from 'react';
 import { z } from 'zod';
+import { WebhookLogDetailDialog } from '@/components/webhooklogs/webhooklog-detail-dialog.js';
+import { WebhookLogsTable } from '@/components/webhooklogs/webhooklogs-table.js';
+import { trpc } from '@/lib/trpc.js';
 import { rootRoute } from '../__root.js';
 
 const searchSchema = z.object({
@@ -56,7 +56,7 @@ function WebhookLogsPage() {
 				<select
 					value={source}
 					onChange={(e) => updateSearch({ source: e.target.value || undefined })}
-					className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm sm:w-auto"
+					className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm dark:bg-card dark:text-foreground [&_option]:bg-card sm:w-auto"
 				>
 					<option value="">All sources</option>
 					<option value="trello">Trello</option>

@@ -11,11 +11,9 @@ vi.mock('../../../src/config/provider.js', () => ({
 }));
 
 const mockGetSentryIntegrationConfig = vi.fn();
-const mockHasAlertingIntegration = vi.fn();
 
 vi.mock('../../../src/sentry/integration.js', () => ({
 	getSentryIntegrationConfig: (...args: unknown[]) => mockGetSentryIntegrationConfig(...args),
-	hasAlertingIntegration: (...args: unknown[]) => mockHasAlertingIntegration(...args),
 }));
 
 import { SentryAlertingIntegration } from '../../../src/sentry/alerting-integration.js';
@@ -49,30 +47,30 @@ describe('SentryAlertingIntegration', () => {
 	// hasIntegration
 	// =========================================================================
 	describe('hasIntegration', () => {
-		it('returns true when sentry integration is configured', async () => {
-			mockHasAlertingIntegration.mockResolvedValue(true);
+		it('returns true when sentry integration config is non-null', async () => {
+			mockGetSentryIntegrationConfig.mockResolvedValue({ organizationSlug: 'my-org' });
 
 			const result = await integration.hasIntegration('proj-1');
 
 			expect(result).toBe(true);
-			expect(mockHasAlertingIntegration).toHaveBeenCalledWith('proj-1');
+			expect(mockGetSentryIntegrationConfig).toHaveBeenCalledWith('proj-1');
 		});
 
-		it('returns false when sentry integration is not configured', async () => {
-			mockHasAlertingIntegration.mockResolvedValue(false);
+		it('returns false when sentry integration config is null', async () => {
+			mockGetSentryIntegrationConfig.mockResolvedValue(null);
 
 			const result = await integration.hasIntegration('proj-1');
 
 			expect(result).toBe(false);
-			expect(mockHasAlertingIntegration).toHaveBeenCalledWith('proj-1');
+			expect(mockGetSentryIntegrationConfig).toHaveBeenCalledWith('proj-1');
 		});
 
-		it('delegates to hasAlertingIntegration() with the correct projectId', async () => {
-			mockHasAlertingIntegration.mockResolvedValue(true);
+		it('calls getSentryIntegrationConfig with the correct projectId', async () => {
+			mockGetSentryIntegrationConfig.mockResolvedValue(null);
 
 			await integration.hasIntegration('my-project-id');
 
-			expect(mockHasAlertingIntegration).toHaveBeenCalledWith('my-project-id');
+			expect(mockGetSentryIntegrationConfig).toHaveBeenCalledWith('my-project-id');
 		});
 	});
 
@@ -117,7 +115,12 @@ describe('SentryAlertingIntegration', () => {
 
 			await integration.withCredentials('proj-1', fn);
 
-			expect(mockGetIntegrationCredential).toHaveBeenCalledWith('proj-1', 'alerting', 'api_token');
+			expect(mockGetIntegrationCredential).toHaveBeenCalledWith(
+				'proj-1',
+				'alerting',
+				'sentry',
+				'api_token',
+			);
 			expect(fn).toHaveBeenCalled();
 		});
 
@@ -157,12 +160,12 @@ describe('SentryAlertingIntegration', () => {
 			expect(process.env.SENTRY_API_TOKEN).toBe(previousToken);
 
 			// Cleanup
-			process.env.SENTRY_API_TOKEN = undefined;
+			delete process.env.SENTRY_API_TOKEN;
 		});
 
 		it('clears SENTRY_API_TOKEN from process.env when it was not set before', async () => {
 			// Ensure the env var is not set (following codebase pattern)
-			process.env.SENTRY_API_TOKEN = undefined;
+			delete process.env.SENTRY_API_TOKEN;
 			const previousState = process.env.SENTRY_API_TOKEN;
 
 			mockGetIntegrationCredential.mockResolvedValue('sentry-token-123');
@@ -186,11 +189,11 @@ describe('SentryAlertingIntegration', () => {
 			expect(process.env.SENTRY_API_TOKEN).toBe(previousToken);
 
 			// Cleanup
-			process.env.SENTRY_API_TOKEN = undefined;
+			delete process.env.SENTRY_API_TOKEN;
 		});
 
 		it('propagates errors from credential resolution without setting env', async () => {
-			process.env.SENTRY_API_TOKEN = undefined;
+			delete process.env.SENTRY_API_TOKEN;
 			mockGetIntegrationCredential.mockRejectedValue(new Error('Credential not found'));
 
 			const fn = vi.fn();

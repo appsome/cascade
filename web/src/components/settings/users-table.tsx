@@ -1,3 +1,6 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Pencil, Trash2 } from 'lucide-react';
+import { useState } from 'react';
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -18,9 +21,6 @@ import {
 	TableRow,
 } from '@/components/ui/table.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Pencil, Trash2 } from 'lucide-react';
-import { useState } from 'react';
 import { UserFormDialog } from './user-form-dialog.js';
 
 interface User {
@@ -123,7 +123,7 @@ export function UsersTable({ users }: { users: User[] }) {
 						<AlertDialogCancel>Cancel</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => deleteId && deleteMutation.mutate(deleteId)}
-							className="bg-destructive text-white hover:bg-destructive/90"
+							variant="destructive"
 						>
 							Delete
 						</AlertDialogAction>

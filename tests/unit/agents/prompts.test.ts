@@ -15,6 +15,7 @@ vi.mock('../../../src/agents/definitions/index.js', () => ({
 			'respond-to-planning-comment',
 			'debug',
 			'backlog-manager',
+			'resolve-conflicts',
 		]),
 }));
 
@@ -398,6 +399,7 @@ describe('readTemplateFileSync', () => {
 			'respond-to-planning-comment',
 			'debug',
 			'backlog-manager',
+			'resolve-conflicts',
 		];
 		for (const agentType of builtinTypes) {
 			const content = readTemplateFileSync(agentType);
@@ -493,18 +495,6 @@ describe('getTemplateVariables', () => {
 		const names = vars.map((v) => v.name);
 		expect(names).toContain('workItemId');
 		expect(names).toContain('projectId');
-	});
-
-	it('includes squintEnabled variable', () => {
-		const vars = getTemplateVariables();
-		const names = vars.map((v) => v.name);
-		expect(names).toContain('squintEnabled');
-	});
-
-	it('squintEnabled variable belongs to Squint group', () => {
-		const vars = getTemplateVariables();
-		const squintVar = vars.find((v) => v.name === 'squintEnabled');
-		expect(squintVar?.group).toBe('Squint');
 	});
 });
 
@@ -655,6 +645,7 @@ describe('duplicate content detection', () => {
 		'respond-to-planning-comment',
 		'debug',
 		'backlog-manager',
+		'resolve-conflicts',
 	];
 
 	for (const agentType of allAgentTypes) {
@@ -698,132 +689,126 @@ describe('debug agent gadget naming', () => {
 	});
 });
 
-describe('squintEnabled template gating', () => {
-	it('implementation prompt with squintEnabled=true includes squint instructions', () => {
-		const prompt = getSystemPrompt('implementation', { squintEnabled: true });
-		expect(prompt).toContain('squint features show');
-		expect(prompt).toContain('squint flows show');
-		expect(prompt).toContain('squint modules show');
-		expect(prompt).toContain('squint-modules');
-		expect(prompt).toContain('squint-features');
+describe('documentation-maintenance partial', () => {
+	it('partial exists in getAvailablePartialNames()', () => {
+		const names = getAvailablePartialNames();
+		expect(names).toContain('documentation-maintenance');
 	});
 
-	it('implementation prompt with squintEnabled=false excludes squint instructions', () => {
-		const prompt = getSystemPrompt('implementation', { squintEnabled: false });
-		expect(prompt).not.toContain('squint features show');
-		expect(prompt).not.toContain('squint flows show');
-		expect(prompt).not.toContain('squint modules show');
-		expect(prompt).not.toContain('squint-modules');
-		expect(prompt).not.toContain('squint-features');
+	it('partial contains key doc-update phrases', () => {
+		const content = getRawPartial('documentation-maintenance');
+		expect(content).toContain('CLAUDE.md');
+		expect(content).toContain('README');
+		expect(content).toContain('JSDoc');
+		expect(content).toContain('docs/');
 	});
 
-	it('implementation prompt with squintEnabled=false still contains core instructions', () => {
-		const prompt = getSystemPrompt('implementation', { squintEnabled: false });
+	it('partial describes when to update docs (conditional guidance)', () => {
+		const content = getRawPartial('documentation-maintenance');
+		expect(content).toContain('When to');
+	});
+
+	it('partial provides a documentation update checklist', () => {
+		const content = getRawPartial('documentation-maintenance');
+		expect(content).toContain('Documentation Update Checklist');
+	});
+});
+
+describe('documentation maintenance in code-modifying agent prompts', () => {
+	it('implementation prompt contains documentation maintenance section', () => {
+		const prompt = getSystemPrompt('implementation');
+		expect(prompt).toContain('Documentation Maintenance');
 		expect(prompt).toContain('CLAUDE.md');
-		expect(prompt).toContain('Tmux');
-		expect(prompt).toContain('conventional commits');
+		expect(prompt).toContain('JSDoc');
 	});
 
-	it('planning prompt with squintEnabled=true includes squint instructions', () => {
-		const prompt = getSystemPrompt('planning', { squintEnabled: true });
-		expect(prompt).toContain('squint features show');
-		expect(prompt).toContain('squint flows show');
-		expect(prompt).toContain('squint modules show');
+	it('implementation prompt completion protocol includes documentation step', () => {
+		const prompt = getSystemPrompt('implementation');
+		expect(prompt).toContain('Documentation updated');
 	});
 
-	it('planning prompt with squintEnabled=false excludes squint instructions', () => {
-		const prompt = getSystemPrompt('planning', { squintEnabled: false });
-		expect(prompt).not.toContain('squint features show');
-		expect(prompt).not.toContain('squint flows show');
-		expect(prompt).not.toContain('squint modules show');
+	it('respond-to-review prompt contains documentation maintenance section', () => {
+		const prompt = getSystemPrompt('respond-to-review');
+		expect(prompt).toContain('Documentation Maintenance');
+		expect(prompt).toContain('CLAUDE.md');
 	});
 
-	it('planning prompt with squintEnabled=false still contains core instructions', () => {
-		const prompt = getSystemPrompt('planning', { squintEnabled: false });
-		expect(prompt).toContain('ReadWorkItem');
-		expect(prompt).toContain('implementation plan');
+	it('respond-to-review prompt scope section mentions documentation updates', () => {
+		const prompt = getSystemPrompt('respond-to-review');
+		expect(prompt).toContain('documented behavior');
 	});
 
-	it('splitting prompt with squintEnabled=true includes squint instructions', () => {
-		const prompt = getSystemPrompt('splitting', { squintEnabled: true });
-		expect(prompt).toContain('squint features show');
-		expect(prompt).toContain('squint modules show');
+	it('respond-to-ci prompt contains documentation maintenance section', () => {
+		const prompt = getSystemPrompt('respond-to-ci');
+		expect(prompt).toContain('Documentation Maintenance');
+		expect(prompt).toContain('CLAUDE.md');
 	});
 
-	it('splitting prompt with squintEnabled=false excludes squint instructions', () => {
-		const prompt = getSystemPrompt('splitting', { squintEnabled: false });
-		expect(prompt).not.toContain('squint features show');
-		expect(prompt).not.toContain('squint modules show');
+	it('respond-to-pr-comment prompt contains documentation maintenance section', () => {
+		const prompt = getSystemPrompt('respond-to-pr-comment');
+		expect(prompt).toContain('Documentation Maintenance');
+		expect(prompt).toContain('CLAUDE.md');
 	});
 
-	it('review prompt with squintEnabled=true includes squint instructions', () => {
-		const prompt = getSystemPrompt('review', { squintEnabled: true });
-		expect(prompt).toContain('squint modules show');
-		expect(prompt).toContain('Squint for Conflict Detection');
-		expect(prompt).toContain('squint features show');
+	it('respond-to-pr-comment prompt scope section mentions documentation updates', () => {
+		const prompt = getSystemPrompt('respond-to-pr-comment');
+		expect(prompt).toContain('documented behavior');
 	});
 
-	it('review prompt with squintEnabled=false excludes squint-specific instructions', () => {
-		const prompt = getSystemPrompt('review', { squintEnabled: false });
-		expect(prompt).not.toContain('Squint for Conflict Detection');
-		expect(prompt).not.toContain('squint modules show');
-		expect(prompt).not.toContain('squint features show');
-		expect(prompt).not.toContain('Use squint to see the forest');
-		expect(prompt).not.toContain('with squint evidence');
+	it('resolve-conflicts prompt contains documentation maintenance section', () => {
+		const prompt = getSystemPrompt('resolve-conflicts');
+		expect(prompt).toContain('Documentation Maintenance');
+		expect(prompt).toContain('CLAUDE.md');
+	});
+});
+
+describe('documentation review checks in review agent', () => {
+	it('review prompt contains Documentation subsection under What to Verify', () => {
+		const prompt = getSystemPrompt('review');
+		expect(prompt).toContain('### Documentation');
 	});
 
-	it('review prompt with squintEnabled=true includes philosophy squint reference', () => {
-		const prompt = getSystemPrompt('review', { squintEnabled: true });
-		expect(prompt).toContain('Use squint to see the forest, not just the trees.');
+	it('review prompt covers documentation currency', () => {
+		const prompt = getSystemPrompt('review');
+		expect(prompt).toContain('Currency');
 	});
 
-	it('review prompt with squintEnabled=false still contains core review instructions', () => {
-		const prompt = getSystemPrompt('review', { squintEnabled: false });
-		expect(prompt).toContain('BLOCKING');
-		expect(prompt).toContain('APPROVE');
-		expect(prompt).toContain('REQUEST_CHANGES');
+	it('review prompt covers undocumented new features', () => {
+		const prompt = getSystemPrompt('review');
+		expect(prompt).toContain('New features');
 	});
 
-	it('respond-to-planning-comment prompt with squintEnabled=true includes squint instructions', () => {
-		const prompt = getSystemPrompt('respond-to-planning-comment', { squintEnabled: true });
-		expect(prompt).toContain('squint features show');
-		expect(prompt).toContain('squint flows show');
-		expect(prompt).toContain('squint modules show');
+	it('review prompt covers stale references in docs', () => {
+		const prompt = getSystemPrompt('review');
+		expect(prompt).toContain('Stale references');
 	});
 
-	it('respond-to-planning-comment prompt with squintEnabled=false excludes squint instructions', () => {
-		const prompt = getSystemPrompt('respond-to-planning-comment', { squintEnabled: false });
-		expect(prompt).not.toContain('squint features show');
-		expect(prompt).not.toContain('squint flows show');
-		expect(prompt).not.toContain('squint modules show');
+	it('review prompt includes SHOULD_FIX severity for missing user-facing docs', () => {
+		const prompt = getSystemPrompt('review');
+		expect(prompt).toContain('SHOULD_FIX');
 	});
 
-	it('squint-exploration partial with squintEnabled=true includes squint protocol', () => {
-		const partial = getRawPartial('squint-exploration');
-		// The partial itself contains the conditional; render it with the context
-		const rendered = renderCustomPrompt(partial, { squintEnabled: true });
-		expect(rendered).toContain('squint features show');
-		expect(rendered).toContain('squint symbols show');
+	it('review prompt does NOT include documentation-maintenance partial (reports gaps, does not fix)', () => {
+		const prompt = getSystemPrompt('review');
+		// The partial's checklist heading should not be present in review
+		expect(prompt).not.toContain('Documentation Update Checklist');
+	});
+});
+
+describe('documentation planning in planning agent', () => {
+	it('planning prompt contains documentation check as step 6 in pattern analysis', () => {
+		const prompt = getSystemPrompt('planning');
+		expect(prompt).toContain('Check documentation');
 	});
 
-	it('squint-exploration partial with squintEnabled=false shows fallback message', () => {
-		const partial = getRawPartial('squint-exploration');
-		const rendered = renderCustomPrompt(partial, { squintEnabled: false });
-		expect(rendered).not.toContain('squint features show');
-		expect(rendered).toContain('no Squint database');
+	it('planning prompt includes guidance to add doc update steps to plans', () => {
+		const prompt = getSystemPrompt('planning');
+		expect(prompt).toContain('doc update step');
 	});
 
-	it('tmux partial with squintEnabled=true includes squint session name examples', () => {
-		const partial = getRawPartial('tmux');
-		const rendered = renderCustomPrompt(partial, { squintEnabled: true });
-		expect(rendered).toContain('squint-modules');
-		expect(rendered).toContain('squint-features');
-	});
-
-	it('tmux partial with squintEnabled=false excludes squint session name examples', () => {
-		const partial = getRawPartial('tmux');
-		const rendered = renderCustomPrompt(partial, { squintEnabled: false });
-		expect(rendered).not.toContain('squint-modules');
-		expect(rendered).not.toContain('squint-features');
+	it('planning prompt does NOT include documentation-maintenance partial', () => {
+		const prompt = getSystemPrompt('planning');
+		// The partial's checklist heading should not be in planning prompt
+		expect(prompt).not.toContain('Documentation Update Checklist');
 	});
 });

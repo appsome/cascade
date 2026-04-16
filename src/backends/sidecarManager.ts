@@ -4,11 +4,11 @@ import { join } from 'node:path';
 
 import type { getAgentProfile } from '../agents/definitions/profiles.js';
 import {
+	clearInitialComment,
 	PM_WRITE_SIDECAR_ENV_VAR,
 	PR_SIDECAR_ENV_VAR,
 	PUSHED_CHANGES_SIDECAR_ENV_VAR,
 	REVIEW_SIDECAR_ENV_VAR,
-	clearInitialComment,
 	recordPRCreation,
 	recordReviewSubmission,
 } from '../gadgets/sessionState.js';
@@ -23,7 +23,7 @@ import type { AgentEngineResult } from './types.js';
  */
 export function createCompletionArtifacts(
 	profile: Awaited<ReturnType<typeof getAgentProfile>>,
-	agentType: string,
+	_agentType: string,
 	needsNativeToolRuntime: boolean,
 	input: AgentInput,
 	projectSecrets: Record<string, string>,
@@ -33,10 +33,9 @@ export function createCompletionArtifacts(
 	reviewSidecarPath: string | undefined;
 	pmWriteSidecarPath: string | undefined;
 } {
-	const reviewSidecarPath =
-		agentType === 'review'
-			? join(tmpdir(), `cascade-review-sidecar-${process.pid}-${Date.now()}.json`)
-			: undefined;
+	const reviewSidecarPath = profile.finishHooks.requiresReview
+		? join(tmpdir(), `cascade-review-sidecar-${process.pid}-${Date.now()}.json`)
+		: undefined;
 	if (reviewSidecarPath) {
 		projectSecrets[REVIEW_SIDECAR_ENV_VAR] = reviewSidecarPath;
 	}

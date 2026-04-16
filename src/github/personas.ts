@@ -17,6 +17,20 @@ export interface PersonaIdentities {
 // Agent → Persona Mapping
 // ============================================================================
 
+/**
+ * Maps agent types to their GitHub personas.
+ *
+ * This is the canonical registration point for agent persona assignments.
+ * - `'implementer'` — uses the implementer GitHub token for all SCM operations
+ * - `'reviewer'`    — uses the reviewer GitHub token, appropriate for agents
+ *   that submit PR reviews (e.g. the built-in `review` agent)
+ *
+ * To add a custom agent with reviewer behaviour, add an entry here:
+ * ```ts
+ * 'my-custom-reviewer': 'reviewer',
+ * ```
+ * Any agent type not listed here defaults to `'implementer'`.
+ */
 const AGENT_PERSONA_MAP: Record<string, GitHubPersona> = {
 	splitting: 'implementer',
 	planning: 'implementer',
@@ -46,7 +60,7 @@ export async function getPersonaToken(projectId: string, agentType: string): Pro
 	const persona = getPersonaForAgentType(agentType);
 	const role = persona === 'implementer' ? 'implementer_token' : 'reviewer_token';
 
-	return getIntegrationCredential(projectId, 'scm', role);
+	return getIntegrationCredential(projectId, 'scm', 'github', role);
 }
 
 // ============================================================================
@@ -76,8 +90,8 @@ export async function resolvePersonaIdentities(projectId: string): Promise<Perso
 
 	// Parallelize credential lookups to halve round-trip latency
 	const [implementerToken, reviewerToken] = await Promise.all([
-		getIntegrationCredential(projectId, 'scm', 'implementer_token'),
-		getIntegrationCredential(projectId, 'scm', 'reviewer_token'),
+		getIntegrationCredential(projectId, 'scm', 'github', 'implementer_token'),
+		getIntegrationCredential(projectId, 'scm', 'github', 'reviewer_token'),
 	]);
 
 	const [implementerLogin, reviewerLogin] = await Promise.all([

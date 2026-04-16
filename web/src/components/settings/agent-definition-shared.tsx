@@ -3,6 +3,9 @@
  * Extracted from agent-definition-editor.tsx to serve as the foundational leaf
  * of the import graph — this file must NOT import from any sibling agent-definition-* file.
  */
+
+import type { inferRouterOutputs } from '@trpc/server';
+import { Info } from 'lucide-react';
 import type { AppRouter } from '@/../../src/api/router.js';
 import type { KnownTriggerEvent } from '@/../../src/api/routers/_shared/triggerTypes.js';
 import { Badge } from '@/components/ui/badge.js';
@@ -12,8 +15,6 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from '@/components/ui/tooltip.js';
-import type { inferRouterOutputs } from '@trpc/server';
-import { Info } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type aliases
@@ -134,7 +135,7 @@ export function Toggle({
 				}`}
 			>
 				<span
-					className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+					className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white dark:bg-primary-foreground shadow transition-transform ${
 						checked ? 'translate-x-4.5' : 'translate-x-0.5'
 					}`}
 				/>

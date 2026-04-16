@@ -31,10 +31,11 @@ vi.mock('../../../src/utils/logging.js', () => ({
 
 import { findProjectById, getIntegrationCredential } from '../../../src/config/provider.js';
 import {
-	TrelloPlatformClient,
+	LinearPlatformClient,
 	resolveGitHubHeaders,
 	resolveJiraCredentials,
 	resolveTrelloCredentials,
+	TrelloPlatformClient,
 } from '../../../src/router/platformClients/index.js';
 import { logger } from '../../../src/utils/logging.js';
 
@@ -54,6 +55,27 @@ const MOCK_CREDENTIALS: Record<string, string> = {
 	'pm/api_token': 'jira-api-token',
 };
 
+const LINEAR_API_KEY = 'lin_api_test123';
+
+function mockLinearApiKey() {
+	mockGetIntegrationCredential.mockImplementation(async (_projectId, category, _provider, role) => {
+		if (category === 'pm' && role === 'api_key') return LINEAR_API_KEY;
+		throw new Error(`Credential '${category}/${role}' not found`);
+	});
+}
+
+function lastFetchAuth(): unknown {
+	const call = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+	const init = call?.[1] as { headers?: Record<string, string> } | undefined;
+	return init?.headers?.Authorization;
+}
+
+function lastFetchBody(): { query?: string; variables?: unknown } {
+	const call = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+	const init = call?.[1] as { body?: string } | undefined;
+	return init?.body ? JSON.parse(init.body) : {};
+}
+
 const MOCK_PROJECT_WITH_JIRA = {
 	id: 'proj1',
 	name: 'Test',
@@ -71,7 +93,7 @@ const MOCK_PROJECT_WITH_JIRA = {
 beforeEach(() => {
 	mockFetch.mockReset();
 
-	mockGetIntegrationCredential.mockImplementation(async (_projectId, category, role) => {
+	mockGetIntegrationCredential.mockImplementation(async (_projectId, category, _provider, role) => {
 		const value = MOCK_CREDENTIALS[`${category}/${role}`];
 		if (value) return value;
 		throw new Error(`Credential '${category}/${role}' not found`);
@@ -297,6 +319,110 @@ describe('TrelloPlatformClient', () => {
 				expect.stringContaining('Failed to delete Trello comment'),
 				expect.any(String),
 			);
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// LinearPlatformClient
+// ---------------------------------------------------------------------------
+
+describe('LinearPlatformClient', () => {
+	beforeEach(() => {
+		mockLinearApiKey();
+	});
+
+	describe('postComment', () => {
+		it('sends bare API key (no Bearer prefix) — Linear personal API keys are not OAuth tokens', async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({
+					data: { commentCreate: { success: true, comment: { id: 'c-new' } } },
+				}),
+			});
+
+			const client = new LinearPlatformClient('proj1');
+			const id = await client.postComment('issue-uuid-1', 'hello');
+
+			expect(id).toBe('c-new');
+			expect(lastFetchAuth()).toBe(LINEAR_API_KEY);
+			expect(lastFetchAuth()).not.toMatch(/^Bearer\s/);
+		});
+
+		it('posts the commentCreate mutation with issueId and body variables', async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({
+					data: { commentCreate: { success: true, comment: { id: 'c-1' } } },
+				}),
+			});
+
+			const client = new LinearPlatformClient('proj1');
+			await client.postComment('issue-uuid-2', 'Processing this issue');
+
+			const body = lastFetchBody();
+			expect(body.query).toContain('commentCreate');
+			expect(body.variables).toEqual({
+				issueId: 'issue-uuid-2',
+				body: 'Processing this issue',
+			});
+		});
+
+		it('logs the response body when Linear returns an HTTP error so the failure is diagnosable', async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: false,
+				status: 400,
+				text: async () => '{"error":"bad token"}',
+			});
+
+			const client = new LinearPlatformClient('proj1');
+			const id = await client.postComment('issue-uuid-3', 'msg');
+
+			expect(id).toBeNull();
+			expect(mockLogger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('Failed to post Linear comment'),
+				expect.stringContaining('bad token'),
+			);
+		});
+
+		it('returns null without calling fetch when credentials are missing', async () => {
+			mockGetIntegrationCredential.mockRejectedValue(new Error('not found'));
+
+			const client = new LinearPlatformClient('proj1');
+			const id = await client.postComment('issue-uuid-4', 'msg');
+
+			expect(id).toBeNull();
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('deleteComment', () => {
+		it('sends bare API key for delete', async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ data: { commentDelete: { success: true } } }),
+			});
+
+			const client = new LinearPlatformClient('proj1');
+			await client.deleteComment('issue-uuid-1', 'comment-abc');
+
+			expect(lastFetchAuth()).toBe(LINEAR_API_KEY);
+			expect(lastFetchAuth()).not.toMatch(/^Bearer\s/);
+		});
+	});
+
+	describe('updateComment', () => {
+		it('sends bare API key for update', async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ data: { commentUpdate: { success: true } } }),
+			});
+
+			const client = new LinearPlatformClient('proj1');
+			await client.updateComment('comment-abc', 'edited');
+
+			expect(lastFetchAuth()).toBe(LINEAR_API_KEY);
+			expect(lastFetchAuth()).not.toMatch(/^Bearer\s/);
 		});
 	});
 });

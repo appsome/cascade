@@ -160,6 +160,32 @@ export function extractJiraContext(payload: unknown): string {
 	return truncate(parts.join('\n'));
 }
 
+/**
+ * Extract context from a Linear webhook payload.
+ * Pulls issue title and optional comment body.
+ */
+export function extractLinearContext(payload: unknown): string {
+	if (!payload || typeof payload !== 'object') return '';
+
+	const p = payload as Record<string, unknown>;
+	const parts: string[] = [];
+
+	const data = p.data as Record<string, unknown> | undefined;
+	if (!data) return '';
+
+	// Issue title (present for Issue and Comment events)
+	if (data.title) {
+		parts.push(`Issue: ${data.title as string}`);
+	}
+
+	// Comment body (present for Comment events)
+	if (data.body) {
+		parts.push(`Comment: ${data.body as string}`);
+	}
+
+	return truncate(parts.join('\n'));
+}
+
 // ---------------------------------------------------------------------------
 // Core generator
 // ---------------------------------------------------------------------------
@@ -217,7 +243,7 @@ export async function generateAckMessage(
 		process.env.OPENROUTER_API_KEY = apiKey;
 		restoreEnv = () => {
 			if (previousKey === undefined) {
-				process.env.OPENROUTER_API_KEY = undefined;
+				delete process.env.OPENROUTER_API_KEY;
 			} else {
 				process.env.OPENROUTER_API_KEY = previousKey;
 			}
@@ -231,7 +257,7 @@ export async function generateAckMessage(
 
 		const result = await Promise.race([llmPromise, timeoutPromise]);
 
-		if (!result || !result.trim()) {
+		if (!result?.trim()) {
 			return fallback;
 		}
 

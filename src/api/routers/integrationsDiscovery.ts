@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getIntegrationCredentialOrNull } from '../../config/provider.js';
 import { getIntegrationByProjectAndCategory } from '../../db/repositories/integrationsRepository.js';
 import { jiraClient, withJiraCredentials } from '../../jira/client.js';
+import { linearClient, withLinearCredentials } from '../../linear/client.js';
 import { trelloClient, withTrelloCredentials } from '../../trello/client.js';
 import { logger } from '../../utils/logging.js';
 import { protectedProcedure, router } from '../trpc.js';
@@ -27,6 +28,10 @@ const jiraCredsInput = z.object({
 	baseUrl: z.string().url(),
 });
 
+const linearCredsInput = z.object({
+	apiKey: z.string().min(1),
+});
+
 async function withTrelloCreds<T>(
 	input: z.infer<typeof trelloCredsInput>,
 	label: string,
@@ -43,6 +48,14 @@ async function withJiraCreds<T>(
 	return wrapIntegrationCall(label, () =>
 		fn({ email: input.email, apiToken: input.apiToken, baseUrl: input.baseUrl }),
 	);
+}
+
+async function withLinearCreds<T>(
+	input: z.infer<typeof linearCredsInput>,
+	label: string,
+	fn: (creds: { apiKey: string }) => Promise<T>,
+): Promise<T> {
+	return wrapIntegrationCall(label, () => fn({ apiKey: input.apiKey }));
 }
 
 export const integrationsDiscoveryRouter = router({
@@ -112,8 +125,26 @@ export const integrationsDiscoveryRouter = router({
 				projectId: input.projectId,
 			});
 			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
-			const apiKey = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'api_key');
-			const token = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'token');
+			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'trello') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const apiKey = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'trello',
+				'api_key',
+			);
+			const token = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'trello', 'token');
 			if (!apiKey || !token) {
 				throw new TRPCError({ code: 'NOT_FOUND', message: 'Trello credentials not configured' });
 			}
@@ -139,8 +170,26 @@ export const integrationsDiscoveryRouter = router({
 				boardId: input.boardId,
 			});
 			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
-			const apiKey = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'api_key');
-			const token = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'token');
+			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'trello') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const apiKey = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'trello',
+				'api_key',
+			);
+			const token = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'trello', 'token');
 			if (!apiKey || !token) {
 				throw new TRPCError({ code: 'NOT_FOUND', message: 'Trello credentials not configured' });
 			}
@@ -163,10 +212,27 @@ export const integrationsDiscoveryRouter = router({
 				projectId: input.projectId,
 			});
 			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
-			const email = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'email');
-			const apiToken = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'api_token');
 			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
-			const baseUrl = (integration?.config as Record<string, unknown> | null)?.baseUrl as
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'jira') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const email = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'jira', 'email');
+			const apiToken = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'jira',
+				'api_token',
+			);
+			const baseUrl = (integration.config as Record<string, unknown> | null)?.baseUrl as
 				| string
 				| undefined;
 			if (!email || !apiToken || !baseUrl) {
@@ -194,10 +260,27 @@ export const integrationsDiscoveryRouter = router({
 				projectKey: input.projectKey,
 			});
 			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
-			const email = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'email');
-			const apiToken = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'api_token');
 			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
-			const baseUrl = (integration?.config as Record<string, unknown> | null)?.baseUrl as
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'jira') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const email = await getIntegrationCredentialOrNull(input.projectId, 'pm', 'jira', 'email');
+			const apiToken = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'jira',
+				'api_token',
+			);
+			const baseUrl = (integration.config as Record<string, unknown> | null)?.baseUrl as
 				| string
 				| undefined;
 			if (!email || !apiToken || !baseUrl) {
@@ -428,5 +511,274 @@ export const integrationsDiscoveryRouter = router({
 					slug: data.slug ?? '',
 				};
 			});
+		}),
+
+	/**
+	 * Verify a raw Linear API key.
+	 * Accepts a plaintext API key from the form and calls getMe() to verify it.
+	 * Returns the authenticated user's id, name, and displayName.
+	 */
+	verifyLinear: protectedProcedure.input(linearCredsInput).mutation(async ({ ctx, input }) => {
+		logger.debug('integrationsDiscovery.verifyLinear called', { orgId: ctx.effectiveOrgId });
+		return withLinearCreds(input, 'Failed to verify Linear credentials', (creds) =>
+			withLinearCredentials(creds, () =>
+				linearClient.getMe().then((me) => ({
+					id: me.id,
+					name: me.name,
+					displayName: me.displayName,
+				})),
+			),
+		);
+	}),
+
+	/**
+	 * Fetch Linear teams using raw API key credentials.
+	 * Returns all teams accessible by the provided API key.
+	 */
+	linearTeams: protectedProcedure.input(linearCredsInput).mutation(async ({ ctx, input }) => {
+		logger.debug('integrationsDiscovery.linearTeams called', { orgId: ctx.effectiveOrgId });
+		return withLinearCreds(input, 'Failed to fetch Linear teams', (creds) =>
+			withLinearCredentials(creds, () => linearClient.getTeams()),
+		);
+	}),
+
+	/**
+	 * Fetch Linear teams using stored project credentials.
+	 * Resolves the API key from the project's stored credentials and returns all teams.
+	 */
+	linearTeamsByProject: protectedProcedure
+		.input(z.object({ projectId: z.string() }))
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.linearTeamsByProject called', {
+				orgId: ctx.effectiveOrgId,
+				projectId: input.projectId,
+			});
+			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
+			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'linear') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const apiKey = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'linear',
+				'api_key',
+			);
+			if (!apiKey) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Linear credentials not configured',
+				});
+			}
+			return wrapIntegrationCall('Failed to fetch Linear teams', () =>
+				withLinearCredentials({ apiKey }, () => linearClient.getTeams()),
+			);
+		}),
+
+	/**
+	 * Fetch Linear team workflow states and labels using raw API key credentials.
+	 * Returns both states and labels for the given teamId.
+	 */
+	linearTeamDetails: protectedProcedure
+		.input(linearCredsInput.extend({ teamId: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.linearTeamDetails called', {
+				orgId: ctx.effectiveOrgId,
+				teamId: input.teamId,
+			});
+			return withLinearCreds(input, 'Failed to fetch Linear team details', (creds) =>
+				withLinearCredentials(creds, () =>
+					Promise.all([
+						linearClient.getTeamWorkflowStates(input.teamId),
+						linearClient.getTeamLabels(input.teamId),
+					]).then(([states, labels]) => ({ states, labels })),
+				),
+			);
+		}),
+
+	/**
+	 * Fetch Linear team workflow states and labels using stored project credentials.
+	 * Resolves the API key from stored credentials and returns states and labels for the team.
+	 */
+	linearTeamDetailsByProject: protectedProcedure
+		.input(z.object({ projectId: z.string(), teamId: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.linearTeamDetailsByProject called', {
+				orgId: ctx.effectiveOrgId,
+				projectId: input.projectId,
+				teamId: input.teamId,
+			});
+			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
+			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'linear') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const apiKey = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'linear',
+				'api_key',
+			);
+			if (!apiKey) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Linear credentials not configured',
+				});
+			}
+			return wrapIntegrationCall('Failed to fetch Linear team details', () =>
+				withLinearCredentials({ apiKey }, () =>
+					Promise.all([
+						linearClient.getTeamWorkflowStates(input.teamId),
+						linearClient.getTeamLabels(input.teamId),
+					]).then(([states, labels]) => ({ states, labels })),
+				),
+			);
+		}),
+
+	/**
+	 * Fetch Linear projects scoped to a team using raw API key credentials.
+	 * Returns the list of Linear Projects accessible to the given team.
+	 */
+	linearProjects: protectedProcedure
+		.input(linearCredsInput.extend({ teamId: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.linearProjects called', {
+				orgId: ctx.effectiveOrgId,
+				teamId: input.teamId,
+			});
+			return withLinearCreds(input, 'Failed to fetch Linear projects', (creds) =>
+				withLinearCredentials(creds, () => linearClient.getTeamProjects(input.teamId)),
+			);
+		}),
+
+	/**
+	 * Fetch Linear projects scoped to a team using stored project credentials.
+	 * Resolves the API key from stored credentials and returns the team's projects.
+	 */
+	linearProjectsByProject: protectedProcedure
+		.input(z.object({ projectId: z.string(), teamId: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.linearProjectsByProject called', {
+				orgId: ctx.effectiveOrgId,
+				projectId: input.projectId,
+				teamId: input.teamId,
+			});
+			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
+			const integration = await getIntegrationByProjectAndCategory(input.projectId, 'pm');
+			if (!integration) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'No PM integration configured for this project yet',
+				});
+			}
+			if (integration.provider !== 'linear') {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Project is configured with a different PM provider',
+				});
+			}
+			const apiKey = await getIntegrationCredentialOrNull(
+				input.projectId,
+				'pm',
+				'linear',
+				'api_key',
+			);
+			if (!apiKey) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'Linear credentials not configured',
+				});
+			}
+			return wrapIntegrationCall('Failed to fetch Linear projects', () =>
+				withLinearCredentials({ apiKey }, () => linearClient.getTeamProjects(input.teamId)),
+			);
+		}),
+
+	createLinearLabel: protectedProcedure
+		.input(
+			linearCredsInput.extend({
+				teamId: z.string().min(1),
+				name: z.string().min(1).max(100),
+				color: z.string().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.createLinearLabel called', {
+				orgId: ctx.effectiveOrgId,
+				teamId: input.teamId,
+				name: input.name,
+			});
+			return withLinearCreds(input, 'Failed to create Linear label', (creds) =>
+				withLinearCredentials(creds, () =>
+					linearClient.createLabel(input.teamId, input.name, input.color),
+				),
+			);
+		}),
+
+	createLinearLabels: protectedProcedure
+		.input(
+			linearCredsInput.extend({
+				teamId: z.string().min(1),
+				labels: z
+					.array(
+						z.object({
+							name: z.string().min(1).max(100),
+							color: z.string().optional(),
+						}),
+					)
+					.min(1)
+					.max(10),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.createLinearLabels called', {
+				orgId: ctx.effectiveOrgId,
+				teamId: input.teamId,
+				count: input.labels.length,
+			});
+			const creds = { apiKey: input.apiKey };
+
+			const results = await Promise.allSettled(
+				input.labels.map((label) =>
+					withLinearCredentials(creds, () =>
+						linearClient.createLabel(input.teamId, label.name, label.color),
+					),
+				),
+			);
+
+			const successes: Array<{ id: string; name: string; color: string }> = [];
+			const errors: Array<{ name: string; error: string }> = [];
+
+			for (let i = 0; i < results.length; i++) {
+				const result = results[i];
+				if (result.status === 'fulfilled') {
+					successes.push(result.value);
+				} else {
+					errors.push({
+						name: input.labels[i].name,
+						error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+					});
+				}
+			}
+
+			return { successes, errors };
 		}),
 });

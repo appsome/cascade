@@ -1,0 +1,233 @@
+---
+id: 005
+slug: linear-project-scope
+plan: 3
+plan_slug: wizard-ui
+level: plan
+parent_spec: docs/specs/005-linear-project-scope.md
+depends_on: [1-scope-config-and-outbound.md, 2-webhook-scope-filter-and-discovery.md]
+status: done
+---
+
+# 005/3: PM wizard UI — optional Linear Project selector + webhook panel copy + docs
+
+> Part 3 of 3 in the 005-linear-project-scope plan. See [parent spec](../../specs/005-linear-project-scope.md).
+
+## Summary
+
+This plan closes the loop: it wires the PM wizard so operators can select, change, or clear a Linear Project inside the existing "Board / Project Selection" step, persists the selection to `LinearConfig.projectId`, updates the `LinearWebhookInfoPanel` copy to clarify that project filtering happens on CASCADE's side, and ships the operator-facing documentation (integration README, CHANGELOG).
+
+After this plan, the feature is end-to-end live: the operator picks a Linear team (as today), optionally narrows to a Linear Project from a searchable dropdown populated by the `linearProjects` tRPC endpoint (shipped in plan 2), and saves. The router immediately starts filtering webhook events to that project (shipped in plan 2), and outbound provider operations start creating/listing issues within that project (shipped in plan 1).
+
+**Components delivered:**
+- `web/src/components/projects/pm-wizard-state.ts` — `linearProjectId: string`, `linearProjects: LinearProjectOption[]` state fields; `SET_LINEAR_PROJECTS`, `SET_LINEAR_PROJECT_ID` action cases; `SET_LINEAR_TEAM_ID` case cleared to also reset `linearProjectId` and `linearProjects` (a new team invalidates the project list); `buildEditState` hydrates `linearProjectId` from stored config.
+- `web/src/components/projects/pm-wizard-hooks.ts` — new `linearProjectsMutation` that calls `integrationsDiscovery.linearProjects` / `linearProjectsByProject`, fires after team selection (same effect-trigger pattern as `linearDetailsMutation`).
+- `web/src/components/projects/pm-wizard-linear-steps.tsx` — extend `LinearTeamStep` to render the new Project selector under the Team selector; disabled until a team is chosen; shows a helper: "Optional — leave empty to process all issues in this team."
+- `web/src/components/projects/pm-wizard.tsx` — save payload includes `projectId: state.linearProjectId || undefined` (omit when empty to keep storage minimal).
+- `web/src/components/projects/pm-wizard-common-steps.tsx` — `LinearWebhookInfoPanel` gets a new short note: "If you also set a Linear Project scope in the next step, CASCADE will apply that filter on its side — no change is needed to your Linear webhook config."
+- `src/integrations/README.md` — update the "Linear — operator setup" paragraph to mention the optional project scope lives in the "Board / Project Selection" step.
+- `CHANGELOG.md` — operator-facing release note.
+- `tests/unit/web/pm-wizard-state.test.ts` (NEW or extend existing) — state reducer coverage.
+- `tests/unit/web/linear-team-step.test.ts` (NEW or extend existing) — component coverage for the project selector.
+- `tests/unit/web/linear-webhook-info-panel.test.ts` — extend for the new copy.
+- `tests/unit/web/pm-wizard.test.ts` — extend for the save payload.
+
+**Deferred to later plans in this spec:**
+- None — this is the last plan.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #1** (selecting a Team enables an optional "Linear Project" selector populated with that team's projects; leaving it empty preserves full-team scope) — **full**.
+- **Spec AC #2** (reopening the wizard shows the previously chosen project pre-selected) — **full** via `buildEditState` hydration.
+- **Spec AC #3** (clearing the selection and saving reverts to full-team scope with no residual filter) — **full** — the save payload omits `projectId` when empty.
+- **Spec AC #10** (existing Linear integrations without project scope work unchanged) — **partial (this plan provides the wizard-compatibility half — rehydrating a config without `projectId` leaves the new state field empty; plans 1 + 2 provide the code-level halves)**.
+- **Spec AC #11** (the wizard step that explains Linear webhook setup includes copy clarifying that project filtering is performed by CASCADE, not by Linear webhook config) — **full**.
+- **Spec AC #12** (clearing and re-selecting a different project takes effect on the next inbound event) — **full (plan 2 guarantees the router re-reads config on every event; this plan guarantees the UI persists the new value correctly)**.
+
+---
+
+## Depends On
+
+- Plan 1 (`scope-config-and-outbound`) — provides the `LinearConfig.projectId` field that the save payload writes and the provider reads.
+- Plan 2 (`webhook-scope-filter-and-discovery`) — provides the `linearProjects` / `linearProjectsByProject` tRPC endpoints that the wizard mutation calls, plus the router-side filter that gives saved values runtime effect.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Wizard state reducer: `linearProjectId`, `linearProjects`
+
+**Tests first** (`tests/unit/web/pm-wizard-state.test.ts`):
+- `createInitialState — linearProjectId defaults to '' and linearProjects defaults to []`.
+- `SET_LINEAR_PROJECTS — replaces the list`.
+- `SET_LINEAR_PROJECT_ID — sets the chosen id; empty string clears it`.
+- `SET_LINEAR_TEAM_ID — resets linearProjectId AND linearProjects when team changes`: given a state with a project already selected, dispatch a new team id; assert both `linearProjectId === ''` and `linearProjects === []`. (The existing reducer already resets `linearStatusMappings`; extend the same case.)
+- `buildEditState — hydrates linearProjectId from initialConfig.projectId when present`: given `initialConfig = { teamId: 'T1', projectId: 'P1', statuses: {} }`, assert the produced state has `linearProjectId === 'P1'`.
+- `buildEditState — hydrates linearProjectId to '' when initialConfig has no projectId`.
+
+**Implementation** (`web/src/components/projects/pm-wizard-state.ts`):
+- Extend `WizardState` with `linearProjectId: string` and `linearProjects: LinearProjectOption[]` (a new local type `{ id: string; name: string; icon?: string | null; color?: string | null }`).
+- Extend `WizardAction` with `SET_LINEAR_PROJECTS` and `SET_LINEAR_PROJECT_ID` variants.
+- `createInitialState`: initialize both to `''` and `[]`.
+- Reducer: handle the two new actions. In the existing `SET_LINEAR_TEAM_ID` case, also reset `linearProjectId: ''` and `linearProjects: []` (the existing `linearStatusMappings: {}` reset is the template — add alongside).
+- `buildEditState`: read `initialConfig.projectId` and hydrate.
+
+### 2. Wizard hook: `linearProjectsMutation`
+
+**Tests first** (`tests/unit/web/pm-wizard-hooks.test.ts`, new or extend):
+- `linearProjectsMutation — calls linearProjectsByProject when editing with stored credentials`.
+- `linearProjectsMutation — calls linearProjects with raw apiKey when creating`.
+- `linearProjectsMutation — fires automatically after team selection (non-editing)`.
+- `linearProjectsMutation — fires automatically on mount when editing with a stored team`.
+
+**Implementation** (`web/src/components/projects/pm-wizard-hooks.ts`):
+- Inside `useLinearDiscovery`, add a `linearProjectsMutation` that mirrors `linearDetailsMutation`. It takes `teamId: string` as argument. When `state.isEditing && state.hasStoredCredentials && !state.linearApiKey`, calls `trpcClient.integrationsDiscovery.linearProjectsByProject.mutate({ projectId, teamId })`. Otherwise calls `.linearProjects.mutate({ apiKey: state.linearApiKey, teamId })`.
+- On success, dispatch `{ type: 'SET_LINEAR_PROJECTS', projects: result }`.
+- Trigger the mutation from the same effect branches that trigger `linearDetailsMutation`: right after a team is selected, and on the editing-mount branch when a team is already in state.
+- Return `linearProjectsMutation` from the hook. Update `pm-wizard.tsx` to destructure it.
+
+### 3. `LinearTeamStep` — render the project selector
+
+**Tests first** (`tests/unit/web/linear-team-step.test.ts`, new or extend):
+- `renders an optional Project selector below the Team selector`.
+- `Project selector is disabled when no team is selected`.
+- `Project selector is populated from state.linearProjects`.
+- `selecting a project dispatches SET_LINEAR_PROJECT_ID with the id`.
+- `clearing the project selection dispatches SET_LINEAR_PROJECT_ID with ''`.
+- `helper text contains "Optional" and clarifies leaving it empty processes all team issues`.
+
+**Implementation** (`web/src/components/projects/pm-wizard-linear-steps.tsx`):
+- Extend the `LinearTeamStep` prop signature to include `dispatch` (to dispatch `SET_LINEAR_PROJECT_ID`) and `linearProjectsMutation` (loading-state indicator + retry handler).
+- Render a second `SearchableSelect` below the team `SearchableSelect`:
+  - `Label`: "Linear Project (optional)"
+  - `options`: `state.linearProjects.map((p) => ({ label: p.name, value: p.id }))`
+  - `value`: `state.linearProjectId`
+  - `onChange`: `(v) => dispatch({ type: 'SET_LINEAR_PROJECT_ID', value: v })`
+  - Disabled when `!state.linearTeamId`.
+  - `clearable`: show a clear button / allow setting value to `''`.
+  - Helper text below: "Optional — leave empty to process all issues in this team. When set, CASCADE only responds to issues that belong to this project."
+- `pm-wizard.tsx`: update the `LinearTeamStep` invocation to pass `dispatch` and `linearProjectsMutation`.
+
+### 4. Save payload includes `projectId`
+
+**Tests first** (`tests/unit/web/pm-wizard.test.ts`, extend):
+- `save — omits projectId when linearProjectId is empty`: render the wizard with a fresh state, fill team only, click save, assert the `projects.integrations.upsert` call receives a config **without** a `projectId` key.
+- `save — includes projectId when linearProjectId is set`: fill team + project, save, assert the config contains `projectId: 'P1'`.
+- `save — reverts to no project scope when a previously-saved projectId is cleared`: start in edit mode with `initialConfig.projectId = 'P1'`, dispatch `SET_LINEAR_PROJECT_ID` with `''`, save, assert the config has **no** `projectId` key.
+
+**Implementation** (`web/src/components/projects/pm-wizard-hooks.ts`, in the save mutation):
+- In the Linear branch of the save payload builder, add `...(state.linearProjectId ? { projectId: state.linearProjectId } : {})`. Use the spread-when-truthy pattern already established in the adjacent `labels` / `customFields` spreads.
+
+### 5. `LinearWebhookInfoPanel` copy update
+
+**Tests first** (`tests/unit/web/linear-webhook-info-panel.test.ts`, extend):
+- `renders the existing setup instructions unchanged` (regression).
+- `renders a short note explaining project-scope filtering happens in CASCADE, not in Linear webhook config`: assert the panel's text contains the phrase "project scope" (lower-case 'p') and the phrase "CASCADE applies" (or the exact agreed wording below).
+
+**Implementation** (`web/src/components/projects/pm-wizard-common-steps.tsx`):
+- In `LinearWebhookInfoPanel`, add a paragraph at the end of the explainer (or a small callout) with wording along the lines of: "If you also scope your CASCADE project to a specific Linear Project in the next step, the filter is applied by CASCADE after receiving each webhook — your Linear webhook configuration stays the same."
+- Keep the tone consistent with the surrounding copy.
+
+### 6. Documentation
+
+**Tests first:**
+- No automated test — documentation is reviewed manually. The verification step reads the rendered markdown.
+
+**Implementation** (`src/integrations/README.md`):
+- In the "Linear — operator setup" paragraph (search for `### Linear — operator setup`), append one sentence: "CASCADE projects can optionally scope to a specific Linear **Project** (initiative) in the 'Board / Project Selection' wizard step; when set, webhooks for issues outside that project are dropped by CASCADE (Linear webhooks themselves remain team-scoped)."
+
+**Implementation** (`CHANGELOG.md`):
+- Under Unreleased, add: "**Linear PM — optional Project scope.** Operators can now narrow a Linear-backed CASCADE project to a specific Linear Project. Leave the new wizard field empty to preserve existing team-wide behavior."
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/web/pm-wizard-state.test.ts`: 6 reducer tests for `linearProjectId` / `linearProjects` / team-reset / edit-state hydration.
+- [ ] `tests/unit/web/pm-wizard-hooks.test.ts` (new or extend): 4 tests for the `linearProjectsMutation`.
+- [ ] `tests/unit/web/linear-team-step.test.ts` (new or extend): 6 component tests for rendering, disabled state, selection, clearing, helper text.
+- [ ] `tests/unit/web/linear-webhook-info-panel.test.ts`: 2 tests (regression + new copy).
+- [ ] `tests/unit/web/pm-wizard.test.ts`: 3 tests for save payload inclusion/omission/clearing.
+
+### Integration tests
+- None. The end-to-end path (UI save → DB → router drop) is exercised by the combination of this plan's unit tests and plan 2's router tests.
+
+### Acceptance tests
+- [x] AC #1 (plan-AC): Operator can select, change, and clear a Linear Project in the wizard.
+- [x] AC #2 (plan-AC): Opening an existing project with a saved `projectId` pre-populates the selector.
+- [x] AC #3 (plan-AC): Saving with an empty selector writes no `projectId` to the DB.
+- [x] AC #4 (plan-AC): The webhook info panel explains where filtering happens.
+
+### Manual smoke test (post-merge)
+- [ ] Configure a fresh Linear integration without a project scope → confirm today's behavior.
+- [ ] Add a project scope, trigger a Linear webhook for an issue **outside** the project → observe the drop log entry, no agent invocation, no ack comment.
+- [ ] Trigger a webhook for an issue **inside** the scope → observe normal processing.
+- [ ] Clear the project scope, re-save → confirm full-team processing resumes on next event.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. In the PM wizard, after selecting a Linear Team, an optional "Linear Project" selector appears under it, populated from the `linearProjects` / `linearProjectsByProject` tRPC endpoint.
+2. The Project selector is disabled until a team is chosen.
+3. Selecting a project updates the wizard state; clearing it (selecting empty) also updates the state.
+4. Changing the team resets both `linearProjectId` and `linearProjects` in the reducer (the new team's projects must be re-fetched).
+5. Opening the wizard for a project whose stored config has a `projectId` hydrates the selector with that value.
+6. Saving the wizard writes `projectId` to `LinearConfig` when the selector has a value; **omits** `projectId` entirely when the selector is empty.
+7. `LinearWebhookInfoPanel` contains a short note clarifying that project-scope filtering happens on CASCADE's side, not in Linear's webhook config.
+8. `src/integrations/README.md` Linear operator-setup paragraph mentions the new optional project scope.
+9. `CHANGELOG.md` Unreleased section has an operator-facing entry for the feature.
+10. All new/modified code has corresponding tests.
+11. `npm run build` passes.
+12. `npm test` passes.
+13. `npm run lint` passes.
+14. `npm run typecheck` passes.
+15. Manual smoke test checklist (above) has been executed and each item confirmed passing before the PR is marked ready.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Append one sentence to the "Linear — operator setup" paragraph noting the optional project scope in the wizard's "Board / Project Selection" step. |
+| `CHANGELOG.md` | Add an Unreleased entry for the operator-facing feature: "Linear PM — optional Project scope." |
+
+No `CLAUDE.md` change in v1. No Linear-specific section exists there today and the change is fully represented by the README + CHANGELOG updates. If future debugging shows operators hitting footguns (e.g. misunderstanding cross-team intersection), a short "Linear project scope" note can be added in a follow-up.
+
+---
+
+## Out of Scope (this plan)
+
+- Linear **Initiatives** as a CASCADE scope selector (spec-level out of scope).
+- **Multi-team project scoping** (spec-level out of scope).
+- **"No project" as an explicit filter** (spec-level out of scope).
+- **Project-level label configuration** (spec-level out of scope).
+- **Workspace-level labels** as an alternative to team labels (spec-level out of scope).
+- **Migration tooling** for existing integrations (spec-level out of scope — the change is purely additive).
+- Any change to **webhook signature verification, ack comment, or reaction** behavior beyond scope-filter gating (spec-level out of scope).
+- Any change to **status mapping** configuration (spec-level out of scope).
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1
+- [x] AC #2
+- [x] AC #3
+- [x] AC #4
+- [x] AC #5
+- [x] AC #6
+- [x] AC #7
+- [x] AC #8
+- [x] AC #9
+- [x] AC #10
+- [x] AC #11
+- [x] AC #12
+- [x] AC #13
+- [x] AC #14
+- [ ] AC #15 (deferred: manual smoke test requires a live Linear workspace + webhook delivery; not executable in the /implement harness. Operator to execute post-merge per the checklist under Test Plan > Manual smoke test.)
