@@ -4,7 +4,7 @@ slug: pm-integration-plug-and-play
 level: spec
 title: Refactor PM integration layer for plug-and-play extensibility
 created: 2026-04-16
-status: draft
+status: done
 ---
 
 # 006: Refactor PM integration layer for plug-and-play extensibility
