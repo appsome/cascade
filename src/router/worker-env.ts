@@ -35,10 +35,9 @@ export async function extractProjectIdFromJob(data: CascadeJob): Promise<string 
 	// Use type assertion since dashboard jobs are cast to CascadeJob
 	const jobData = data as unknown as { type: string; projectId?: string; repoFullName?: string };
 
-	// `trello` is now handled by the manifest registry (plan 006/2). The
-	// remaining `jira` and `linear` branches will move to the registry in
-	// plans 006/3 and 006/4.
-	if (jobData.type === 'jira' || jobData.type === 'linear') {
+	// `trello` (006/2) and `jira` (006/3) are handled by the manifest
+	// registry. The remaining `linear` branch migrates in plan 006/4.
+	if (jobData.type === 'linear') {
 		return jobData.projectId ?? null;
 	}
 	if (jobData.type === 'github') {

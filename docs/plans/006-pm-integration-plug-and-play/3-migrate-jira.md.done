@@ -6,7 +6,7 @@ plan_slug: migrate-jira
 level: plan
 parent_spec: docs/specs/006-pm-integration-plug-and-play.md
 depends_on: [1-infrastructure.md.done, 2-migrate-trello.md.done]
-status: wip
+status: done
 ---
 
 # 006/3: Migrate JIRA onto the PM provider manifest
@@ -188,15 +188,17 @@ Automatic via `listPMProviders()` iteration. Ensure JIRA's manifest module is im
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1 JIRA manifest registered
-- [ ] AC #2 Conformance harness passes JIRA
-- [ ] AC #3 Existing JIRA tests green unchanged
-- [ ] AC #4 Wizard JIRA branch removed
-- [ ] AC #5 Legacy registration branches removed for JIRA
-- [ ] AC #6 JIRA tRPC endpoints consolidated
-- [ ] AC #7 Operator-facing JIRA behavior unchanged
-- [ ] AC #8 All new code has tests
-- [ ] AC #9 Build passes
-- [ ] AC #10 Tests pass
-- [ ] AC #11 Lint passes
-- [ ] AC #12 Typecheck passes
+- [x] AC #1 JIRA manifest registered
+- [x] AC #2 Conformance harness passes JIRA (33 tests — 11 × 3 providers)
+- [x] AC #3 Existing JIRA tests green unchanged
+- [x] AC #4 Wizard JIRA branch removed — both step renders and hook instantiations
+- [x] AC #5 Legacy registration branches removed for JIRA — `builtins.ts`, `worker-env.ts` extractor
+- [ ] AC #6 JIRA tRPC endpoints consolidated — **deferred to plan 006/5** (same reasoning as 006/2; `createJiraCustomField` stays for now)
+- [x] AC #7 Operator-facing JIRA behavior unchanged — 7782/7782 tests pass; JIRA SSR tests green
+- [x] AC #8 All new code has tests (16 new JIRA manifest tests)
+- [x] AC #9 Build passes (backend + web)
+- [x] AC #10 Tests pass (7782/7782)
+- [x] AC #11 Lint passes
+- [x] AC #12 Typecheck passes
+
+**Partial-state**: `src/integrations/bootstrap.ts` JIRA registration retained — same reason as 006/2 (multiple `pmRegistry.get('jira')` callers still need migration, deferred to plan 006/5).

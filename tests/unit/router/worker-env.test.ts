@@ -41,9 +41,10 @@ vi.mock('../../../src/router/config.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { findProjectByRepo, getAllProjectCredentials } from '../../../src/config/provider.js';
-// Trello is resolved through the PM provider manifest registry as of
-// plan 006/2. Side-effect import registers the manifest.
+// Trello (006/2) and JIRA (006/3) resolve through the PM provider manifest
+// registry. Side-effect imports register the manifests.
 import '../../../src/integrations/pm/trello/index.js';
+import '../../../src/integrations/pm/jira/index.js';
 import type { CascadeJob } from '../../../src/router/queue.js';
 import {
 	buildWorkerEnv,

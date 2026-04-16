@@ -7,3 +7,4 @@
  */
 
 import './trello/index.js';
+import './jira/index.js';
