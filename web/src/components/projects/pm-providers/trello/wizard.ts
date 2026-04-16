@@ -17,7 +17,6 @@ import {
 	useTrelloDiscovery,
 	useTrelloLabelCreation,
 } from '../../pm-wizard-hooks.js';
-import { buildTrelloIntegrationConfig } from '../../pm-wizard-state.js';
 import { TRELLO_LABEL_DEFAULTS } from '../../pm-wizard-trello-steps.js';
 import type { ProviderWizardDefinition } from '../types.js';
 import {
@@ -62,7 +61,17 @@ export const trelloProviderWizard: ProviderWizardDefinition = {
 		},
 	],
 
-	buildIntegrationConfig: buildTrelloIntegrationConfig,
+	// Shape mirrors the existing inline save body in `useSaveMutation`
+	// (pm-wizard-hooks.ts). `saveMutation` still constructs the same shape
+	// directly while the parent wizard owns the save flow; plan 006/5 will
+	// consolidate save onto `def.buildIntegrationConfig` and remove the
+	// per-provider if/else in `saveMutation`.
+	buildIntegrationConfig: (state) => ({
+		boardId: state.trelloBoardId,
+		lists: state.trelloListMappings,
+		labels: state.trelloLabelMappings,
+		...(state.trelloCostFieldId ? { customFields: { cost: state.trelloCostFieldId } } : {}),
+	}),
 
 	isSetupComplete: (state) => {
 		if (!state.trelloBoardId) return false;
