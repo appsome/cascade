@@ -133,6 +133,7 @@ export type WizardAction =
 	| { type: 'SET_LINEAR_LABEL'; key: string; value: string }
 	| { type: 'INIT_EDIT'; state: Partial<WizardState> }
 	| { type: 'ADD_TRELLO_BOARD_LABEL'; label: { id: string; name: string; color: string } }
+	| { type: 'ADD_LINEAR_TEAM_LABEL'; label: { id: string; name: string; color: string } }
 	| {
 			type: 'ADD_TRELLO_BOARD_CUSTOM_FIELD';
 			customField: { id: string; name: string; type: string };
@@ -151,13 +152,13 @@ export const INITIAL_JIRA_LABELS: Record<string, string> = {
 	auto: 'cascade-auto',
 };
 
-export const INITIAL_LINEAR_LABELS: Record<string, string> = {
-	processing: 'cascade-processing',
-	processed: 'cascade-processed',
-	error: 'cascade-error',
-	readyToProcess: 'cascade-ready',
-	auto: 'cascade-auto',
-};
+/**
+ * Linear label mappings store workflow-label **UUIDs**, not names, because
+ * Linear's GraphQL API rejects names for issueUpdate.labelIds. The wizard
+ * populates these from the team's existing labels or via the create-label
+ * button. Initial state is therefore empty — operators pick or create.
+ */
+export const INITIAL_LINEAR_LABELS: Record<string, string> = {};
 
 export function createInitialState(): WizardState {
 	return {
@@ -347,6 +348,15 @@ export const wizardReducer: Reducer<WizardState, WizardAction> = (state, action)
 				trelloBoardDetails: {
 					...state.trelloBoardDetails,
 					labels: [...state.trelloBoardDetails.labels, action.label],
+				},
+			};
+		case 'ADD_LINEAR_TEAM_LABEL':
+			if (!state.linearTeamDetails) return state;
+			return {
+				...state,
+				linearTeamDetails: {
+					...state.linearTeamDetails,
+					labels: [...state.linearTeamDetails.labels, action.label],
 				},
 			};
 		case 'ADD_TRELLO_BOARD_CUSTOM_FIELD':

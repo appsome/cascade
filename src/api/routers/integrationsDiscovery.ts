@@ -711,4 +711,74 @@ export const integrationsDiscoveryRouter = router({
 				withLinearCredentials({ apiKey }, () => linearClient.getTeamProjects(input.teamId)),
 			);
 		}),
+
+	createLinearLabel: protectedProcedure
+		.input(
+			linearCredsInput.extend({
+				teamId: z.string().min(1),
+				name: z.string().min(1).max(100),
+				color: z.string().optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.createLinearLabel called', {
+				orgId: ctx.effectiveOrgId,
+				teamId: input.teamId,
+				name: input.name,
+			});
+			return withLinearCreds(input, 'Failed to create Linear label', (creds) =>
+				withLinearCredentials(creds, () =>
+					linearClient.createLabel(input.teamId, input.name, input.color),
+				),
+			);
+		}),
+
+	createLinearLabels: protectedProcedure
+		.input(
+			linearCredsInput.extend({
+				teamId: z.string().min(1),
+				labels: z
+					.array(
+						z.object({
+							name: z.string().min(1).max(100),
+							color: z.string().optional(),
+						}),
+					)
+					.min(1)
+					.max(10),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			logger.debug('integrationsDiscovery.createLinearLabels called', {
+				orgId: ctx.effectiveOrgId,
+				teamId: input.teamId,
+				count: input.labels.length,
+			});
+			const creds = { apiKey: input.apiKey };
+
+			const results = await Promise.allSettled(
+				input.labels.map((label) =>
+					withLinearCredentials(creds, () =>
+						linearClient.createLabel(input.teamId, label.name, label.color),
+					),
+				),
+			);
+
+			const successes: Array<{ id: string; name: string; color: string }> = [];
+			const errors: Array<{ name: string; error: string }> = [];
+
+			for (let i = 0; i < results.length; i++) {
+				const result = results[i];
+				if (result.status === 'fulfilled') {
+					successes.push(result.value);
+				} else {
+					errors.push({
+						name: input.labels[i].name,
+						error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+					});
+				}
+			}
+
+			return { successes, errors };
+		}),
 });

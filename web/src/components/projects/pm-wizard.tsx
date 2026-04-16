@@ -8,6 +8,7 @@ import {
 	useJiraCustomFieldCreation,
 	useJiraDiscovery,
 	useLinearDiscovery,
+	useLinearLabelCreation,
 	useLinearWebhookInfo,
 	useSaveMutation,
 	useTrelloCustomFieldCreation,
@@ -22,6 +23,7 @@ import {
 	JiraProjectStep,
 } from './pm-wizard-jira-steps.js';
 import {
+	LINEAR_LABEL_DEFAULTS,
 	LinearCredentialsStep,
 	LinearFieldMappingStep,
 	LinearTeamStep,
@@ -151,6 +153,10 @@ export function PMWizard({
 		state,
 		dispatch,
 	);
+	const {
+		createLabelMutation: createLinearLabelMutation,
+		createMissingLabelsMutation: createMissingLinearLabelsMutation,
+	} = useLinearLabelCreation(state, dispatch);
 	const { createCustomFieldMutation } = useTrelloCustomFieldCreation(state, dispatch);
 	const { createJiraCustomFieldMutation } = useJiraCustomFieldCreation(state, dispatch);
 	const webhookManagement = useWebhookManagement(projectId, state);
@@ -202,6 +208,34 @@ export function PMWizard({
 		if (labelsToCreate.length > 0) {
 			setCreatingSlot('__batch__');
 			createMissingLabelsMutation.mutate(labelsToCreate, {
+				onSettled: () => setCreatingSlot(null),
+			});
+		}
+	};
+
+	const handleCreateLinearLabel = (slot: string) => {
+		const defaults = LINEAR_LABEL_DEFAULTS[slot];
+		if (!defaults) return;
+		setCreatingSlot(slot);
+		createLinearLabelMutation.mutate(
+			{ name: defaults.name, color: defaults.color, slot },
+			{ onSettled: () => setCreatingSlot(null) },
+		);
+	};
+
+	const handleCreateAllMissingLinearLabels = () => {
+		const existingLabelNames = new Set(
+			(state.linearTeamDetails?.labels ?? []).map((l) => l.name.toLowerCase()),
+		);
+		const labelsToCreate = Object.entries(LINEAR_LABEL_DEFAULTS)
+			.filter(([slot, { name }]) => {
+				if (state.linearLabels[slot]) return false;
+				return !existingLabelNames.has(name.toLowerCase());
+			})
+			.map(([slot, { name, color }]) => ({ slot, name, color }));
+		if (labelsToCreate.length > 0) {
+			setCreatingSlot('__batch__');
+			createMissingLinearLabelsMutation.mutate(labelsToCreate, {
 				onSettled: () => setCreatingSlot(null),
 			});
 		}
@@ -361,7 +395,13 @@ export function PMWizard({
 						creatingCostField={creatingCostField}
 					/>
 				) : state.provider === 'linear' ? (
-					<LinearFieldMappingStep state={state} dispatch={dispatch} />
+					<LinearFieldMappingStep
+						state={state}
+						dispatch={dispatch}
+						onCreateLabel={handleCreateLinearLabel}
+						onCreateAllMissingLabels={handleCreateAllMissingLinearLabels}
+						creatingSlot={creatingSlot}
+					/>
 				) : (
 					<JiraFieldMappingStep
 						state={state}

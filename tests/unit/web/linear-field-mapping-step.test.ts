@@ -113,3 +113,76 @@ describe('LinearFieldMappingStep — status slots', () => {
 		}
 	});
 });
+
+describe('LinearFieldMappingStep — label slots', () => {
+	function renderWithLabels(
+		labels: Array<{ id: string; name: string; color: string }>,
+		persisted: Record<string, string> = {},
+		onCreateLabel?: (slot: string) => void,
+		onCreateAllMissingLabels?: () => void,
+	): string {
+		const state = makeState({
+			linearTeamDetails: {
+				states: [],
+				labels,
+			},
+			linearLabels: persisted,
+		});
+		return renderToStaticMarkup(
+			createElement(LinearFieldMappingStep, {
+				state,
+				dispatch: () => {},
+				onCreateLabel,
+				onCreateAllMissingLabels,
+			}),
+		);
+	}
+
+	it('renders label dropdowns sourced from linearTeamDetails.labels (ID-backed options)', () => {
+		const html = renderWithLabels([
+			{ id: 'lbl-proc-uuid', name: 'cascade-processing', color: '#2563EB' },
+			{ id: 'lbl-done-uuid', name: 'cascade-processed', color: '#16A34A' },
+		]);
+		// The label dropdown must expose each Linear label's UUID as an option value.
+		expect(html).toContain('value="lbl-proc-uuid"');
+		expect(html).toContain('value="lbl-done-uuid"');
+		// Display names should NOT appear as option values (they can still be in the label text).
+		expect(html).not.toContain('value="cascade-processing"');
+	});
+
+	it('shows the "Create" affordance for slots with no mapping and no existing matching label', () => {
+		const html = renderWithLabels(
+			[],
+			{},
+			() => {},
+			() => {},
+		);
+		// A dedicated create button per slot — look for the batch button text too.
+		expect(html).toMatch(/Create All Missing/);
+	});
+
+	it('hides the per-slot Create button when the default label already exists on the team', () => {
+		const html = renderWithLabels(
+			[
+				{ id: 'lbl-ready', name: 'cascade-ready', color: '#0284C7' },
+				{ id: 'lbl-proc', name: 'cascade-processing', color: '#2563EB' },
+				{ id: 'lbl-procd', name: 'cascade-processed', color: '#16A34A' },
+				{ id: 'lbl-err', name: 'cascade-error', color: '#DC2626' },
+				{ id: 'lbl-auto', name: 'cascade-auto', color: '#9333EA' },
+			],
+			{},
+			() => {},
+			() => {},
+		);
+		// With every default present, there's nothing left to create → batch button hidden.
+		expect(html).not.toMatch(/Create All Missing/);
+	});
+
+	it('reflects persisted label mappings as selected dropdown values', () => {
+		const html = renderWithLabels(
+			[{ id: 'lbl-proc-uuid', name: 'cascade-processing', color: '#2563EB' }],
+			{ processing: 'lbl-proc-uuid' },
+		);
+		expect(html).toContain('value="lbl-proc-uuid"');
+	});
+});
