@@ -5,8 +5,8 @@ plan: 4
 plan_slug: migrate-linear
 level: plan
 parent_spec: docs/specs/006-pm-integration-plug-and-play.md
-depends_on: [1-infrastructure.md]
-status: pending
+depends_on: [1-infrastructure.md.done, 2-migrate-trello.md.done, 3-migrate-jira.md.done]
+status: wip
 ---
 
 # 006/4: Migrate Linear onto the PM provider manifest
