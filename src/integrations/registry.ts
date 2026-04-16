@@ -74,5 +74,10 @@ export class IntegrationRegistry {
 	}
 }
 
-/** Singleton registry, populated at bootstrap time by src/integrations/bootstrap.ts */
+/**
+ * Singleton registry populated via side-effect imports at router/worker startup:
+ *   - src/integrations/pm/index.js — mirrors PM manifests (trello, jira, linear).
+ *   - src/github/register.js — registers GitHubSCMIntegration.
+ *   - src/sentry/register.js — registers SentryAlertingIntegration.
+ */
 export const integrationRegistry = new IntegrationRegistry();

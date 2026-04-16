@@ -1,11 +1,18 @@
 /**
- * Tests for src/integrations/bootstrap.ts
+ * Tests for the post-plan-006/5 integration registration wiring.
  *
- * Verifies that importing the unified bootstrap registers all 4 integrations
- * into the integrationRegistry (and PM ones into pmRegistry too), and that
- * the registration is idempotent (no errors on double-import).
+ * `src/integrations/bootstrap.ts` was deleted in plan 006/5. The new
+ * registration topology is:
+ *   - `src/integrations/pm/index.js` — imports each PM manifest barrel
+ *     (trello/jira/linear), then mirrors listPMProviders() into
+ *     integrationRegistry.
+ *   - `src/github/register.js` — registers GitHubSCMIntegration.
+ *   - `src/sentry/register.js` — registers SentryAlertingIntegration.
  *
- * Note: uses real IntegrationRegistry / pmRegistry singletons.
+ * This test file asserts the end state matches what the old bootstrap
+ * produced: all 5 integrations in integrationRegistry, PM providers in
+ * pmRegistry (now a delegate over pmProviderRegistry).
+ *
  * Heavy DB / HTTP dependencies are mocked so the integration classes can be
  * instantiated without a live database.
  */
@@ -70,11 +77,13 @@ vi.mock('../../../src/pm/jira/adapter.js', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Import the bootstrap (triggers side-effect registration) and singletons
+// Import the three side-effect registration modules (replacing the old
+// bootstrap.ts) and the singletons they populate.
 // ---------------------------------------------------------------------------
 
-// Bootstrap first — registers all integrations into the singletons
-import '../../../src/integrations/bootstrap.js';
+import '../../../src/integrations/pm/index.js';
+import '../../../src/github/register.js';
+import '../../../src/sentry/register.js';
 
 import { integrationRegistry } from '../../../src/integrations/registry.js';
 import { pmRegistry } from '../../../src/pm/registry.js';
@@ -83,11 +92,11 @@ import { pmRegistry } from '../../../src/pm/registry.js';
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('integrations/bootstrap', () => {
+describe('integration registration (post-006/5)', () => {
 	// -------------------------------------------------------------------------
-	// All 4 integrations registered in integrationRegistry
+	// All 5 integrations registered in integrationRegistry
 	// -------------------------------------------------------------------------
-	describe('integrationRegistry after bootstrap', () => {
+	describe('integrationRegistry after side-effect imports', () => {
 		it('registers trello (PM) integration', () => {
 			const integration = integrationRegistry.getOrNull('trello');
 			expect(integration).not.toBeNull();
@@ -130,27 +139,30 @@ describe('integrations/bootstrap', () => {
 	});
 
 	// -------------------------------------------------------------------------
-	// PM integrations also registered in pmRegistry (backward compat)
+	// PM integrations also reachable through the pmRegistry delegate
 	// -------------------------------------------------------------------------
-	describe('pmRegistry after bootstrap', () => {
-		it('registers trello in pmRegistry', () => {
+	describe('pmRegistry (now a delegate over pmProviderRegistry)', () => {
+		it('exposes trello', () => {
 			expect(pmRegistry.getOrNull('trello')).not.toBeNull();
 		});
 
-		it('registers jira in pmRegistry', () => {
+		it('exposes jira', () => {
 			expect(pmRegistry.getOrNull('jira')).not.toBeNull();
+		});
+
+		it('exposes linear', () => {
+			expect(pmRegistry.getOrNull('linear')).not.toBeNull();
 		});
 	});
 
 	// -------------------------------------------------------------------------
-	// Idempotency — importing bootstrap again must not throw
+	// Idempotency — importing the side-effect modules again must not throw
 	// -------------------------------------------------------------------------
 	describe('idempotency', () => {
-		it('does not throw when bootstrap is imported a second time', async () => {
-			// In Node ESM the module is cached, so re-importing is a no-op.
-			// This test confirms the guard pattern (getOrNull before register) is
-			// in place: even if somehow re-evaluated, it will not throw.
-			await expect(import('../../../src/integrations/bootstrap.js')).resolves.not.toThrow();
+		it('does not throw when the PM barrel is imported a second time', async () => {
+			// Node ESM caches modules, so re-importing is a no-op. The loop
+			// inside the barrel also guards each registerPMProvider call.
+			await expect(import('../../../src/integrations/pm/index.js')).resolves.not.toThrow();
 		});
 	});
 });
