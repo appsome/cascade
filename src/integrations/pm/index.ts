@@ -8,3 +8,4 @@
 
 import './trello/index.js';
 import './jira/index.js';
+import './linear/index.js';

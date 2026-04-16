@@ -3,17 +3,17 @@ import { CheckCircle, Globe, Loader2, XCircle } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Label } from '@/components/ui/label.js';
 import { trpc } from '@/lib/trpc.js';
-// Side-effect imports register Trello (006/2) + JIRA (006/3) frontend
-// wizards into the provider registry. Plan 006/4 will append linear.
+// Side-effect imports register every PM provider's frontend wizard into
+// the provider registry. With Linear migrated (006/4), every PM provider
+// now renders via the manifest shell.
 import './pm-providers/trello/index.js';
 import './pm-providers/jira/index.js';
+import './pm-providers/linear/index.js';
 import { ManifestProviderWizardSection } from './pm-providers/manifest-section.js';
 import { getProviderWizard } from './pm-providers/registry.js';
 import { renderManifestStep } from './pm-providers/render.js';
 import { SaveStep, WebhookStep } from './pm-wizard-common-steps.js';
 import {
-	useLinearDiscovery,
-	useLinearLabelCreation,
 	useLinearWebhookInfo,
 	useSaveMutation,
 	useVerification,
@@ -23,12 +23,8 @@ import {
 // through the manifest path (see ./pm-providers/jira/). The
 // `pm-wizard-jira-steps` module is still imported transitively by the
 // adapters in `./pm-providers/jira/adapters.tsx`.
-import {
-	LINEAR_LABEL_DEFAULTS,
-	LinearCredentialsStep,
-	LinearFieldMappingStep,
-	LinearTeamStep,
-} from './pm-wizard-linear-steps.js';
+// Linear legacy step imports removed — all Linear wizard rendering flows
+// through the manifest path (see ./pm-providers/linear/).
 import {
 	areCredentialsReady,
 	buildEditState,
@@ -93,11 +89,9 @@ export function PMWizard({
 
 	const [state, dispatch] = useReducer(wizardReducer, undefined, createInitialState);
 	const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
-	const [creatingSlot, setCreatingSlot] = useState<string | null>(null);
-	// Trello's creatingCostField was migrated into the provider wizard's own
-	// useProviderHooks; the parent no longer owns it.
-	// JIRA's creatingJiraCostField migrated into the provider wizard's
-	// useProviderHooks (plan 006/3).
+	// Provider-specific ephemeral state (creatingSlot, creatingCostField) now
+	// lives inside each provider's useProviderHooks — Trello 006/2, JIRA
+	// 006/3, Linear 006/4. The parent wizard no longer owns any.
 
 	// ---- Step navigation helpers ----
 
@@ -143,15 +137,9 @@ export function PMWizard({
 	const manifestDef = getProviderWizard(state.provider);
 
 	const { verifyMutation } = useVerification(state, dispatch, advanceToStep);
-	// Trello (006/2) and JIRA (006/3) discovery / label / custom-field hooks
-	// are composed inside each provider's useProviderHooks. Linear migrates
-	// in plan 006/4.
-	const { linearTeamsMutation, linearDetailsMutation, linearProjectsMutation, handleTeamSelect } =
-		useLinearDiscovery(state, dispatch, advanceToStep, projectId);
-	const {
-		createLabelMutation: createLinearLabelMutation,
-		createMissingLabelsMutation: createMissingLinearLabelsMutation,
-	} = useLinearLabelCreation(state, dispatch);
+	// Every PM provider (Trello 006/2, JIRA 006/3, Linear 006/4) composes its
+	// discovery / label / custom-field hooks inside its own useProviderHooks.
+	// The parent wizard no longer calls any provider-specific React hook.
 	const webhookManagement = useWebhookManagement(projectId, state);
 	const { webhookUrl: linearWebhookUrl } = useLinearWebhookInfo();
 	const { saveMutation } = useSaveMutation(projectId, state);
@@ -160,37 +148,8 @@ export function PMWizard({
 		(c) => c.envVarKey === 'LINEAR_WEBHOOK_SECRET',
 	);
 
-	// ---- Label creation handlers ----
-	// Trello (006/2) and JIRA (006/3) handlers migrated into their provider
-	// wizards' useProviderHooks. Linear follows in 006/4.
-
-	const handleCreateLinearLabel = (slot: string) => {
-		const defaults = LINEAR_LABEL_DEFAULTS[slot];
-		if (!defaults) return;
-		setCreatingSlot(slot);
-		createLinearLabelMutation.mutate(
-			{ name: defaults.name, color: defaults.color, slot },
-			{ onSettled: () => setCreatingSlot(null) },
-		);
-	};
-
-	const handleCreateAllMissingLinearLabels = () => {
-		const existingLabelNames = new Set(
-			(state.linearTeamDetails?.labels ?? []).map((l) => l.name.toLowerCase()),
-		);
-		const labelsToCreate = Object.entries(LINEAR_LABEL_DEFAULTS)
-			.filter(([slot, { name }]) => {
-				if (state.linearLabels[slot]) return false;
-				return !existingLabelNames.has(name.toLowerCase());
-			})
-			.map(([slot, { name, color }]) => ({ slot, name, color }));
-		if (labelsToCreate.length > 0) {
-			setCreatingSlot('__batch__');
-			createMissingLinearLabelsMutation.mutate(labelsToCreate, {
-				onSettled: () => setCreatingSlot(null),
-			});
-		}
-	};
+	// Label creation + discovery handlers now live inside each provider's
+	// useProviderHooks (Trello 006/2, JIRA 006/3, Linear 006/4).
 
 	// ---- Step status ----
 
@@ -254,7 +213,7 @@ export function PMWizard({
 				isOpen={openSteps.has(2)}
 				onToggle={() => toggleStep(2)}
 			>
-				{manifestDef ? (
+				{manifestDef && (
 					<ManifestProviderWizardSection
 						def={manifestDef}
 						state={state}
@@ -263,8 +222,6 @@ export function PMWizard({
 						advanceToStep={advanceToStep}
 						stepIndex={0}
 					/>
-				) : (
-					<LinearCredentialsStep state={state} dispatch={dispatch} />
 				)}
 
 				<div className="flex items-center gap-3 pt-2">
@@ -306,7 +263,7 @@ export function PMWizard({
 				isOpen={openSteps.has(3)}
 				onToggle={() => toggleStep(3)}
 			>
-				{manifestDef ? (
+				{manifestDef && (
 					<ManifestProviderWizardSection
 						def={manifestDef}
 						state={state}
@@ -314,15 +271,6 @@ export function PMWizard({
 						projectId={projectId}
 						advanceToStep={advanceToStep}
 						stepIndex={1}
-					/>
-				) : (
-					<LinearTeamStep
-						state={state}
-						onTeamSelect={handleTeamSelect}
-						dispatch={dispatch}
-						linearTeamsMutation={linearTeamsMutation}
-						linearDetailsMutation={linearDetailsMutation}
-						linearProjectsMutation={linearProjectsMutation}
 					/>
 				)}
 			</WizardStep>
@@ -335,7 +283,7 @@ export function PMWizard({
 				isOpen={openSteps.has(4)}
 				onToggle={() => toggleStep(4)}
 			>
-				{manifestDef ? (
+				{manifestDef && (
 					<ManifestProviderWizardSection
 						def={manifestDef}
 						state={state}
@@ -343,14 +291,6 @@ export function PMWizard({
 						projectId={projectId}
 						advanceToStep={advanceToStep}
 						stepIndex={2}
-					/>
-				) : (
-					<LinearFieldMappingStep
-						state={state}
-						dispatch={dispatch}
-						onCreateLabel={handleCreateLinearLabel}
-						onCreateAllMissingLabels={handleCreateAllMissingLinearLabels}
-						creatingSlot={creatingSlot}
 					/>
 				)}
 			</WizardStep>

@@ -7,6 +7,7 @@
  * Extracted from `acknowledgments.ts` to keep that module focused on ack CRUD.
  */
 
+import { linearAuthHeader } from '../integrations/pm/_shared/auth-headers.js';
 import { BotIdentityCache } from './bot-identity.js';
 import {
 	resolveJiraCredentials,
@@ -93,11 +94,7 @@ export async function resolveLinearBotUserId(projectId: string): Promise<string 
 
 		const response = await fetch('https://api.linear.app/graphql', {
 			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				// Linear personal API keys are sent bare; `Bearer` is OAuth-only.
-				Authorization: creds.apiKey,
-			},
+			headers: linearAuthHeader(creds.apiKey),
 			body: JSON.stringify({ query: '{ viewer { id } }' }),
 		});
 		if (!response.ok) return null;

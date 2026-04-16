@@ -15,9 +15,10 @@ import type { CascadeJob } from '../../../src/router/queue.js';
 import { registerTestProvider } from '../../helpers/testPMProvider.js';
 
 // Import every real PM provider so the harness exercises each of them
-// alongside the TestProvider fixture. Plan 006/4 will add linear.
+// alongside the TestProvider fixture.
 import '../../../src/integrations/pm/trello/index.js';
 import '../../../src/integrations/pm/jira/index.js';
+import '../../../src/integrations/pm/linear/index.js';
 
 // describe.each evaluates at collection time, before beforeAll. Register
 // the TestProvider at module load so the iteration sees it.

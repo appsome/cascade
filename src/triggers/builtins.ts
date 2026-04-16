@@ -20,19 +20,18 @@
 
 import { listPMProviders } from '../integrations/pm/registry.js';
 import { registerGitHubTriggers } from './github/register.js';
-import { registerLinearTriggers } from './linear/register.js';
 import type { TriggerRegistry } from './registry.js';
 import { registerSentryTriggers } from './sentry/register.js';
 
 export function registerBuiltInTriggers(registry: TriggerRegistry): void {
-	// Manifest-registered PM providers (Trello via 006/2, JIRA via 006/3;
-	// Linear joins in 006/4) contribute their triggerHandlers here.
+	// Every PM provider (Trello, JIRA, Linear) contributes triggers via the
+	// manifest registry. SCM (GitHub) and alerting (Sentry) still use legacy
+	// registration — spec 006 scoped to PM only.
 	for (const manifest of listPMProviders()) {
 		for (const handler of manifest.triggerHandlers) {
 			registry.register(handler);
 		}
 	}
-	registerLinearTriggers(registry); // migrates in plan 006/4
 	registerGitHubTriggers(registry);
 	registerSentryTriggers(registry);
 }

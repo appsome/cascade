@@ -5,6 +5,7 @@
  * Comments are posted using the Linear GraphQL API with markdown body text.
  */
 
+import { linearAuthHeader } from '../../integrations/pm/_shared/auth-headers.js';
 import { logger } from '../../utils/logging.js';
 import { resolveLinearCredentials } from './credentials.js';
 import type { PlatformCommentClient } from './types.js';
@@ -18,12 +19,7 @@ async function linearGraphQL(
 ): Promise<Record<string, unknown>> {
 	const response = await fetch(LINEAR_API_URL, {
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			// Linear personal API keys (lin_api_*) are sent bare; the `Bearer` prefix
-			// is only valid for OAuth tokens and triggers HTTP 400 with personal keys.
-			Authorization: apiKey,
-		},
+		headers: linearAuthHeader(apiKey),
 		body: JSON.stringify({ query, variables }),
 	});
 

@@ -76,10 +76,10 @@ vi.mock('../../../src/triggers/linear/label-added.js', () => ({
 		.mockImplementation(() => ({ name: 'linear-ready-to-process-label-added' })),
 }));
 
-// After plan 006/2 and 006/3, Trello and JIRA triggers are contributed to
-// registerBuiltInTriggers via the PM provider manifest registry. Mock
-// listPMProviders() to return stub manifests whose triggerHandlers
-// preserve the exact names the rest of this test file asserts on.
+// After plans 006/2, 006/3, and 006/4, every PM provider's triggers are
+// contributed via the manifest registry. Mock listPMProviders() to return
+// stub manifests whose triggerHandlers preserve the exact names the rest
+// of this test file asserts on.
 vi.mock('../../../src/integrations/pm/registry.js', () => ({
 	listPMProviders: () => [
 		{
@@ -100,6 +100,14 @@ vi.mock('../../../src/integrations/pm/registry.js', () => ({
 				{ name: 'jira-comment-mention' },
 				{ name: 'jira-status-changed' },
 				{ name: 'jira-label-added' },
+			],
+		},
+		{
+			id: 'linear',
+			triggerHandlers: [
+				{ name: 'linear-comment-mention' },
+				{ name: 'linear-status-changed' },
+				{ name: 'linear-ready-to-process-label-added' },
 			],
 		},
 	],
