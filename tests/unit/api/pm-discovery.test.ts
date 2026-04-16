@@ -48,7 +48,6 @@ function makeStub(id: string, label: string): PMProviderManifest {
 		],
 		webhookRoute: `/${id}/webhook`,
 		verifyWebhookSignature: () => true,
-		parseWebhookPayload: () => null,
 		routerAdapter: { type: id } as unknown as PMProviderManifest['routerAdapter'],
 		extractProjectIdFromJob: async () => null,
 		pmIntegration: {} as unknown as PMProviderManifest['pmIntegration'],

@@ -24,6 +24,11 @@ import type { PlatformCommentClient } from '../../router/platformClients/types.j
 import type { CascadeJob } from '../../router/queue.js';
 import type { TriggerHandler } from '../../types/index.js';
 
+// ParsedWebhookEvent is referenced transitively by RouterPlatformAdapter and
+// isSelfAuthoredHook; re-exported so callers that want to type their hooks
+// don't need to know the internal path.
+export type { ParsedWebhookEvent };
+
 /**
  * One credential the provider needs resolved at runtime. Mirrors the shape
  * already in use by `registerCredentialRoles()` in `src/config/integrationRoles.ts`.
@@ -71,9 +76,13 @@ export interface PMProviderManifest {
 	 */
 	readonly webhookRoute: string;
 	readonly verifyWebhookSignature: WebhookVerifier;
-	readonly parseWebhookPayload: (raw: unknown) => ParsedWebhookEvent | null;
 
 	// ── Router-side dispatch ────────────────────────────────────────────
+	/**
+	 * Includes `parseWebhook(raw)` which yields a ParsedWebhookEvent for
+	 * router-side project resolution and trigger dispatch. Provider-domain
+	 * parsing (PMWebhookEvent) lives on `pmIntegration.parseWebhookPayload`.
+	 */
 	readonly routerAdapter: RouterPlatformAdapter;
 
 	/**

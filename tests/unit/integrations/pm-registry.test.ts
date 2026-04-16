@@ -15,7 +15,6 @@ function makeStubManifest(overrides: Partial<PMProviderManifest> = {}): PMProvid
 		credentialRoles: [{ role: 'api_key', label: 'API Key', envVarKey: 'STUB_API_KEY' }],
 		webhookRoute: '/stub/webhook',
 		verifyWebhookSignature: () => true,
-		parseWebhookPayload: () => null,
 		routerAdapter: { type: 'stub' } as unknown as PMProviderManifest['routerAdapter'],
 		extractProjectIdFromJob: async () => null,
 		pmIntegration: {} as unknown as PMProviderManifest['pmIntegration'],

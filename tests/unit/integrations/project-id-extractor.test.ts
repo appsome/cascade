@@ -27,7 +27,6 @@ function makeStubManifest(
 		credentialRoles: [{ role: 'api_key', label: 'API Key', envVarKey: 'STUB' }],
 		webhookRoute: `/${id}/webhook`,
 		verifyWebhookSignature: () => true,
-		parseWebhookPayload: () => null,
 		routerAdapter: { type: id } as unknown as PMProviderManifest['routerAdapter'],
 		extractProjectIdFromJob: extractor,
 		pmIntegration: {} as unknown as PMProviderManifest['pmIntegration'],
