@@ -6,7 +6,7 @@ plan_slug: infrastructure
 level: plan
 parent_spec: docs/specs/006-pm-integration-plug-and-play.md
 depends_on: []
-status: pending
+status: wip
 ---
 
 # 006/1: Manifest contract, registry, conformance harness, and generic wizard renderer
