@@ -6,7 +6,7 @@ plan_slug: infrastructure
 level: plan
 parent_spec: docs/specs/006-pm-integration-plug-and-play.md
 depends_on: []
-status: wip
+status: done
 ---
 
 # 006/1: Manifest contract, registry, conformance harness, and generic wizard renderer
@@ -290,15 +290,15 @@ export type WebhookVerifier = (rawBody: string, headers: Record<string, string |
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1 Manifest interface defined
-- [ ] AC #2 Registry with unique-id enforcement
-- [ ] AC #3 Conformance harness green against TestProvider
-- [ ] AC #4 Legacy provider UX unchanged
-- [ ] AC #5 README rewritten with transitional note
-- [ ] AC #6 CLAUDE.md updated
-- [ ] AC #7 Shared helpers landed + tested (not yet adopted)
-- [ ] AC #8 All new code has tests
-- [ ] AC #9 Build passes
-- [ ] AC #10 All tests pass
-- [ ] AC #11 Lint passes
-- [ ] AC #12 Typecheck passes
+- [x] AC #1 Manifest interface defined
+- [x] AC #2 Registry with unique-id enforcement
+- [x] AC #3 Conformance harness green against TestProvider
+- [x] AC #4 Legacy provider UX unchanged
+- [x] AC #5 README rewritten with transitional note
+- [x] AC #6 CLAUDE.md updated
+- [x] AC #7 Shared helpers landed + tested (not yet adopted)
+- [x] AC #8 All new code has tests
+- [x] AC #9 Build passes
+- [x] AC #10 All tests pass (7729/7729)
+- [x] AC #11 Lint passes
+- [x] AC #12 Typecheck passes

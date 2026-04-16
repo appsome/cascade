@@ -23,7 +23,7 @@ Three separate services, **no monolithic server mode**:
 
 Flow: `PM/SCM/alerting webhook → Router → Redis → Worker → TriggerRegistry → Agent → Code → PR`.
 
-Integration abstraction lives in `src/integrations/`. For **adding a new integration, trigger, or agent**, see @src/integrations/README.md — don't improvise, it covers all extension points.
+Integration abstraction lives in `src/integrations/`. For **adding a new PM provider**, see @src/integrations/README.md — Trello, JIRA, and Linear are moving onto a manifest-based registry (spec 006, in progress). SCM (GitHub) and alerting (Sentry) still use the legacy `IntegrationModule` + `bootstrap.ts` path. Don't improvise; the README covers both patterns.
 
 ## PR checkout (worker) — gotcha
 
