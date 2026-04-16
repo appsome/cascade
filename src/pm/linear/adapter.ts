@@ -7,6 +7,7 @@
  * (sub-issues), following the same pattern used by JiraPMProvider for subtasks.
  */
 
+import { resolveLabelId as sharedResolveLabelId } from '../../integrations/pm/_shared/label-id-resolver.js';
 import { linearClient } from '../../linear/client.js';
 import { logger } from '../../utils/logging.js';
 import type { LinearConfig } from '../config.js';
@@ -22,8 +23,6 @@ import type {
 	WorkItemLabel,
 } from '../types.js';
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export class LinearPMProvider implements PMProvider {
 	readonly type = 'linear' as const;
 
@@ -32,24 +31,17 @@ export class LinearPMProvider implements PMProvider {
 	/**
 	 * Resolve a label slot name or raw ID to a Linear label UUID.
 	 *
-	 * Linear's GraphQL API requires UUIDs for issueUpdate.labelIds and
-	 * issueLabelCreate lookups. Returning a non-UUID string would silently
-	 * fail server-side, so we short-circuit misconfigurations here with a
-	 * diagnostic. Returns null when the input cannot be resolved to a UUID.
+	 * Delegates to the shared `_shared/label-id-resolver` helper — single
+	 * source of truth for the UUID validation rule. Returns null when the
+	 * input cannot be resolved to a UUID; the caller then short-circuits
+	 * the label operation with a visible warn.
 	 */
 	private resolveLabelId(slotOrId: string): string | null {
-		const mapped = (this.config.labels as Record<string, string> | undefined)?.[slotOrId];
-		const candidate = mapped ?? slotOrId;
-		if (UUID_PATTERN.test(candidate)) return candidate;
-		logger.warn(
-			'[Linear] Label value is not a UUID — skipping (check PM wizard → Label Mappings)',
-			{
-				input: slotOrId,
-				resolved: mapped ?? '<no mapping>',
-				teamId: this.config.teamId,
-			},
+		return sharedResolveLabelId(
+			slotOrId,
+			this.config.labels as Record<string, string> | undefined,
+			{ providerId: 'linear', extra: { teamId: this.config.teamId } },
 		);
-		return null;
 	}
 
 	async getWorkItem(id: string): Promise<WorkItem> {

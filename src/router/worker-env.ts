@@ -35,11 +35,8 @@ export async function extractProjectIdFromJob(data: CascadeJob): Promise<string 
 	// Use type assertion since dashboard jobs are cast to CascadeJob
 	const jobData = data as unknown as { type: string; projectId?: string; repoFullName?: string };
 
-	// `trello` (006/2) and `jira` (006/3) are handled by the manifest
-	// registry. The remaining `linear` branch migrates in plan 006/4.
-	if (jobData.type === 'linear') {
-		return jobData.projectId ?? null;
-	}
+	// All PM providers (trello / jira / linear) now route through the
+	// manifest registry above. Non-PM job types remain below.
 	if (jobData.type === 'github') {
 		if (!jobData.repoFullName) return null;
 		const project = await findProjectByRepo(jobData.repoFullName);

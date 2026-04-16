@@ -5,8 +5,8 @@ plan: 4
 plan_slug: migrate-linear
 level: plan
 parent_spec: docs/specs/006-pm-integration-plug-and-play.md
-depends_on: [1-infrastructure.md]
-status: pending
+depends_on: [1-infrastructure.md.done, 2-migrate-trello.md.done, 3-migrate-jira.md.done]
+status: done
 ---
 
 # 006/4: Migrate Linear onto the PM provider manifest
@@ -199,17 +199,19 @@ Automatic. Ensure manifest is imported before harness runs.
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1 Linear manifest registered
-- [ ] AC #2 Conformance harness passes all three providers
-- [ ] AC #3 Existing Linear tests green unchanged (modulo shared-helper adoption)
-- [ ] AC #4 Wizard Linear branch removed
-- [ ] AC #5 Legacy registration branches removed for Linear
-- [ ] AC #6 Linear tRPC label endpoints consolidated
-- [ ] AC #7 Platform clients + bot resolver use shared auth-header helper
-- [ ] AC #8 Adapter delegates to shared label resolver
-- [ ] AC #9 Operator-facing Linear behavior unchanged
-- [ ] AC #10 All new code has tests
-- [ ] AC #11 Build passes
-- [ ] AC #12 Tests pass
-- [ ] AC #13 Lint passes
-- [ ] AC #14 Typecheck passes
+- [x] AC #1 Linear manifest registered
+- [x] AC #2 Conformance harness passes all three providers + TestProvider (44 tests — 11 × 4)
+- [x] AC #3 Existing Linear tests green unchanged
+- [x] AC #4 Wizard Linear branch removed — non-manifest fallback path deleted entirely (all 3 providers go through `ManifestProviderWizardSection`)
+- [x] AC #5 Legacy registration branches removed — `builtins.ts` now manifest-only for PM; `worker-env.ts` extractor has no PM-specific branches
+- [ ] AC #6 Linear tRPC label endpoints consolidated — **deferred to plan 006/5** (same reasoning as 006/2 + 006/3)
+- [x] AC #7 Platform clients + bot resolver use `linearAuthHeader` from `_shared/auth-headers`; divergent in-file copies deleted
+- [x] AC #8 Adapter delegates to shared `_shared/label-id-resolver.resolveLabelId`; private copy + `UUID_PATTERN` constant deleted
+- [x] AC #9 Operator-facing Linear behavior unchanged — 7808/7808 tests pass
+- [x] AC #10 All new code has tests (15 new Linear manifest tests)
+- [x] AC #11 Build passes (backend + web)
+- [x] AC #12 Tests pass (7808/7808)
+- [x] AC #13 Lint passes
+- [x] AC #14 Typecheck passes
+
+**Partial-state**: `src/integrations/bootstrap.ts` Linear registration retained — same reason as 006/2 + 006/3 (~dozen `pmRegistry.get(...)` callers to migrate). Plan 006/5 handles this.

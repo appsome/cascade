@@ -4,8 +4,8 @@ CASCADE's PM providers (Trello, JIRA, Linear, and any future Asana/GitLab/ClickU
 
 This document is the canonical guide for adding a new PM provider.
 
-> **Migration status (plan 006/4 in flight):**
-> **Trello: ✓ migrated** (plan 006/2). **JIRA: ✓ migrated** (plan 006/3). Linear still on the legacy path — plan 006/4. Trello's and JIRA's `pmRegistry` registrations are kept in `src/integrations/bootstrap.ts` for now because many call sites still look up `pmRegistry.get('trello' | 'jira')`; plan 006/5 removes those callers and the bootstrap lines together.
+> **Migration status (plan 006/5 pending — cleanup only):**
+> **Trello: ✓ migrated** (006/2). **JIRA: ✓ migrated** (006/3). **Linear: ✓ migrated** (006/4). Every PM provider now registers through the manifest pattern; the shared conformance harness exercises all three alongside `TestProvider`. `src/integrations/bootstrap.ts` still registers all three in `pmRegistry` for backward compatibility with the ~dozen `pmRegistry.get(...)` call sites in webhook handlers, manual runners, and credential scoping. Plan 006/5 migrates those callers to `pmProviderRegistry.get(id)?.pmIntegration` and deletes the legacy registration paths atomically.
 
 ---
 
