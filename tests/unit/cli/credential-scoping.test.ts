@@ -47,7 +47,9 @@ vi.mock('../../../src/router/reactions.js', () => ({
 }));
 
 // Register PM integrations in the registry via the canonical bootstrap path
-import '../../../src/integrations/bootstrap.js';
+import '../../../src/integrations/pm/index.js';
+import '../../../src/github/register.js';
+import '../../../src/sentry/register.js';
 
 import { CredentialScopedCommand } from '../../../src/cli/base.js';
 import { withGitHubToken } from '../../../src/github/client.js';

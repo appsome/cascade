@@ -65,7 +65,9 @@ vi.mock('../../../src/router/reactions.js', () => ({
 }));
 
 // Import bootstrap after mocks — registers integrations into pmRegistry via the canonical path
-import '../../../src/integrations/bootstrap.js';
+import '../../../src/integrations/pm/index.js';
+import '../../../src/github/register.js';
+import '../../../src/sentry/register.js';
 
 // Import after mocks so the integrations register with mocked adapters
 // factory.ts was removed; createPMProvider is now an inline function in index.ts

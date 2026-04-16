@@ -13,9 +13,12 @@
  * - DATABASE_URL: PostgreSQL connection string for config
  */
 
-// Bootstrap all integrations before processing any jobs
-import './integrations/bootstrap.js';
+// Bootstrap all integrations before processing any jobs. PM via the
+// manifest barrel; SCM (GitHub) + alerting (Sentry) via their own
+// side-effect modules (the legacy bootstrap.ts is gone as of 006/5).
 import './integrations/pm/index.js';
+import './github/register.js';
+import './sentry/register.js';
 import { registerBuiltInEngines } from './backends/bootstrap.js';
 import { loadEnvConfigSafe } from './config/env.js';
 import { loadConfig } from './config/provider.js';

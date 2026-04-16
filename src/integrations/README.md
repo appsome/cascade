@@ -2,10 +2,7 @@
 
 CASCADE's PM providers (Trello, JIRA, Linear, and any future Asana/GitLab/ClickUp) are built on a **provider manifest** pattern. One file describes the provider end-to-end; one registry iterates manifests; a conformance harness guarantees each manifest is complete.
 
-This document is the canonical guide for adding a new PM provider.
-
-> **Migration status (plan 006/5 pending — cleanup only):**
-> **Trello: ✓ migrated** (006/2). **JIRA: ✓ migrated** (006/3). **Linear: ✓ migrated** (006/4). Every PM provider now registers through the manifest pattern; the shared conformance harness exercises all three alongside `TestProvider`. `src/integrations/bootstrap.ts` still registers all three in `pmRegistry` for backward compatibility with the ~dozen `pmRegistry.get(...)` call sites in webhook handlers, manual runners, and credential scoping. Plan 006/5 migrates those callers to `pmProviderRegistry.get(id)?.pmIntegration` and deletes the legacy registration paths atomically.
+This document is the canonical guide for adding a new PM provider. Spec [006](../../docs/specs/006-pm-integration-plug-and-play.md) delivered the pattern in five plans landed between 2026-04-15 and 2026-04-16.
 
 ---
 
@@ -27,7 +24,8 @@ A new PM provider is ONE manifest backed by ONE provider folder + ONE wizard fol
   web/src/components/projects/pm-providers/<provider>/
     index.ts          // registerProviderWizard(<provider>ProviderWizard) on module load
     wizard.ts         // ProviderWizardDefinition (steps, save transform, completion predicates)
-    steps.tsx         // React components for each wizard step
+    adapters.tsx      // step-component adapters that bridge providerHooks → existing step props
+    steps.tsx         // React components for each wizard step (or re-export from pm-wizard-<provider>-steps.tsx)
 ```
 
 Nothing outside those two folders needs to change when you add a provider. The registries are the only surface the rest of the codebase sees.
@@ -46,7 +44,6 @@ See [`src/integrations/pm/manifest.ts`](./pm/manifest.ts) for the authoritative 
 | `credentialRoles` | List of credential slots (api_key, webhook_secret, etc.) with env-var keys + optional flag. |
 | `webhookRoute` | Conventionally `/${id}/webhook`. Enforced by the conformance harness. |
 | `verifyWebhookSignature` | `(rawBody, headers, secret) => boolean`. Use `makeHmacSha256Verifier` from `_shared/webhook-verifier.ts` unless your provider has a non-standard signing scheme. |
-| `parseWebhookPayload` | `(raw) => ParsedWebhookEvent \| null`. Return `null` for unrecognized payloads. |
 | `routerAdapter` | Your `RouterPlatformAdapter` implementation — handles parsing, dispatching, and ack. |
 | `extractProjectIdFromJob` | `(jobData) => Promise<projectId \| null>`. **Must return `null` for jobs belonging to other providers.** Forgetting this invariant caused the Linear-worker-without-credentials bug (PR #1118). |
 | `pmIntegration` | Your `PMIntegration` implementation — the agent-facing provider API. |
@@ -68,6 +65,9 @@ See [`web/src/components/projects/pm-providers/types.ts`](../../web/src/componen
 | `steps` | Array of `{ id, title, Component, isComplete }`. The generic wizard renders them in order. |
 | `buildIntegrationConfig` | Transforms wizard state into the integration config payload sent at save time. |
 | `isSetupComplete` | `(state) => boolean`. True when the wizard can be saved. |
+| `useProviderHooks?` | Optional — composes the provider's React hooks (discovery, label creation, custom-field creation) inside a shell component. Return value flows into each step's `providerHooks` prop. |
+
+`ManifestProviderWizardSection` (`web/src/components/projects/pm-providers/manifest-section.tsx`) is the shell component that hosts the unconditional `useProviderHooks` call — it's only mounted when a manifest is registered for the active provider, so React's rules-of-hooks hold.
 
 ---
 
@@ -75,10 +75,30 @@ See [`web/src/components/projects/pm-providers/types.ts`](../../web/src/componen
 
 Single-source-of-truth utilities live in `src/integrations/pm/_shared/`:
 
-- **`auth-headers.ts`** — `linearAuthHeader`, `githubAuthHeader`, `jiraAuthHeader`. The session's `Bearer`-prefix bug (PR #1119) came from three divergent copies of the Linear builder. Use the shared function.
-- **`webhook-verifier.ts`** — `makeHmacSha256Verifier({ headerName, headerPrefix? })` for the common case. Opt-out semantics (secret = `null` → always `true`) preserve existing router behavior.
+- **`auth-headers.ts`** — `linearAuthHeader`, `githubAuthHeader`, `jiraAuthHeader`. The session that produced spec 006 shipped a `Bearer`-prefix bug from three divergent copies of the Linear builder (PR #1119). Use the shared function.
+- **`webhook-verifier.ts`** — `makeHmacSha256Verifier({ headerName, headerPrefix? })` for the common case. Opt-out semantics (secret = `null` → always `true`) preserve existing router behavior. JIRA (hex + `sha256=` prefix) and Linear (hex, no prefix) both consume this factory.
 - **`label-id-resolver.ts`** — `resolveLabelId(slot, mapping, ctx)` validates UUIDs before passing labelIds to APIs that require them (Linear). Returns `null` and logs a warn for misconfigurations.
-- **`project-id-extractor.ts`** — `extractProjectIdFromJobViaRegistry(jobData)` iterates the registry. Used by `src/router/worker-env.ts` before its legacy branches.
+- **`project-id-extractor.ts`** — `extractProjectIdFromJobViaRegistry(jobData)` iterates the registry. Used by `src/router/worker-env.ts` before its (now-minimal) legacy branches.
+
+---
+
+## Registration at startup
+
+Router and worker entry points import these side-effect modules:
+
+```typescript
+import './integrations/pm/index.js';  // registers all PM manifests
+import './github/register.js';         // registers GitHubSCMIntegration
+import './sentry/register.js';         // registers SentryAlertingIntegration
+```
+
+The PM barrel (`src/integrations/pm/index.ts`):
+1. Imports each provider's `index.js` (side effect: `registerPMProvider(manifest)`).
+2. Iterates `listPMProviders()` and mirrors each manifest's `pmIntegration` into the cross-category `integrationRegistry` — so `integration-validation.ts` and the capability resolver see PM providers alongside SCM + alerting.
+
+SCM (GitHub) and alerting (Sentry) integrations remain on the legacy `IntegrationModule` pattern — the manifest pattern is PM-only (spec 006 scope). Both self-register via their own `register.ts` side-effect modules.
+
+`pmRegistry` (`src/pm/registry.ts`) still exists as a **read-only delegate** over `pmProviderRegistry` — the ~9 unmigrated call sites (webhook handlers, manual runner, credential scope, lifecycle, GitHub adapter) keep working without changes. Prefer `getPMProvider(id)` / `listPMProviders()` from `src/integrations/pm/registry.ts` in new code.
 
 ---
 
@@ -95,57 +115,31 @@ Single-source-of-truth utilities live in `src/integrations/pm/_shared/`:
 - `extractProjectIdFromJob` returns `null` for foreign job types
 - `extractProjectIdFromJob` returns the projectId for `{ type: id, projectId }`
 - `triggerHandlers` have unique names
-- `platformClientFactory(projectId)` returns an object with `postComment`, `deleteComment`, `updateComment`
-- `parseWebhookPayload(unknownPayload)` returns `null` (not `undefined`, not throw)
+- `platformClientFactory(projectId)` returns an object with `postComment` + `deleteComment`
+- `pmIntegration.type` is wired
 
-A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal reference implementation — copy its shape when starting a new provider.
+A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal reference implementation — copy its shape when starting a new provider. The harness runs against TestProvider + Trello + JIRA + Linear (44 assertions total).
 
 ---
 
 ## Adding a new PM provider (step by step)
 
-Steps (once plans 006/2–006/4 have migrated the built-ins):
-
 1. **Create the backend folder** at `src/integrations/pm/<provider>/`. Implement `client.ts`, `adapter.ts`, `router-adapter.ts`, `triggers/*.ts`, `webhook.ts`, `platform-client.ts`. None of these files is imported by any file outside `src/integrations/pm/<provider>/`.
 
 2. **Write the manifest** in `manifest.ts` exporting a `PMProviderManifest`. Wire the shared helpers: `auth-headers`, `makeHmacSha256Verifier` for the signature verifier, `resolveLabelId` if your provider rejects non-UUIDs.
 
-3. **Register the manifest** in `index.ts` with a single `import './manifest.js';` side-effect module that calls `registerPMProvider(<provider>Manifest)` at the top of `manifest.ts`. Add one line to `src/integrations/pm/index.ts` that imports `./<provider>/index.js`.
+3. **Register the manifest** in `index.ts` — a single side-effect module that calls `registerPMProvider(<provider>Manifest)`. Add one line to `src/integrations/pm/index.ts` that imports `./<provider>/index.js`.
 
-4. **Create the frontend folder** at `web/src/components/projects/pm-providers/<provider>/`. Implement `steps.tsx` and `wizard.ts` (`ProviderWizardDefinition`). Register in `index.ts`.
+4. **Create the frontend folder** at `web/src/components/projects/pm-providers/<provider>/`. Implement `adapters.tsx` (thin step-component wrappers), `wizard.ts` (`ProviderWizardDefinition` including `useProviderHooks` if your provider needs React hooks for discovery / label creation), and `index.ts` (`registerProviderWizard(<provider>Wizard)`). Add one line to `pm-wizard.tsx` that imports your `./pm-providers/<provider>/index.js`.
 
-5. **Run the conformance harness**: `npm run test tests/unit/integrations/pm-conformance.test.ts`. CI fails with a specific message for each missing or incorrect contract surface.
+5. **Run the conformance harness**: `npm test tests/unit/integrations/pm-conformance.test.ts`. CI fails with a specific message for each missing or incorrect contract surface.
 
 6. **Write provider-specific unit tests** in `tests/unit/pm/<provider>/` and `tests/unit/web/<provider>-*.test.ts`. The conformance harness covers contract invariants; you still need tests for your provider-specific logic (webhook parsing, field mappings, trigger dispatch).
 
-That's it. No edits to `src/integrations/bootstrap.ts`, `src/triggers/builtins.ts`, `src/router/worker-env.ts::extractProjectIdFromJob`, `web/src/components/projects/pm-wizard.tsx`, or `src/api/routers/integrationsDiscovery.ts`.
+That's it. No edits to shared router code, shared trigger registration, shared job extractor, or the main wizard component.
 
 ---
 
 ## Non-PM integrations
 
-SCM (GitHub) and alerting (Sentry) integrations retain their existing registration shape until a future spec decides whether the manifest pattern should extend. See `src/integrations/scm.ts` and `src/integrations/alerting.ts`.
-
----
-
-## Legacy registration path (being deleted in plan 006/5)
-
-> The content below describes how Trello, JIRA, and Linear register in builds that predate plans 006/2–006/4. Ignore this section when writing new code; it exists only for the migration window.
-
-Before the manifest pattern, adding a provider required edits in ~10 locations:
-
-- `src/integrations/bootstrap.ts` — manual PM integration + `integrationRegistry` registration
-- `src/router/index.ts` — new `app.post('/<provider>/webhook', createWebhookHandler({...}))` block
-- `src/router/adapters/<provider>.ts` — new adapter
-- `src/router/webhookVerification.ts` — new verifier
-- `src/webhook/webhookHandlers.ts` — new parse function
-- `src/router/worker-env.ts::extractProjectIdFromJob` — new branch (easily forgotten → Linear worker-without-credentials bug)
-- `src/triggers/<provider>/register.ts` + `src/triggers/builtins.ts` — manual trigger registration
-- `src/config/integrationRoles.ts` — credential roles
-- `web/src/components/projects/pm-wizard-<provider>-steps.tsx` — wizard step components
-- `web/src/components/projects/pm-wizard-state.ts` — provider field union + reducer cases
-- `web/src/components/projects/pm-wizard-hooks.ts` — discovery + label-creation hooks
-- `web/src/components/projects/pm-wizard.tsx` — per-provider rendering branches
-- `src/api/routers/integrationsDiscovery.ts` — per-provider tRPC endpoints
-
-Plans 006/2–006/4 collapse each provider's scattered registrations into one manifest. Plan 006/5 deletes the legacy scaffolding once every provider has migrated.
+SCM (GitHub) and alerting (Sentry) integrations retain the legacy `IntegrationModule` pattern with self-registration in `src/github/register.ts` and `src/sentry/register.ts`. A future spec may extend the manifest pattern to those categories.

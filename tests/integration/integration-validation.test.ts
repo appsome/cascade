@@ -16,7 +16,9 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 // The new registry-driven implementation requires integrations to be registered before
 // calling getByCategory() — without this import the registry is empty and all validations
 // report "none is registered" instead of checking actual project credentials.
-import '../../src/integrations/bootstrap.js';
+import '../../src/integrations/pm/index.js';
+import '../../src/github/register.js';
+import '../../src/sentry/register.js';
 import { integrationRegistry } from '../../src/integrations/registry.js';
 import type { SCMIntegration } from '../../src/integrations/scm.js';
 import {
