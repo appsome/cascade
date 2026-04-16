@@ -1,0 +1,215 @@
+---
+id: 006
+slug: pm-integration-plug-and-play
+plan: 4
+plan_slug: migrate-linear
+level: plan
+parent_spec: docs/specs/006-pm-integration-plug-and-play.md
+depends_on: [1-infrastructure.md]
+status: pending
+---
+
+# 006/4: Migrate Linear onto the PM provider manifest
+
+> Part 4 of 5 in the 006-pm-integration-plug-and-play plan. See [parent spec](../../specs/006-pm-integration-plug-and-play.md).
+
+## Summary
+
+Linear is the last and richest provider to migrate. The session that produced this spec shipped four Linear-specific fixes (status-mapping UUID, worker credentials, Bearer-prefix auth, label parity) — this plan collapses all of those into the canonical manifest shape and deletes the divergent per-call-site copies.
+
+Linear-specific considerations beyond Trello/JIRA:
+- **Bot-identity resolver** (`resolveLinearBotUserId` in `src/router/bot-identity-resolvers.ts`) — fold into the manifest's `isSelfAuthoredHook` or keep as a manifest-owned helper. Either way, the `Bearer`-free auth must come through `linearAuthHeader`.
+- **Optional project scope filter** — `project.linear.projectId` narrows webhooks to a single Linear Project. Logic lives in `src/router/adapters/linear.ts::parseWebhook`; manifest keeps this behavior intact.
+- **Label creation** (`linearClient.createLabel`, `pm.discovery.createLinearLabel`, `createLinearLabels`) — merged into the generic `pm.discovery.createLabel` / `createLabels` endpoints landed in plan 006/2.
+- **Webhook secret resolution** — `webhook_secret` credential role is optional (HMAC-SHA256 opt-in). Manifest declares it via `credentialRoles` with `optional: true`.
+- **Ack-comment posting** — switch the router-side `LinearPlatformClient` to use `linearAuthHeader` from the shared helper; delete the in-file copy.
+
+After this plan, all three legacy provider registration sites contain only dead code; plan 006/5 removes them.
+
+**Components delivered:**
+- `src/integrations/pm/linear/manifest.ts` — Linear manifest wiring existing Linear code.
+- `src/integrations/pm/linear/index.ts` — registration side effect.
+- `src/integrations/pm/index.ts` — `import './linear/index.js';` appended.
+- `web/src/components/projects/pm-providers/linear/steps.tsx`, `wizard.ts`, `index.ts`.
+- `src/router/platformClients/linear.ts` — switch to `linearAuthHeader`; canonical helper deletes duplication.
+- `src/router/bot-identity-resolvers.ts` — switch to `linearAuthHeader`.
+- `src/integrations/bootstrap.ts` — Linear branch deleted.
+- `src/triggers/builtins.ts` — Linear trigger registration deleted.
+- `src/router/worker-env.ts` — Linear branch in `extractProjectIdFromJob` deleted.
+- `web/src/components/projects/pm-wizard.tsx` — Linear rendering branch deleted.
+- `src/api/routers/integrationsDiscovery.ts` — `createLinearLabel` / `createLinearLabels` consolidated into `pm.discovery.createLabel` / `createLabels`.
+
+**Deferred to later plans in this spec:**
+- Legacy registration infrastructure deletion (plan 006/5) — `bootstrap.ts`, `builtins.ts`, `extractProjectIdFromJob`, `integrationsDiscovery.ts` legacy scaffolding, and the transitional note in the README.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #1** — **full for Linear**.
+- **Spec AC #2** — **full for the harness's coverage of behaviors**: all three real providers are in the harness. What's left (plan 006/5) is removing the legacy scaffolding.
+- **Spec AC #3** — **full for Linear**.
+- **Spec AC #4** — **full**: all three providers now consume the canonical shared helpers (`linearAuthHeader`, `webhook-verifier`, `label-id-resolver`, `project-id-extractor`). Divergent copies no longer exist because the contract doesn't expose the seams.
+- **Spec AC #5** — **full for Linear** (wizard adapts via manifest).
+- **Spec AC #6** — **full**: reverting this plan moves Linear back to legacy while Trello + JIRA stay on manifest. Each provider remains independently revertable.
+
+---
+
+## Depends On
+
+- Plan 006/1 (infrastructure).
+- Benefits from 006/2 and 006/3 landing first (contract polish, `pm.discovery` endpoint shape). But strictly, Linear migration could merge in parallel with JIRA once Trello validates the contract.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Linear manifest
+
+**Tests first** (`tests/unit/integrations/pm/linear/manifest.test.ts`):
+- `linearManifest — id is 'linear'`
+- `linearManifest — category is 'pm'`
+- `linearManifest — webhookRoute is '/linear/webhook'`
+- `linearManifest — credentialRoles includes api_key (required) + webhook_secret (optional)`
+- `linearManifest — verifyWebhookSignature uses makeHmacSha256Verifier with Linear's header + 'sha256=' prefix`
+- `linearManifest — extractProjectIdFromJob returns projectId for { type: 'linear', projectId }` — regression against the session's "forgot Linear" bug.
+- `linearManifest — platformClientFactory returns a LinearPlatformClient using linearAuthHeader`
+- `linearManifest — triggerHandlers contains status-changed, label-added, comment-mention`
+- `linearManifest — project-scope filter applied when project.linear.projectId is set` — regression for optional scope.
+
+**Implementation** (`src/integrations/pm/linear/manifest.ts`):
+- Wire `LinearIntegration`, `LinearRouterAdapter`, Linear trigger handlers, `LinearPlatformClient`, `parseLinearPayload`, `verifyLinearWebhookSignature`.
+- Rewrite `verifyLinearWebhookSignature` to call `makeHmacSha256Verifier({ headerName: 'linear-signature', headerPrefix: '' })`.
+- Rewrite `LinearPlatformClient`'s auth header to use `linearAuthHeader` from `src/integrations/pm/_shared/auth-headers.ts` instead of the in-file constant.
+- Rewrite `resolveLinearBotUserId` to use `linearAuthHeader`.
+- `extractProjectIdFromJob`: `(data) => data.type === 'linear' ? data.projectId ?? null : null`.
+
+### 2. Linear frontend wizard definition
+
+**Tests first** (`tests/unit/web/linear-wizard-provider.test.ts`):
+- `linearProviderWizard — steps array has the expected steps (credentials, team, field mapping, webhook info)` — mirrors the current `LinearCredentialsStep`/`LinearTeamStep`/`LinearFieldMappingStep`/`LinearWebhookInfoPanel` layout.
+- `linearProviderWizard — buildIntegrationConfig matches legacy save path byte-for-byte`
+- `linearProviderWizard — isSetupComplete reflects each step's completion predicate`
+- `linearProviderWizard — registered in frontend registry under id 'linear'`
+
+**Implementation** (`web/src/components/projects/pm-providers/linear/`):
+- `steps.tsx` — re-export `LinearCredentialsStep`, `LinearTeamStep`, `LinearFieldMappingStep` + `LinearWebhookInfoPanel` from existing files.
+- `wizard.ts` — `linearProviderWizard: ProviderWizardDefinition`. Include the label-creation handlers (`onCreateLabel`, `onCreateAllMissingLabels`, `creatingSlot`) via a provider-specific hooks prop on the generic wizard renderer — confirm the generic renderer's step-component signature (defined in plan 006/1) accepts provider-specific props.
+- `index.ts` — `registerProviderWizard(linearProviderWizard);`
+
+### 3. Delete Linear-specific legacy registrations
+
+**Tests first**:
+- `tests/unit/integrations/bootstrap.test.ts — does not register Linear`
+- `tests/unit/triggers/builtins.test.ts — does not register Linear triggers via legacy path`
+- `tests/unit/router/worker-env.test.ts — extractProjectIdFromJob routes Linear via registry`
+
+**Implementation**:
+- `src/integrations/bootstrap.ts` — remove Linear block.
+- `src/triggers/builtins.ts` — remove `registerLinearTriggers(registry)`.
+- `src/router/worker-env.ts` — remove Linear branch (the one we added in plan/PR #1118).
+- `web/src/components/projects/pm-wizard.tsx` — remove `state.provider === 'linear'` branch.
+
+### 4. Consolidate Linear tRPC discovery endpoints
+
+**Tests first** (`tests/unit/api/pm-discovery.test.ts`):
+- `pm.discovery.createLabel — via registry for provider 'linear' creates label on team` — consolidates `createLinearLabel`.
+- `pm.discovery.createLabels — via registry for provider 'linear' batch creates labels`.
+
+**Implementation**:
+- Linear manifest implements the `createLabel` / `createLabels` hooks from the contract.
+- `useLinearLabelCreation` in `pm-wizard-hooks.ts` — switch to `trpcClient.pm.discovery.createLabel.mutate({ providerId: 'linear', ... })`.
+- `createLinearLabel` / `createLinearLabels` in `integrationsDiscovery.ts` — deleted (last Linear-specific endpoint there; Linear discovery endpoints like `linearTeams`, `linearTeamDetails`, `linearProjects` remain as provider-specific for now since they're discovery, not create-on-demand; evaluate in plan 006/5 whether to add a generic `pm.discovery.getSetupContext` hook).
+
+### 5. Shared helper adoption (canonical copies)
+
+**Tests first** — regression coverage against the session's Bearer + label-name bugs:
+- `tests/unit/router/platformClients.test.ts::LinearPlatformClient — imports linearAuthHeader from _shared/auth-headers` — verifies the in-file `Authorization: apiKey` constant is removed.
+- `tests/unit/router/bot-identity-resolvers.test.ts (new or updated) — uses linearAuthHeader from _shared/auth-headers`.
+- `tests/unit/pm/linear/adapter.test.ts::resolveLabelId — delegates to _shared/label-id-resolver` — verifies the in-file UUID check is removed.
+
+**Implementation**:
+- `src/router/platformClients/linear.ts` — delete the in-file auth-header construction; replace with `linearAuthHeader(apiKey)`. Delete the file's `LINEAR_API_URL` constant if duplicated with the canonical client.
+- `src/router/bot-identity-resolvers.ts::resolveLinearBotUserId` — same consolidation.
+- `src/pm/linear/adapter.ts::resolveLabelId` — delete the private helper, call `_shared/label-id-resolver.resolveLabelId(slotOrId, this.config.labels, { providerId: 'linear' })`.
+
+### 6. Conformance harness runs Linear
+
+Automatic. Ensure manifest is imported before harness runs.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/integrations/pm/linear/manifest.test.ts`: ~9 tests
+- [ ] `tests/unit/web/linear-wizard-provider.test.ts`: 4 tests
+- [ ] Assertion updates in `bootstrap.test.ts`, `builtins.test.ts`, `worker-env.test.ts`
+- [ ] Canonical-helper adoption tests in `platformClients.test.ts`, `bot-identity-resolvers.test.ts`, `adapter.test.ts`: ~3 tests
+- [ ] Existing Linear tests (`tests/unit/pm/linear/*`, `tests/unit/router/adapters/linear.test.ts`, `tests/unit/triggers/linear-*.test.ts`) — all must stay green unchanged (modulo the test updates for shared-helper adoption).
+
+**Total: ~19 new tests + assertion updates.**
+
+### Integration tests
+- [ ] `tests/integration/linear-end-to-end.test.ts` (existing or new) — Linear webhook → trigger → dispatch → worker credentials → ack comment → label apply, all via manifest path.
+
+### Acceptance tests
+- Conformance harness exercises Linear and passes.
+- Session's four production incidents (UUID mapping, worker credentials, Bearer auth, label UUIDs) are codified as regression tests in the harness.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `pmProviderRegistry.get('linear')` returns the Linear manifest.
+2. `listPMProviders()` returns all three (trello, jira, linear); conformance harness runs and passes Linear-scoped tests.
+3. Every existing Linear unit + integration test passes without code changes (modulo the shared-helper adoption test updates, which are explicitly in scope).
+4. `pm-wizard.tsx` no longer has a `state.provider === 'linear'` branch.
+5. `bootstrap.ts`, `builtins.ts`, `extractProjectIdFromJob` no longer have Linear-specific branches.
+6. `createLinearLabel` / `createLinearLabels` in `integrationsDiscovery.ts` are deleted; Linear label creation goes through `pm.discovery.createLabel` / `createLabels` exclusively.
+7. `src/router/platformClients/linear.ts` and `src/router/bot-identity-resolvers.ts` use `linearAuthHeader` from the shared helper — no in-file auth-header construction remains.
+8. `src/pm/linear/adapter.ts::resolveLabelId` delegates to the shared resolver — no in-file UUID-check copy remains.
+9. Linear dashboard wizard byte-for-byte identical to pre-plan (SSR snapshot + end-to-end trigger test).
+10. All new/modified code has tests.
+11. `npm run build` passes.
+12. `npm test` passes.
+13. `npm run lint` passes.
+14. `npm run typecheck` passes.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Update transitional note: "Trello: ✓ migrated. JIRA: ✓ migrated. Linear: ✓ migrated. Legacy paths removed in plan 006/5." |
+| `CHANGELOG.md` | Entry: "Internal: Linear migrated to PM provider manifest (no operator-visible change); canonical auth/label helpers adopted across platform clients" |
+
+---
+
+## Out of Scope (this plan)
+
+- Deleting the legacy registration infrastructure (plan 006/5) — `bootstrap.ts`, `builtins.ts`, the orphaned legacy-fallback branches in the generic wizard/extractor, and any remaining legacy tRPC endpoints still stand at the end of this plan.
+- Removing the transitional note from the README (plan 006/5).
+- Refactoring Linear's discovery endpoints (`linearTeams`, `linearTeamDetails`, `linearProjects`) into a generic `pm.discovery.getSetupContext` — possible future work, not required for this spec.
+- Spec-level out-of-scope items.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1 Linear manifest registered
+- [ ] AC #2 Conformance harness passes all three providers
+- [ ] AC #3 Existing Linear tests green unchanged (modulo shared-helper adoption)
+- [ ] AC #4 Wizard Linear branch removed
+- [ ] AC #5 Legacy registration branches removed for Linear
+- [ ] AC #6 Linear tRPC label endpoints consolidated
+- [ ] AC #7 Platform clients + bot resolver use shared auth-header helper
+- [ ] AC #8 Adapter delegates to shared label resolver
+- [ ] AC #9 Operator-facing Linear behavior unchanged
+- [ ] AC #10 All new code has tests
+- [ ] AC #11 Build passes
+- [ ] AC #12 Tests pass
+- [ ] AC #13 Lint passes
+- [ ] AC #14 Typecheck passes

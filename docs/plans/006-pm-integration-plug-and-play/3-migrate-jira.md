@@ -1,0 +1,202 @@
+---
+id: 006
+slug: pm-integration-plug-and-play
+plan: 3
+plan_slug: migrate-jira
+level: plan
+parent_spec: docs/specs/006-pm-integration-plug-and-play.md
+depends_on: [1-infrastructure.md]
+status: pending
+---
+
+# 006/3: Migrate JIRA onto the PM provider manifest
+
+> Part 3 of 5 in the 006-pm-integration-plug-and-play plan. See [parent spec](../../specs/006-pm-integration-plug-and-play.md).
+
+## Summary
+
+Mirror of plan 006/2 but for JIRA. The Trello migration (006/2) de-risks the contract shape; this plan follows the same pattern.
+
+JIRA-specific considerations:
+- **Basic auth** rather than API key — the shared `jiraAuthHeader` helper from 006/1 applies.
+- **Cloud ID resolution** for attachments (`resolveJiraCloudId`) — keep the existing implementation behind the manifest's platform-client factory; no refactor here.
+- **Custom-field creation** (`createJiraCustomField`) parallels Trello's custom-field creation — goes through `pm.discovery.createCustomField` generic if we add the hook, or stays provider-specific if not (decide during plan 006/2 review).
+- **Label storage** — JIRA stores label names natively and the JIRA API accepts names; no UUID shape to validate. The shared `label-id-resolver` helper isn't needed for JIRA — JIRA's manifest contributes a provider-specific label-resolution strategy (documented in the contract as an optional hook).
+
+Plan 006/2 may surface contract gaps when the generic `pm.discovery.*` endpoints meet Trello's concrete shape. If so, plan 006/3 inherits the amended contract — no spec amendment required since the amendment lands in 006/2 review. If the gap is substantial, /plan divergence handling applies: edit 006/1 destructively in place.
+
+Operators see no change.
+
+**Components delivered:**
+- `src/integrations/pm/jira/manifest.ts` — JIRA manifest wiring existing JIRA code.
+- `src/integrations/pm/jira/index.ts` — registration side-effect module.
+- `src/integrations/pm/index.ts` — add `import './jira/index.js';`.
+- `web/src/components/projects/pm-providers/jira/steps.tsx`, `wizard.ts`, `index.ts` — JIRA wizard definition.
+- `src/integrations/bootstrap.ts` — JIRA branch deleted.
+- `src/triggers/builtins.ts` — JIRA trigger registration deleted.
+- `src/router/worker-env.ts` — JIRA branch in `extractProjectIdFromJob` deleted.
+- `web/src/components/projects/pm-wizard.tsx` — JIRA rendering branch deleted.
+- `src/api/routers/integrationsDiscovery.ts` — JIRA-specific endpoints consolidated into `pm.discovery` via manifest hooks.
+
+**Deferred to later plans in this spec:**
+- Linear migration (006/4).
+- Legacy registration infrastructure cleanup (006/5).
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #1** — **full for JIRA** (drop-in provider folder).
+- **Spec AC #2** — **partial**: harness now exercises Trello + JIRA. Linear joins in 006/4.
+- **Spec AC #3** — **full for JIRA** (zero operator-facing regressions).
+- **Spec AC #4** — **partial**: JIRA adopts shared helpers; Linear still has its own copies until 006/4.
+- **Spec AC #5** — **partial for JIRA** (wizard adapts via manifest).
+- **Spec AC #6** — **full**: reverting 006/3 moves JIRA back to legacy while Trello stays on manifest. Trello + JIRA + Linear states are independent.
+
+---
+
+## Depends On
+
+- Plan 006/1 (infrastructure).
+- Indirectly informed by plan 006/2's contract polish — if 006/2 amended the contract in 006/1, this plan picks up those changes.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. JIRA manifest
+
+**Tests first** (`tests/unit/integrations/pm/jira/manifest.test.ts`):
+- `jiraManifest — id is 'jira'`
+- `jiraManifest — category is 'pm'`
+- `jiraManifest — webhookRoute is '/jira/webhook'`
+- `jiraManifest — credentialRoles includes email + api_token + base_url (required)`
+- `jiraManifest — verifyWebhookSignature uses makeHmacSha256Verifier with JIRA's header format`
+- `jiraManifest — extractProjectIdFromJob returns projectId for { type: 'jira', projectId }`
+- `jiraManifest — platformClientFactory returns a JiraPlatformClient instance`
+- `jiraManifest — triggerHandlers contains exactly the handlers from src/triggers/jira/`
+- `jiraManifest — labels are passed through as names, not UUIDs` — documents the provider-specific label semantics; if the manifest contract includes a `labelValidationStrategy` hook, assert it's 'name-based' here.
+
+**Implementation** (`src/integrations/pm/jira/manifest.ts`):
+- Wire `JiraIntegration`, `JiraRouterAdapter`, JIRA trigger handlers, `JiraPlatformClient`, `parseJiraPayload`, `verifyJiraWebhookSignature`.
+- Use `jiraAuthHeader` from `src/integrations/pm/_shared/auth-headers.ts` inside the platform client (or confirm it already does after plan 006/2 migration consolidated the helper calls).
+
+**Implementation** (`src/integrations/pm/jira/index.ts`):
+- `import './manifest.js';` for side effect.
+- Add `import './jira/index.js';` to `src/integrations/pm/index.ts`.
+
+### 2. JIRA frontend wizard definition
+
+**Tests first** (`tests/unit/web/jira-wizard-provider.test.ts`):
+- `jiraProviderWizard — steps array has exactly 3 steps: credentials, project, fields`
+- `jiraProviderWizard — buildIntegrationConfig matches legacy save path byte-for-byte`
+- `jiraProviderWizard — isSetupComplete reflects each step's completion predicate`
+- `jiraProviderWizard — registered in frontend registry under id 'jira'`
+
+**Implementation** (`web/src/components/projects/pm-providers/jira/`):
+- `steps.tsx` — re-export `JiraCredentialsStep`, `JiraProjectStep`, `JiraFieldMappingStep` from existing `pm-wizard-jira-steps.tsx`.
+- `wizard.ts` — `jiraProviderWizard: ProviderWizardDefinition` with the 3 steps + `buildJiraIntegrationConfig` from `pm-wizard-state.ts`.
+- `index.ts` — `registerProviderWizard(jiraProviderWizard);`
+
+### 3. Delete JIRA-specific legacy registrations
+
+**Tests first**:
+- `tests/unit/integrations/bootstrap.test.ts — does not register JIRA`
+- `tests/unit/triggers/builtins.test.ts — does not register JIRA triggers via legacy path`
+- `tests/unit/router/worker-env.test.ts — extractProjectIdFromJob routes JIRA via registry`
+
+**Implementation**:
+- `src/integrations/bootstrap.ts` — remove JIRA registration block.
+- `src/triggers/builtins.ts` — remove `registerJiraTriggers(registry)`.
+- `src/router/worker-env.ts` — remove JIRA branch.
+- `web/src/components/projects/pm-wizard.tsx` — remove `state.provider === 'jira'` rendering branch.
+
+### 4. Consolidate JIRA tRPC discovery endpoints
+
+**Tests first** (`tests/unit/api/pm-discovery.test.ts`):
+- `pm.discovery.createCustomField — via registry for provider 'jira' creates custom field` — if the manifest contract includes `createCustomField`. Otherwise the endpoint stays JIRA-specific and a note is added to the `pm-discovery` router.
+
+**Implementation**:
+- Decide during plan 006/2 review whether `pm.discovery.createCustomField` is a contract hook. If yes, JIRA's manifest implements it; if no, keep `createJiraCustomField` in `integrationsDiscovery.ts` until plan 006/5 decides the shape.
+
+### 5. Update JIRA dashboard hook
+
+**Tests first**: existing JIRA tests must stay green.
+
+**Implementation**:
+- `useJiraCustomFieldCreation` — if the generic endpoint lands, switch `trpcClient.integrationsDiscovery.createJiraCustomField.mutate` → `trpcClient.pm.discovery.createCustomField.mutate`.
+
+### 6. Conformance harness runs JIRA
+
+Automatic via `listPMProviders()` iteration. Ensure JIRA's manifest module is imported before the harness runs.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/integrations/pm/jira/manifest.test.ts`: ~9 tests
+- [ ] `tests/unit/web/jira-wizard-provider.test.ts`: 4 tests
+- [ ] Assertion updates in `bootstrap.test.ts`, `builtins.test.ts`, `worker-env.test.ts`
+- [ ] Existing JIRA tests (`tests/unit/pm/jira/*`, `tests/unit/router/adapters/jira.test.ts`, `tests/unit/triggers/jira-*.test.ts`) — all must stay green unchanged.
+
+**Total: ~15 new tests + assertion updates.**
+
+### Integration tests
+- [ ] `tests/integration/jira-end-to-end.test.ts` (existing or new) — JIRA webhook → trigger → dispatch roundtrip via manifest path.
+
+### Acceptance tests
+- Conformance harness exercises JIRA and passes.
+- Every existing JIRA test passes without modification.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `pmProviderRegistry.get('jira')` returns the JIRA manifest.
+2. `listPMProviders()` includes Trello + JIRA; conformance harness runs and passes JIRA-scoped tests.
+3. Every existing JIRA unit + integration test passes without code changes.
+4. `pm-wizard.tsx` no longer has a `state.provider === 'jira'` branch.
+5. `bootstrap.ts`, `builtins.ts`, `extractProjectIdFromJob` no longer have JIRA-specific branches.
+6. JIRA tRPC discovery endpoints are consolidated into `pm.discovery.*` where possible; any remaining JIRA-specific endpoints carry a deprecation comment.
+7. JIRA dashboard wizard byte-for-byte identical to pre-plan (SSR snapshot).
+8. All new/modified code has tests.
+9. `npm run build` passes.
+10. `npm test` passes.
+11. `npm run lint` passes.
+12. `npm run typecheck` passes.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Update transitional note: "Trello: ✓ migrated. JIRA: ✓ migrated. Linear still on legacy." |
+| `CHANGELOG.md` | Entry: "Internal: JIRA migrated to PM provider manifest (no operator-visible change)" |
+
+---
+
+## Out of Scope (this plan)
+
+- Migrating Linear (plan 006/4).
+- Deleting legacy registration infrastructure (plan 006/5).
+- Spec-level out-of-scope items.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1 JIRA manifest registered
+- [ ] AC #2 Conformance harness passes JIRA
+- [ ] AC #3 Existing JIRA tests green unchanged
+- [ ] AC #4 Wizard JIRA branch removed
+- [ ] AC #5 Legacy registration branches removed for JIRA
+- [ ] AC #6 JIRA tRPC endpoints consolidated
+- [ ] AC #7 Operator-facing JIRA behavior unchanged
+- [ ] AC #8 All new code has tests
+- [ ] AC #9 Build passes
+- [ ] AC #10 Tests pass
+- [ ] AC #11 Lint passes
+- [ ] AC #12 Typecheck passes
