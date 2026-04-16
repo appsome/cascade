@@ -3,6 +3,7 @@ import { CheckCircle, Globe, Loader2, XCircle } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Label } from '@/components/ui/label.js';
 import { trpc } from '@/lib/trpc.js';
+import { renderManifestStep } from './pm-providers/render.js';
 import { SaveStep, WebhookStep } from './pm-wizard-common-steps.js';
 import {
 	useJiraCustomFieldCreation,
@@ -303,13 +304,14 @@ export function PMWizard({
 				isOpen={openSteps.has(2)}
 				onToggle={() => toggleStep(2)}
 			>
-				{state.provider === 'trello' ? (
-					<TrelloCredentialsStep state={state} dispatch={dispatch} />
-				) : state.provider === 'linear' ? (
-					<LinearCredentialsStep state={state} dispatch={dispatch} />
-				) : (
-					<JiraCredentialsStep state={state} dispatch={dispatch} />
-				)}
+				{renderManifestStep(state.provider, 0, state, dispatch) ??
+					(state.provider === 'trello' ? (
+						<TrelloCredentialsStep state={state} dispatch={dispatch} />
+					) : state.provider === 'linear' ? (
+						<LinearCredentialsStep state={state} dispatch={dispatch} />
+					) : (
+						<JiraCredentialsStep state={state} dispatch={dispatch} />
+					))}
 
 				<div className="flex items-center gap-3 pt-2">
 					{(!state.isEditing || !state.hasStoredCredentials || credsReady) && (
@@ -350,30 +352,31 @@ export function PMWizard({
 				isOpen={openSteps.has(3)}
 				onToggle={() => toggleStep(3)}
 			>
-				{state.provider === 'trello' ? (
-					<TrelloBoardStep
-						state={state}
-						onBoardSelect={handleBoardSelect}
-						boardsMutation={boardsMutation}
-						boardDetailsMutation={boardDetailsMutation}
-					/>
-				) : state.provider === 'linear' ? (
-					<LinearTeamStep
-						state={state}
-						onTeamSelect={handleTeamSelect}
-						dispatch={dispatch}
-						linearTeamsMutation={linearTeamsMutation}
-						linearDetailsMutation={linearDetailsMutation}
-						linearProjectsMutation={linearProjectsMutation}
-					/>
-				) : (
-					<JiraProjectStep
-						state={state}
-						onProjectSelect={handleProjectSelect}
-						jiraProjectsMutation={jiraProjectsMutation}
-						jiraDetailsMutation={jiraDetailsMutation}
-					/>
-				)}
+				{renderManifestStep(state.provider, 1, state, dispatch) ??
+					(state.provider === 'trello' ? (
+						<TrelloBoardStep
+							state={state}
+							onBoardSelect={handleBoardSelect}
+							boardsMutation={boardsMutation}
+							boardDetailsMutation={boardDetailsMutation}
+						/>
+					) : state.provider === 'linear' ? (
+						<LinearTeamStep
+							state={state}
+							onTeamSelect={handleTeamSelect}
+							dispatch={dispatch}
+							linearTeamsMutation={linearTeamsMutation}
+							linearDetailsMutation={linearDetailsMutation}
+							linearProjectsMutation={linearProjectsMutation}
+						/>
+					) : (
+						<JiraProjectStep
+							state={state}
+							onProjectSelect={handleProjectSelect}
+							jiraProjectsMutation={jiraProjectsMutation}
+							jiraDetailsMutation={jiraDetailsMutation}
+						/>
+					))}
 			</WizardStep>
 
 			{/* Step 4: Field Mapping */}
@@ -384,32 +387,33 @@ export function PMWizard({
 				isOpen={openSteps.has(4)}
 				onToggle={() => toggleStep(4)}
 			>
-				{state.provider === 'trello' ? (
-					<TrelloFieldMappingStep
-						state={state}
-						dispatch={dispatch}
-						onCreateLabel={handleCreateLabel}
-						onCreateAllMissingLabels={handleCreateAllMissingLabels}
-						onCreateCostField={handleCreateCostField}
-						creatingSlot={creatingSlot}
-						creatingCostField={creatingCostField}
-					/>
-				) : state.provider === 'linear' ? (
-					<LinearFieldMappingStep
-						state={state}
-						dispatch={dispatch}
-						onCreateLabel={handleCreateLinearLabel}
-						onCreateAllMissingLabels={handleCreateAllMissingLinearLabels}
-						creatingSlot={creatingSlot}
-					/>
-				) : (
-					<JiraFieldMappingStep
-						state={state}
-						dispatch={dispatch}
-						onCreateCostField={handleCreateJiraCostField}
-						creatingCostField={creatingJiraCostField}
-					/>
-				)}
+				{renderManifestStep(state.provider, 2, state, dispatch) ??
+					(state.provider === 'trello' ? (
+						<TrelloFieldMappingStep
+							state={state}
+							dispatch={dispatch}
+							onCreateLabel={handleCreateLabel}
+							onCreateAllMissingLabels={handleCreateAllMissingLabels}
+							onCreateCostField={handleCreateCostField}
+							creatingSlot={creatingSlot}
+							creatingCostField={creatingCostField}
+						/>
+					) : state.provider === 'linear' ? (
+						<LinearFieldMappingStep
+							state={state}
+							dispatch={dispatch}
+							onCreateLabel={handleCreateLinearLabel}
+							onCreateAllMissingLabels={handleCreateAllMissingLinearLabels}
+							creatingSlot={creatingSlot}
+						/>
+					) : (
+						<JiraFieldMappingStep
+							state={state}
+							dispatch={dispatch}
+							onCreateCostField={handleCreateJiraCostField}
+							creatingCostField={creatingJiraCostField}
+						/>
+					))}
 			</WizardStep>
 
 			{/* Step 5: Webhooks */}

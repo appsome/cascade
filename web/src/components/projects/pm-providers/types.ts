@@ -1,0 +1,56 @@
+/**
+ * Frontend PM provider wizard definition.
+ *
+ * This is the UI-side half of the provider manifest pattern. The backend
+ * `PMProviderManifest` (see `src/integrations/pm/manifest.ts`) owns
+ * everything React cannot see — router adapters, trigger handlers,
+ * server-side API clients. This file owns everything the dashboard wizard
+ * needs — step components, completion predicates, and the save transform.
+ *
+ * Frontend and backend registries are **coupled only by the `id` string**.
+ * The conformance harness asserts that every backend manifest has a
+ * matching frontend wizard when real providers migrate onto them.
+ */
+
+import type React from 'react';
+import type { WizardAction, WizardState } from '../pm-wizard-state.js';
+
+export interface ProviderWizardStep {
+	/** Stable identifier for the step. Used for keys + debugging. */
+	readonly id: string;
+	/** Human-readable title rendered in the wizard header. */
+	readonly title: string;
+	/** React component that renders the step body. */
+	readonly Component: React.ComponentType<ProviderWizardStepProps>;
+	/** Predicate that returns true when this step's inputs are valid. */
+	readonly isComplete: (state: WizardState) => boolean;
+}
+
+/**
+ * Standard props every step component receives. Provider-specific hooks
+ * (e.g. Trello's `onCreateLabel`, Linear's `linearDetailsMutation`) can be
+ * passed through via the props spread in the parent wizard.
+ */
+export interface ProviderWizardStepProps {
+	readonly state: WizardState;
+	readonly dispatch: React.Dispatch<WizardAction>;
+	// Providers requiring extra handlers (label creation, OAuth popups, etc.)
+	// receive them via an extension object. The parent wizard owns instantiation.
+	readonly providerHooks?: Record<string, unknown>;
+}
+
+export interface ProviderWizardDefinition {
+	/** Must match the backend manifest id (e.g. 'trello', 'linear'). */
+	readonly id: string;
+	/** Human-readable label shown in the provider-select dropdown. */
+	readonly label: string;
+	/** Ordered list of wizard steps. */
+	readonly steps: readonly ProviderWizardStep[];
+	/**
+	 * Transforms wizard state into the integration config payload sent to the
+	 * save API. Mirrors the existing `buildXxxIntegrationConfig` functions.
+	 */
+	readonly buildIntegrationConfig: (state: WizardState) => Record<string, unknown>;
+	/** True when all required steps report complete. */
+	readonly isSetupComplete: (state: WizardState) => boolean;
+}

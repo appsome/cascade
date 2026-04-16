@@ -4,6 +4,10 @@ All notable user-visible changes to CASCADE are documented here. The format is l
 
 ## Unreleased
 
+### Internal
+
+- **PM integration plug-and-play (infrastructure).** Introduced `PMProviderManifest` as the canonical per-provider contract — one object declares credentials, webhook route and verifier, router adapter, trigger handlers, platform client, job-id extractor, and optional label-creation hook. Landed `pmProviderRegistry`, a conformance test harness (`tests/unit/integrations/pm-conformance.test.ts`), shared helpers (`_shared/auth-headers.ts`, `_shared/webhook-verifier.ts`, `_shared/label-id-resolver.ts`, `_shared/project-id-extractor.ts`), a new `pm.discovery` tRPC router, and a frontend provider-wizard registry with a generic step renderer. Dormant in this release — Trello, JIRA, and Linear continue to register through the legacy path; they migrate onto the manifest in follow-up PRs. No operator-visible changes. Closes plan 006/1 of spec [006](docs/specs/006-pm-integration-plug-and-play.md).
+
 ### Added
 
 - **Linear PM — optional Project scope.** Operators can now narrow a Linear-backed CASCADE project to a specific Linear Project (initiative) in the PM wizard's "Board / Project Selection" step. When set, CASCADE only responds to issues that belong to that Linear Project; webhooks for issues outside the scope are silently dropped by the router (with a structured `logger.info` entry), outbound listings are scoped to the project, and newly-created issues (including checklist sub-issues) inherit the project. Leave the new selector empty to preserve existing team-wide behavior. Because Linear's data model requires every issue to belong to a team and scopes workflow states per team, status mappings stay team-scoped. For cross-team Linear Projects, CASCADE responds to the **intersection** of the configured team and project only (sibling-team issues in the same project are ignored). No migration required — existing Linear integrations are unaffected. (Spec [005](docs/specs/005-linear-project-scope.md.done).)
