@@ -3,7 +3,8 @@
  */
 
 import type { UseMutationResult } from '@tanstack/react-query';
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import { CheckCircle2, Loader2, Plus } from 'lucide-react';
+import { Button } from '@/components/ui/button.js';
 import { Input } from '@/components/ui/input.js';
 import { Label } from '@/components/ui/label.js';
 import type { WizardAction, WizardState } from './pm-wizard-state.js';
@@ -25,6 +26,19 @@ const LINEAR_STATUS_SLOTS = [
 ] as const;
 
 const LINEAR_LABEL_SLOTS = ['processing', 'processed', 'error', 'readyToProcess', 'auto'];
+
+/**
+ * Default CASCADE label names + hex colors used when the operator clicks
+ * "Create" on an unmapped slot. Linear expects hex color strings on
+ * issueLabelCreate; picked to roughly match the Trello named-color palette.
+ */
+export const LINEAR_LABEL_DEFAULTS: Record<string, { name: string; color: string }> = {
+	readyToProcess: { name: 'cascade-ready', color: '#0284C7' },
+	processing: { name: 'cascade-processing', color: '#2563EB' },
+	processed: { name: 'cascade-processed', color: '#16A34A' },
+	error: { name: 'cascade-error', color: '#DC2626' },
+	auto: { name: 'cascade-auto', color: '#9333EA' },
+};
 
 // ============================================================================
 // LinearCredentialsStep
@@ -155,10 +169,26 @@ export function LinearTeamStep({
 export function LinearFieldMappingStep({
 	state,
 	dispatch,
+	onCreateLabel,
+	onCreateAllMissingLabels,
+	creatingSlot,
 }: {
 	state: WizardState;
 	dispatch: React.Dispatch<WizardAction>;
+	onCreateLabel?: (slot: string) => void;
+	onCreateAllMissingLabels?: () => void;
+	creatingSlot?: string | null;
 }) {
+	const existingLabelNames = new Set(
+		(state.linearTeamDetails?.labels ?? []).map((l) => l.name.toLowerCase()),
+	);
+
+	const missingSlots = LINEAR_LABEL_SLOTS.filter((slot) => {
+		if (state.linearLabels[slot]) return false;
+		const defaultName = LINEAR_LABEL_DEFAULTS[slot]?.name ?? '';
+		return !existingLabelNames.has(defaultName.toLowerCase());
+	});
+
 	return (
 		<div className="space-y-6">
 			{/* Status mappings */}
@@ -199,29 +229,91 @@ export function LinearFieldMappingStep({
 				)}
 			</div>
 
-			{/* Labels */}
+			{/* Label mappings */}
 			<div className="space-y-3">
-				<Label>Labels</Label>
+				<div className="flex items-center justify-between">
+					<Label>Label Mappings</Label>
+					{state.linearTeamDetails && missingSlots.length > 0 && onCreateAllMissingLabels && (
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={onCreateAllMissingLabels}
+							disabled={creatingSlot !== null}
+							className="h-7 text-xs"
+						>
+							{creatingSlot === '__batch__' ? (
+								<Loader2 className="h-3 w-3 animate-spin mr-1" />
+							) : (
+								<Plus className="h-3 w-3 mr-1" />
+							)}
+							Create All Missing ({missingSlots.length})
+						</Button>
+					)}
+				</div>
 				<p className="text-xs text-muted-foreground">
-					CASCADE label names used in Linear. These are created automatically by CASCADE.
+					Map each CASCADE label to a Linear label on the team. Click "Create" to add missing ones.
 				</p>
-				{LINEAR_LABEL_SLOTS.map((slot) => (
-					<div key={slot} className="flex items-center gap-2">
-						<span className="w-28 shrink-0 text-sm text-muted-foreground">{slot}</span>
-						<Input
-							value={state.linearLabels[slot] ?? ''}
-							onChange={(e) =>
-								dispatch({
-									type: 'SET_LINEAR_LABEL',
-									key: slot,
-									value: e.target.value,
-								})
-							}
-							placeholder={`Linear label for ${slot}`}
-							className="flex-1"
-						/>
-					</div>
-				))}
+				{state.linearTeamDetails ? (
+					LINEAR_LABEL_SLOTS.map((slot) => {
+						const isMapped = !!state.linearLabels[slot];
+						const defaultInfo = LINEAR_LABEL_DEFAULTS[slot];
+						const alreadyExists =
+							defaultInfo && existingLabelNames.has(defaultInfo.name.toLowerCase());
+						const showCreateButton = !isMapped && !alreadyExists && onCreateLabel && defaultInfo;
+
+						return (
+							<div key={slot} className="flex items-center gap-2">
+								<div className="flex-1">
+									<FieldMappingRow
+										slotLabel={slot}
+										// Linear's issueUpdate.labelIds requires UUIDs; saving names
+										// causes the label application to silently fail server-side.
+										options={
+											state.linearTeamDetails?.labels
+												.filter((l) => l.name)
+												.map((l) => ({
+													label: `${l.name} (${l.color})`,
+													value: l.id,
+												})) ?? []
+										}
+										value={state.linearLabels[slot] ?? ''}
+										onChange={(v) =>
+											dispatch({
+												type: 'SET_LINEAR_LABEL',
+												key: slot,
+												value: v,
+											})
+										}
+										manualFallback
+									/>
+								</div>
+								{showCreateButton && (
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={() => onCreateLabel(slot)}
+										disabled={creatingSlot !== null}
+										className="h-8 text-xs shrink-0 text-muted-foreground hover:text-foreground"
+										title={`Create "${defaultInfo.name}" (${defaultInfo.color})`}
+									>
+										{creatingSlot === slot ? (
+											<Loader2 className="h-3 w-3 animate-spin" />
+										) : (
+											<Plus className="h-3 w-3" />
+										)}
+										Create
+									</Button>
+								)}
+							</div>
+						);
+					})
+				) : (
+					<p className="text-sm text-muted-foreground">
+						Select a team first to populate label options.
+					</p>
+				)}
 			</div>
 		</div>
 	);

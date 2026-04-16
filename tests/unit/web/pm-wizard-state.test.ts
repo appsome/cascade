@@ -837,9 +837,13 @@ describe('buildLinearIntegrationConfig — save payload', () => {
 		const bare = buildLinearIntegrationConfig(seed());
 		expect(bare).not.toHaveProperty('labels');
 		const withLabels = buildLinearIntegrationConfig(
-			seed({ linearLabels: { processing: 'cascade-processing' } }),
+			// Linear labels are stored as UUIDs (the Linear API rejects names for
+			// issueUpdate.labelIds). Wizard dropdowns populate from the team's labels.
+			seed({ linearLabels: { processing: '11111111-1111-4111-8111-111111111111' } }),
 		);
-		expect(withLabels).toHaveProperty('labels', { processing: 'cascade-processing' });
+		expect(withLabels).toHaveProperty('labels', {
+			processing: '11111111-1111-4111-8111-111111111111',
+		});
 	});
 });
 

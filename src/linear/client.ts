@@ -460,6 +460,39 @@ export const linearClient = {
 		return linearClient.updateIssue(issueId, { labelIds: updatedLabelIds });
 	},
 
+	async createLabel(
+		teamId: string,
+		name: string,
+		color?: string,
+	): Promise<{ id: string; name: string; color: string }> {
+		logger.debug('Creating Linear issue label', { teamId, name, color });
+		const input: { teamId: string; name: string; color?: string } = { teamId, name };
+		if (color) input.color = color;
+		const data = await linearGraphQL<{
+			issueLabelCreate: {
+				success: boolean;
+				issueLabel: { id: string; name: string; color: string } | null;
+			};
+		}>(
+			`mutation CreateIssueLabel($input: IssueLabelCreateInput!) {
+				issueLabelCreate(input: $input) {
+					success
+					issueLabel {
+						id
+						name
+						color
+					}
+				}
+			}`,
+			{ input },
+		);
+		if (!data.issueLabelCreate.success || !data.issueLabelCreate.issueLabel) {
+			throw new Error('Linear issueLabelCreate returned success=false');
+		}
+		const label = data.issueLabelCreate.issueLabel;
+		return { id: label.id, name: label.name, color: label.color };
+	},
+
 	// ===== Attachments =====
 
 	async getAttachments(issueId: string): Promise<LinearAttachment[]> {

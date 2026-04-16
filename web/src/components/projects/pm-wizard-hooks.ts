@@ -735,3 +735,65 @@ export function useSaveMutation(projectId: string, state: WizardState) {
 
 	return { saveMutation };
 }
+
+// ============================================================================
+// Linear Label Creation
+// ============================================================================
+
+export function useLinearLabelCreation(state: WizardState, dispatch: React.Dispatch<WizardAction>) {
+	const createLabelMutation = useMutation({
+		mutationFn: (vars: { name: string; color?: string; slot: string }) => {
+			if (!state.linearApiKey || !state.linearTeamId) {
+				throw new Error('Missing credentials or team selection');
+			}
+			return trpcClient.integrationsDiscovery.createLinearLabel.mutate({
+				apiKey: state.linearApiKey,
+				teamId: state.linearTeamId,
+				name: vars.name,
+				color: vars.color,
+			});
+		},
+		onSuccess: (label, vars) => {
+			dispatch({ type: 'ADD_LINEAR_TEAM_LABEL', label });
+			dispatch({ type: 'SET_LINEAR_LABEL', key: vars.slot, value: label.id });
+		},
+		onError: (error) => {
+			console.error('Failed to create Linear label:', error);
+			alert(`Failed to create label: ${error instanceof Error ? error.message : String(error)}`);
+		},
+	});
+
+	const createMissingLabelsMutation = useMutation({
+		mutationFn: (labelsToCreate: Array<{ slot: string; name: string; color?: string }>) => {
+			if (!state.linearApiKey || !state.linearTeamId) {
+				throw new Error('Missing credentials or team selection');
+			}
+			return trpcClient.integrationsDiscovery.createLinearLabels.mutate({
+				apiKey: state.linearApiKey,
+				teamId: state.linearTeamId,
+				labels: labelsToCreate.map(({ name, color }) => ({ name, color })),
+			});
+		},
+		onSuccess: (result, labelsToCreate) => {
+			for (const label of result.successes) {
+				const slot = labelsToCreate.find((l) => l.name === label.name)?.slot;
+				if (slot) {
+					dispatch({ type: 'ADD_LINEAR_TEAM_LABEL', label });
+					dispatch({ type: 'SET_LINEAR_LABEL', key: slot, value: label.id });
+				}
+			}
+			if (result.errors.length > 0) {
+				const errorMsg = result.errors.map((e) => `${e.name}: ${e.error}`).join('\n');
+				alert(
+					`Some labels failed to create:\n${errorMsg}\n\n${result.successes.length} label(s) created successfully.`,
+				);
+			}
+		},
+		onError: (error) => {
+			console.error('Failed to create Linear labels:', error);
+			alert(`Failed to create labels: ${error instanceof Error ? error.message : String(error)}`);
+		},
+	});
+
+	return { createLabelMutation, createMissingLabelsMutation };
+}

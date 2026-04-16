@@ -22,10 +22,35 @@ import type {
 	WorkItemLabel,
 } from '../types.js';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export class LinearPMProvider implements PMProvider {
 	readonly type = 'linear' as const;
 
 	constructor(private config: LinearConfig) {}
+
+	/**
+	 * Resolve a label slot name or raw ID to a Linear label UUID.
+	 *
+	 * Linear's GraphQL API requires UUIDs for issueUpdate.labelIds and
+	 * issueLabelCreate lookups. Returning a non-UUID string would silently
+	 * fail server-side, so we short-circuit misconfigurations here with a
+	 * diagnostic. Returns null when the input cannot be resolved to a UUID.
+	 */
+	private resolveLabelId(slotOrId: string): string | null {
+		const mapped = (this.config.labels as Record<string, string> | undefined)?.[slotOrId];
+		const candidate = mapped ?? slotOrId;
+		if (UUID_PATTERN.test(candidate)) return candidate;
+		logger.warn(
+			'[Linear] Label value is not a UUID — skipping (check PM wizard → Label Mappings)',
+			{
+				input: slotOrId,
+				resolved: mapped ?? '<no mapping>',
+				teamId: this.config.teamId,
+			},
+		);
+		return null;
+	}
 
 	async getWorkItem(id: string): Promise<WorkItem> {
 		const issue = await linearClient.getIssue(id);
@@ -88,8 +113,8 @@ export class LinearPMProvider implements PMProvider {
 			...(config.labels?.length
 				? {
 						labelIds: config.labels
-							.map((name) => (this.config.labels as Record<string, string> | undefined)?.[name])
-							.filter((id): id is string => !!id),
+							.map((name) => this.resolveLabelId(name))
+							.filter((id): id is string => id !== null),
 					}
 				: {}),
 		});
@@ -152,15 +177,14 @@ export class LinearPMProvider implements PMProvider {
 	}
 
 	async addLabel(id: string, labelIdOrName: string): Promise<void> {
-		// Resolve name → ID via config if possible
-		const labelId =
-			(this.config.labels as Record<string, string> | undefined)?.[labelIdOrName] ?? labelIdOrName;
+		const labelId = this.resolveLabelId(labelIdOrName);
+		if (!labelId) return;
 		await linearClient.addLabel(id, labelId);
 	}
 
 	async removeLabel(id: string, labelIdOrName: string): Promise<void> {
-		const labelId =
-			(this.config.labels as Record<string, string> | undefined)?.[labelIdOrName] ?? labelIdOrName;
+		const labelId = this.resolveLabelId(labelIdOrName);
+		if (!labelId) return;
 		await linearClient.removeLabel(id, labelId);
 	}
 

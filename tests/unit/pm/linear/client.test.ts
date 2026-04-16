@@ -394,4 +394,109 @@ describe('linearClient discovery methods', () => {
 			);
 		});
 	});
+
+	// =========================================================================
+	// createLabel
+	// =========================================================================
+	describe('createLabel', () => {
+		it('returns the created label with id, name, and color', async () => {
+			mockFetch.mockResolvedValue(
+				makeGraphQLResponse({
+					issueLabelCreate: {
+						success: true,
+						issueLabel: {
+							id: 'new-label-uuid',
+							name: 'cascade-processing',
+							color: '#0F7938',
+						},
+					},
+				}),
+			);
+
+			const result = await withLinearCredentials(TEST_CREDS, () =>
+				linearClient.createLabel('team-1', 'cascade-processing', '#0F7938'),
+			);
+
+			expect(result).toEqual({
+				id: 'new-label-uuid',
+				name: 'cascade-processing',
+				color: '#0F7938',
+			});
+		});
+
+		it('omits color when not provided (Linear auto-assigns)', async () => {
+			mockFetch.mockResolvedValue(
+				makeGraphQLResponse({
+					issueLabelCreate: {
+						success: true,
+						issueLabel: { id: 'l1', name: 'cascade-auto', color: '#555' },
+					},
+				}),
+			);
+
+			await withLinearCredentials(TEST_CREDS, () =>
+				linearClient.createLabel('team-1', 'cascade-auto'),
+			);
+
+			const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+			expect(body.variables.input.teamId).toBe('team-1');
+			expect(body.variables.input.name).toBe('cascade-auto');
+			expect(body.variables.input).not.toHaveProperty('color');
+		});
+
+		it('passes teamId, name, and color in the input variable', async () => {
+			mockFetch.mockResolvedValue(
+				makeGraphQLResponse({
+					issueLabelCreate: {
+						success: true,
+						issueLabel: { id: 'l1', name: 'cascade-error', color: '#E11D48' },
+					},
+				}),
+			);
+
+			await withLinearCredentials(TEST_CREDS, () =>
+				linearClient.createLabel('team-xyz', 'cascade-error', '#E11D48'),
+			);
+
+			const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+			expect(body.query).toContain('issueLabelCreate');
+			expect(body.variables.input).toEqual({
+				teamId: 'team-xyz',
+				name: 'cascade-error',
+				color: '#E11D48',
+			});
+		});
+
+		it('throws when issueLabelCreate returns success: false', async () => {
+			mockFetch.mockResolvedValue(
+				makeGraphQLResponse({
+					issueLabelCreate: { success: false, issueLabel: null },
+				}),
+			);
+
+			await expect(
+				withLinearCredentials(TEST_CREDS, () => linearClient.createLabel('team-1', 'x')),
+			).rejects.toThrow('Linear issueLabelCreate returned success=false');
+		});
+
+		it('throws on GraphQL errors (e.g. duplicate label name)', async () => {
+			mockFetch.mockResolvedValue(
+				makeGraphQLErrorResponse('Label with name "cascade-processing" already exists'),
+			);
+
+			await expect(
+				withLinearCredentials(TEST_CREDS, () =>
+					linearClient.createLabel('team-1', 'cascade-processing'),
+				),
+			).rejects.toThrow(/already exists/);
+		});
+
+		it('throws on HTTP errors', async () => {
+			mockFetch.mockResolvedValue(makeHttpErrorResponse(401, 'bad token'));
+
+			await expect(
+				withLinearCredentials(TEST_CREDS, () => linearClient.createLabel('team-1', 'x')),
+			).rejects.toThrow('Linear API HTTP error 401');
+		});
+	});
 });

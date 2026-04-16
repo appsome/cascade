@@ -53,7 +53,7 @@ const defaultConfig = {
 		cancelled: 'state-cancelled',
 	},
 	labels: {
-		processing: 'label-processing-id',
+		processing: '11111111-1111-4111-8111-111111111111',
 	},
 };
 
@@ -302,15 +302,29 @@ describe('LinearPMProvider', () => {
 
 			await provider.addLabel('issue-uuid', 'processing');
 
-			expect(mockAddLabel).toHaveBeenCalledWith('issue-uuid', 'label-processing-id');
+			expect(mockAddLabel).toHaveBeenCalledWith(
+				'issue-uuid',
+				'11111111-1111-4111-8111-111111111111',
+			);
 		});
 
-		it('passes label ID directly when not in config', async () => {
+		it('passes a UUID-shaped value through when not in config', async () => {
 			mockAddLabel.mockResolvedValue(makeIssue());
 
-			await provider.addLabel('issue-uuid', 'raw-label-id');
+			await provider.addLabel('issue-uuid', '550e8400-e29b-41d4-a716-446655440000');
 
-			expect(mockAddLabel).toHaveBeenCalledWith('issue-uuid', 'raw-label-id');
+			expect(mockAddLabel).toHaveBeenCalledWith(
+				'issue-uuid',
+				'550e8400-e29b-41d4-a716-446655440000',
+			);
+		});
+
+		it('skips the API call and warns when the value is neither a mapped slot nor a UUID', async () => {
+			// Linear API rejects non-UUID labelIds; rather than silently fail we
+			// short-circuit and emit a diagnostic so the misconfiguration is visible.
+			await provider.addLabel('issue-uuid', 'unmapped-slot');
+
+			expect(mockAddLabel).not.toHaveBeenCalled();
 		});
 	});
 
@@ -320,7 +334,10 @@ describe('LinearPMProvider', () => {
 
 			await provider.removeLabel('issue-uuid', 'processing');
 
-			expect(mockRemoveLabel).toHaveBeenCalledWith('issue-uuid', 'label-processing-id');
+			expect(mockRemoveLabel).toHaveBeenCalledWith(
+				'issue-uuid',
+				'11111111-1111-4111-8111-111111111111',
+			);
 		});
 	});
 
