@@ -76,6 +76,27 @@ vi.mock('../../../src/triggers/linear/label-added.js', () => ({
 		.mockImplementation(() => ({ name: 'linear-ready-to-process-label-added' })),
 }));
 
+// After plan 006/2, Trello's triggers are contributed to registerBuiltInTriggers
+// via the PM provider manifest registry. Mock listPMProviders() to return a
+// stub Trello manifest whose triggerHandlers preserve the exact names +
+// ordering the rest of this test file asserts on.
+vi.mock('../../../src/integrations/pm/registry.js', () => ({
+	listPMProviders: () => [
+		{
+			id: 'trello',
+			triggerHandlers: [
+				{ name: 'trello-comment-mention' },
+				{ name: 'trello-status-changed-splitting' },
+				{ name: 'trello-status-changed-planning' },
+				{ name: 'trello-status-changed-todo' },
+				{ name: 'trello-status-changed-backlog' },
+				{ name: 'trello-status-changed-merged' },
+				{ name: 'ready-to-process-label' },
+			],
+		},
+	],
+}));
+
 vi.mock('../../../src/utils/logging.js', () => ({
 	logger: {
 		debug: vi.fn(),

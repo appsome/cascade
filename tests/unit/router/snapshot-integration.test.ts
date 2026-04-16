@@ -107,6 +107,10 @@ vi.mock('../../../src/router/config.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { getAllProjectCredentials } from '../../../src/config/provider.js';
+// Trello resolution goes through the PM provider manifest registry as of
+// plan 006/2 — the side-effect import registers the manifest before spawn
+// resolves the job's projectId.
+import '../../../src/integrations/pm/trello/index.js';
 import { detachAll, spawnWorker } from '../../../src/router/container-manager.js';
 import type { CascadeJob } from '../../../src/router/queue.js';
 

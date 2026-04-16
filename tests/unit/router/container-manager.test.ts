@@ -84,6 +84,10 @@ vi.mock('../../../src/router/config.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { findProjectByRepo, getAllProjectCredentials } from '../../../src/config/provider.js';
+// Trello is resolved via the PM provider manifest as of plan 006/2. Import
+// the trello barrel so the registration side effect runs before the
+// extractProjectIdFromJob assertions execute.
+import '../../../src/integrations/pm/trello/index.js';
 import {
 	buildWorkerEnv,
 	cleanupWorker,

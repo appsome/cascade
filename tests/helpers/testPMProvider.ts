@@ -8,16 +8,12 @@
  *   - A required credential role + an optional one
  *   - A job type ('test-provider') the extractor claims
  *   - An HMAC-SHA256 webhook verifier via the shared factory
- *   - A no-op parseWebhookPayload that returns null
  *   - All contract surfaces populated with safe defaults
  */
 
 import { makeHmacSha256Verifier } from '../../src/integrations/pm/_shared/webhook-verifier.js';
 import type { PMProviderManifest } from '../../src/integrations/pm/manifest.js';
-import {
-	_resetPMProviderRegistryForTesting,
-	registerPMProvider,
-} from '../../src/integrations/pm/registry.js';
+import { getPMProvider, registerPMProvider } from '../../src/integrations/pm/registry.js';
 
 export const TEST_PROVIDER_ID = 'test-provider';
 
@@ -41,8 +37,6 @@ export const testPMProvider: PMProviderManifest = {
 	verifyWebhookSignature: makeHmacSha256Verifier({
 		headerName: 'x-test-provider-signature',
 	}),
-
-	parseWebhookPayload: () => null,
 
 	routerAdapter: { type: TEST_PROVIDER_ID } as unknown as PMProviderManifest['routerAdapter'],
 
@@ -71,16 +65,27 @@ export const testPMProvider: PMProviderManifest = {
 		({
 			postComment: async () => null,
 			deleteComment: async () => {},
-			updateComment: async () => {},
 		}) as unknown as ReturnType<PMProviderManifest['platformClientFactory']>,
 };
 
-/** Isolate the test provider between test runs to prevent registry leakage. */
+/**
+ * Register the TestProvider additively. Safe to call multiple times — the
+ * second call is a no-op because the registry already has the provider.
+ *
+ * Does NOT reset the registry. Real providers (Trello, etc.) registered via
+ * their module-load side effect coexist with TestProvider in the conformance
+ * harness — that's the whole point.
+ */
 export function registerTestProvider(): void {
-	_resetPMProviderRegistryForTesting();
+	if (getPMProvider(TEST_PROVIDER_ID)) return;
 	registerPMProvider(testPMProvider);
 }
 
+/**
+ * Kept for API symmetry, but unregistering a provider is not supported by
+ * `pmProviderRegistry`. The TestProvider persists for the process lifetime
+ * once registered — harmless because every run sees the same fixture.
+ */
 export function unregisterTestProvider(): void {
-	_resetPMProviderRegistryForTesting();
+	// no-op
 }
