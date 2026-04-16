@@ -18,17 +18,24 @@
  *   2. Importing and calling it here.
  */
 
+import { listPMProviders } from '../integrations/pm/registry.js';
 import { registerGitHubTriggers } from './github/register.js';
 import { registerJiraTriggers } from './jira/register.js';
 import { registerLinearTriggers } from './linear/register.js';
 import type { TriggerRegistry } from './registry.js';
 import { registerSentryTriggers } from './sentry/register.js';
-import { registerTrelloTriggers } from './trello/register.js';
 
 export function registerBuiltInTriggers(registry: TriggerRegistry): void {
-	registerTrelloTriggers(registry);
-	registerJiraTriggers(registry);
-	registerLinearTriggers(registry);
+	// Manifest-registered PM providers (Trello via 006/2; JIRA + Linear when
+	// plans 006/3 and 006/4 land) contribute their triggerHandlers here. The
+	// legacy `registerTrelloTriggers` etc. shrink as providers migrate.
+	for (const manifest of listPMProviders()) {
+		for (const handler of manifest.triggerHandlers) {
+			registry.register(handler);
+		}
+	}
+	registerJiraTriggers(registry); // migrates in plan 006/3
+	registerLinearTriggers(registry); // migrates in plan 006/4
 	registerGitHubTriggers(registry);
 	registerSentryTriggers(registry);
 }

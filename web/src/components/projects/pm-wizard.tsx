@@ -3,6 +3,11 @@ import { CheckCircle, Globe, Loader2, XCircle } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { Label } from '@/components/ui/label.js';
 import { trpc } from '@/lib/trpc.js';
+// Side-effect import registers Trello's frontend wizard into the provider
+// registry. Plans 006/3 and 006/4 will append jira + linear.
+import './pm-providers/trello/index.js';
+import { ManifestProviderWizardSection } from './pm-providers/manifest-section.js';
+import { getProviderWizard } from './pm-providers/registry.js';
 import { renderManifestStep } from './pm-providers/render.js';
 import { SaveStep, WebhookStep } from './pm-wizard-common-steps.js';
 import {
@@ -12,9 +17,6 @@ import {
 	useLinearLabelCreation,
 	useLinearWebhookInfo,
 	useSaveMutation,
-	useTrelloCustomFieldCreation,
-	useTrelloDiscovery,
-	useTrelloLabelCreation,
 	useVerification,
 	useWebhookManagement,
 } from './pm-wizard-hooks.js';
@@ -40,12 +42,11 @@ import {
 	isStep4Complete,
 	wizardReducer,
 } from './pm-wizard-state.js';
-import {
-	TRELLO_LABEL_DEFAULTS,
-	TrelloBoardStep,
-	TrelloCredentialsStep,
-	TrelloFieldMappingStep,
-} from './pm-wizard-trello-steps.js';
+// Trello legacy step imports removed — all Trello wizard rendering flows
+// through the manifest path (see ./pm-providers/trello/). The
+// `pm-wizard-trello-steps` module is still imported transitively by the
+// adapters in `./pm-providers/trello/adapters.tsx`, so its behavior is
+// unchanged — only the per-provider branching in this file is gone.
 import { WizardStep } from './wizard-shared.js';
 
 // ============================================================================
@@ -95,7 +96,8 @@ export function PMWizard({
 	const [state, dispatch] = useReducer(wizardReducer, undefined, createInitialState);
 	const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([1]));
 	const [creatingSlot, setCreatingSlot] = useState<string | null>(null);
-	const [creatingCostField, setCreatingCostField] = useState(false);
+	// Trello's creatingCostField was migrated into the provider wizard's own
+	// useProviderHooks; the parent no longer owns it.
 	const [creatingJiraCostField, setCreatingJiraCostField] = useState(false);
 
 	// ---- Step navigation helpers ----
@@ -135,13 +137,16 @@ export function PMWizard({
 
 	// ---- Custom hooks ----
 
+	// Is there a manifest-registered wizard for the active provider? If so,
+	// ManifestProviderWizardSection drives the rendering (and runs the
+	// provider's useProviderHooks internally). Unregistered providers fall
+	// through to the legacy per-provider branches.
+	const manifestDef = getProviderWizard(state.provider);
+
 	const { verifyMutation } = useVerification(state, dispatch, advanceToStep);
-	const { boardsMutation, boardDetailsMutation, handleBoardSelect } = useTrelloDiscovery(
-		state,
-		dispatch,
-		advanceToStep,
-		projectId,
-	);
+	// Trello's discovery / label / custom-field hooks are now composed inside
+	// trelloProviderWizard.useProviderHooks (plan 006/2). JIRA and Linear
+	// follow the same pattern in plans 006/3 and 006/4.
 	const { jiraProjectsMutation, jiraDetailsMutation, handleProjectSelect } = useJiraDiscovery(
 		state,
 		dispatch,
@@ -150,15 +155,10 @@ export function PMWizard({
 	);
 	const { linearTeamsMutation, linearDetailsMutation, linearProjectsMutation, handleTeamSelect } =
 		useLinearDiscovery(state, dispatch, advanceToStep, projectId);
-	const { createLabelMutation, createMissingLabelsMutation } = useTrelloLabelCreation(
-		state,
-		dispatch,
-	);
 	const {
 		createLabelMutation: createLinearLabelMutation,
 		createMissingLabelsMutation: createMissingLinearLabelsMutation,
 	} = useLinearLabelCreation(state, dispatch);
-	const { createCustomFieldMutation } = useTrelloCustomFieldCreation(state, dispatch);
 	const { createJiraCustomFieldMutation } = useJiraCustomFieldCreation(state, dispatch);
 	const webhookManagement = useWebhookManagement(projectId, state);
 	const { webhookUrl: linearWebhookUrl } = useLinearWebhookInfo();
@@ -169,49 +169,13 @@ export function PMWizard({
 	);
 
 	// ---- Label creation handlers ----
-
-	const handleCreateLabel = (slot: string) => {
-		const defaults = TRELLO_LABEL_DEFAULTS[slot];
-		if (!defaults) return;
-		setCreatingSlot(slot);
-		createLabelMutation.mutate(
-			{ name: defaults.name, color: defaults.color, slot },
-			{
-				onSettled: () => setCreatingSlot(null),
-			},
-		);
-	};
-
-	const handleCreateCostField = () => {
-		setCreatingCostField(true);
-		createCustomFieldMutation.mutate(undefined, {
-			onSettled: () => setCreatingCostField(false),
-		});
-	};
+	// Trello handlers moved into trelloProviderWizard.useProviderHooks (006/2).
 
 	const handleCreateJiraCostField = () => {
 		setCreatingJiraCostField(true);
 		createJiraCustomFieldMutation.mutate(undefined, {
 			onSettled: () => setCreatingJiraCostField(false),
 		});
-	};
-
-	const handleCreateAllMissingLabels = () => {
-		const existingLabelNames = new Set(
-			(state.trelloBoardDetails?.labels ?? []).map((l) => l.name.toLowerCase()),
-		);
-		const labelsToCreate = Object.entries(TRELLO_LABEL_DEFAULTS)
-			.filter(([slot, { name }]) => {
-				if (state.trelloLabelMappings[slot]) return false;
-				return !existingLabelNames.has(name.toLowerCase());
-			})
-			.map(([slot, { name, color }]) => ({ slot, name, color }));
-		if (labelsToCreate.length > 0) {
-			setCreatingSlot('__batch__');
-			createMissingLabelsMutation.mutate(labelsToCreate, {
-				onSettled: () => setCreatingSlot(null),
-			});
-		}
 	};
 
 	const handleCreateLinearLabel = (slot: string) => {
@@ -304,14 +268,20 @@ export function PMWizard({
 				isOpen={openSteps.has(2)}
 				onToggle={() => toggleStep(2)}
 			>
-				{renderManifestStep(state.provider, 0, state, dispatch) ??
-					(state.provider === 'trello' ? (
-						<TrelloCredentialsStep state={state} dispatch={dispatch} />
-					) : state.provider === 'linear' ? (
-						<LinearCredentialsStep state={state} dispatch={dispatch} />
-					) : (
-						<JiraCredentialsStep state={state} dispatch={dispatch} />
-					))}
+				{manifestDef ? (
+					<ManifestProviderWizardSection
+						def={manifestDef}
+						state={state}
+						dispatch={dispatch}
+						projectId={projectId}
+						advanceToStep={advanceToStep}
+						stepIndex={0}
+					/>
+				) : state.provider === 'linear' ? (
+					<LinearCredentialsStep state={state} dispatch={dispatch} />
+				) : (
+					<JiraCredentialsStep state={state} dispatch={dispatch} />
+				)}
 
 				<div className="flex items-center gap-3 pt-2">
 					{(!state.isEditing || !state.hasStoredCredentials || credsReady) && (
@@ -352,31 +322,32 @@ export function PMWizard({
 				isOpen={openSteps.has(3)}
 				onToggle={() => toggleStep(3)}
 			>
-				{renderManifestStep(state.provider, 1, state, dispatch) ??
-					(state.provider === 'trello' ? (
-						<TrelloBoardStep
-							state={state}
-							onBoardSelect={handleBoardSelect}
-							boardsMutation={boardsMutation}
-							boardDetailsMutation={boardDetailsMutation}
-						/>
-					) : state.provider === 'linear' ? (
-						<LinearTeamStep
-							state={state}
-							onTeamSelect={handleTeamSelect}
-							dispatch={dispatch}
-							linearTeamsMutation={linearTeamsMutation}
-							linearDetailsMutation={linearDetailsMutation}
-							linearProjectsMutation={linearProjectsMutation}
-						/>
-					) : (
-						<JiraProjectStep
-							state={state}
-							onProjectSelect={handleProjectSelect}
-							jiraProjectsMutation={jiraProjectsMutation}
-							jiraDetailsMutation={jiraDetailsMutation}
-						/>
-					))}
+				{manifestDef ? (
+					<ManifestProviderWizardSection
+						def={manifestDef}
+						state={state}
+						dispatch={dispatch}
+						projectId={projectId}
+						advanceToStep={advanceToStep}
+						stepIndex={1}
+					/>
+				) : state.provider === 'linear' ? (
+					<LinearTeamStep
+						state={state}
+						onTeamSelect={handleTeamSelect}
+						dispatch={dispatch}
+						linearTeamsMutation={linearTeamsMutation}
+						linearDetailsMutation={linearDetailsMutation}
+						linearProjectsMutation={linearProjectsMutation}
+					/>
+				) : (
+					<JiraProjectStep
+						state={state}
+						onProjectSelect={handleProjectSelect}
+						jiraProjectsMutation={jiraProjectsMutation}
+						jiraDetailsMutation={jiraDetailsMutation}
+					/>
+				)}
 			</WizardStep>
 
 			{/* Step 4: Field Mapping */}
@@ -387,33 +358,31 @@ export function PMWizard({
 				isOpen={openSteps.has(4)}
 				onToggle={() => toggleStep(4)}
 			>
-				{renderManifestStep(state.provider, 2, state, dispatch) ??
-					(state.provider === 'trello' ? (
-						<TrelloFieldMappingStep
-							state={state}
-							dispatch={dispatch}
-							onCreateLabel={handleCreateLabel}
-							onCreateAllMissingLabels={handleCreateAllMissingLabels}
-							onCreateCostField={handleCreateCostField}
-							creatingSlot={creatingSlot}
-							creatingCostField={creatingCostField}
-						/>
-					) : state.provider === 'linear' ? (
-						<LinearFieldMappingStep
-							state={state}
-							dispatch={dispatch}
-							onCreateLabel={handleCreateLinearLabel}
-							onCreateAllMissingLabels={handleCreateAllMissingLinearLabels}
-							creatingSlot={creatingSlot}
-						/>
-					) : (
-						<JiraFieldMappingStep
-							state={state}
-							dispatch={dispatch}
-							onCreateCostField={handleCreateJiraCostField}
-							creatingCostField={creatingJiraCostField}
-						/>
-					))}
+				{manifestDef ? (
+					<ManifestProviderWizardSection
+						def={manifestDef}
+						state={state}
+						dispatch={dispatch}
+						projectId={projectId}
+						advanceToStep={advanceToStep}
+						stepIndex={2}
+					/>
+				) : state.provider === 'linear' ? (
+					<LinearFieldMappingStep
+						state={state}
+						dispatch={dispatch}
+						onCreateLabel={handleCreateLinearLabel}
+						onCreateAllMissingLabels={handleCreateAllMissingLinearLabels}
+						creatingSlot={creatingSlot}
+					/>
+				) : (
+					<JiraFieldMappingStep
+						state={state}
+						dispatch={dispatch}
+						onCreateCostField={handleCreateJiraCostField}
+						creatingCostField={creatingJiraCostField}
+					/>
+				)}
 			</WizardStep>
 
 			{/* Step 5: Webhooks */}

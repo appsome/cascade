@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { captureException, flush, setTag } from '../sentry.js';
 // Bootstrap all integrations before any adapters are loaded
 import '../integrations/bootstrap.js';
+import '../integrations/pm/index.js';
 import { initPrompts } from '../agents/prompts/index.js';
 import { registerBuiltInEngines } from '../backends/bootstrap.js';
 import { initAgentMessages } from '../config/agentMessages.js';

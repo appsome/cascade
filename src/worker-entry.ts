@@ -15,6 +15,7 @@
 
 // Bootstrap all integrations before processing any jobs
 import './integrations/bootstrap.js';
+import './integrations/pm/index.js';
 import { registerBuiltInEngines } from './backends/bootstrap.js';
 import { loadEnvConfigSafe } from './config/env.js';
 import { loadConfig } from './config/provider.js';
