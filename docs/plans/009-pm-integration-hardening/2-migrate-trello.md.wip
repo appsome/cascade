@@ -6,7 +6,7 @@ plan_slug: migrate-trello
 level: plan
 parent_spec: docs/specs/009-pm-integration-hardening.md
 depends_on: [1-infra.md]
-status: pending
+status: wip
 ---
 
 # 009/2: Migrate Trello onto the Hardened PM Contracts
