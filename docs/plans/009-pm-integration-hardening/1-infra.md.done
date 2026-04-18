@@ -6,7 +6,7 @@ plan_slug: infra
 level: plan
 parent_spec: docs/specs/009-pm-integration-hardening.md
 depends_on: []
-status: wip
+status: done
 ---
 
 # 009/1: Infrastructure — Typed IDs, Manifest Contract Fields, Behavioral Harness, Fake Provider, Single Entrypoint
@@ -288,18 +288,26 @@ Originally out of scope for the spec (repeated for clarity):
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1 (branded IDs)
-- [ ] AC #2 (manifest fields additive)
-- [ ] AC #3 (single entrypoint)
-- [ ] AC #4 (fake provider fixture)
-- [ ] AC #5 (expanded conformance harness)
-- [ ] AC #6 (biome rule)
-- [ ] AC #7 (auth-header provenance test)
-- [ ] AC #8 (generic pm.discover)
-- [ ] AC #9 (wizard step generator)
-- [ ] AC #10 (tests for all code)
-- [ ] AC #11 (build)
-- [ ] AC #12 (tests)
-- [ ] AC #13 (lint)
-- [ ] AC #14 (typecheck)
-- [ ] AC #15 (docs)
+- [x] AC #1 (branded IDs) — src/pm/ids.ts + tests/unit/pm/ids.test.ts (12 tests)
+- [x] AC #2 (manifest fields additive) — tests/unit/integrations/manifest-fields.test.ts (7 tests); 44 existing pm-conformance tests still green
+- [x] AC #3 (single entrypoint) — src/integrations/entrypoint.ts + 4 runtime importers updated; entrypoint-usage.test.ts passes (4 assertions)
+- [x] AC #4 (fake provider fixture) — tests/helpers/fakePMProvider.ts + pm-fake-lifecycle.test.ts (7 tests)
+- [x] AC #5 (expanded conformance harness) — 5 new behavioral groups; harness at 80 tests (59 pass + 21 intentional skips for unmigrated providers)
+- [x] AC #6 (biome rule or equivalent) — auth-header-provenance test + lefthook pre-commit entry (Biome can't express the required string-pattern rule; fallback path per plan)
+- [x] AC #7 (auth-header provenance test) — auth-header-provenance.test.ts passes; 4 non-PM offenders accept-listed with reasons
+- [x] AC #8 (generic pm.discover) — 7 new tests in tests/unit/api/pm-discovery.test.ts pass
+- [x] AC #9 (wizard step generator) — web/src/components/projects/pm-providers/generator.tsx + 9 tests pass
+- [x] AC #10 (tests for all new code) — every new file has a companion test
+- [x] AC #11 (build) — npm run build passes
+- [x] AC #12 (tests) — npm test: 415 files / 7963 pass / 21 skip
+- [x] AC #13 (lint) — npm run lint clean
+- [x] AC #14 (typecheck) — npm run typecheck clean
+- [x] AC #15 (docs) — tests/README.md + src/integrations/README.md updated
+
+## Plan divergence note
+
+Task 2 in the plan as originally written said to change PMProvider interface method signatures (moveWorkItem, createWorkItem, etc.) from `string` to branded types, with a note that "legacy callers still compile — only the call sites that try to pass bare strings (after plans 2/3/4 migrations) will break." That note is factually incorrect — TypeScript's branded types are NOT assignable from plain strings, and changing the interface would have broken ~8 caller sites in src/gadgets/ and src/triggers/ immediately, contradicting plan 1's "dormant" intent.
+
+Resolved by keeping PMProvider method parameter types as `string` at the interface level and deferring per-adapter narrowing to plans 2/3/4 — which matches both plan 1's "dormant" intent and plans 2/3/4's per-adapter adoption ACs ("Xxx adapter's public surfaces accept branded StateId / LabelId / ContainerId"). TypeScript method parameter bivariance lets each adapter declare tighter types than the supertype while still satisfying the PMProvider contract.
+
+Task 9 (Biome rule): Biome doesn't have a primitive for arbitrary string-pattern matching. The plan's fallback guidance allowed "a custom ESLint check run alongside Biome". Implemented as the existing auth-header-provenance test run at pre-commit via lefthook — same enforcement, no extra moving parts.
