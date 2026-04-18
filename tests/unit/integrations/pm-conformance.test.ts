@@ -9,9 +9,15 @@
  * migrate real providers into the harness one at a time.
  */
 
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { listPMProviders } from '../../../src/integrations/pm/registry.js';
+import { listPMProviders, registerPMProvider } from '../../../src/integrations/pm/registry.js';
 import type { CascadeJob } from '../../../src/router/queue.js';
+import {
+	createFakePMManifest,
+	createFakePMProvider,
+	runLifecycleScenario,
+} from '../../helpers/fakePMProvider.js';
 import { registerTestProvider } from '../../helpers/testPMProvider.js';
 
 // Import every real PM provider so the harness exercises each of them
@@ -21,8 +27,18 @@ import '../../../src/integrations/pm/jira/index.js';
 import '../../../src/integrations/pm/linear/index.js';
 
 // describe.each evaluates at collection time, before beforeAll. Register
-// the TestProvider at module load so the iteration sees it.
+// the TestProvider + FakePMProvider at module load so the iteration sees
+// them. The fake is the ground-truth exerciser for plan 009/1's behavioral
+// contract assertions (config round-trip, discovery shape, lifecycle,
+// webhook verify) — real providers opt in per plan 2/3/4.
 registerTestProvider();
+const fakeManifest = createFakePMManifest();
+try {
+	registerPMProvider(fakeManifest);
+} catch {
+	// Duplicate-id registration — harmless if another test file already
+	// registered the fake in the same Vitest worker.
+}
 
 describe('PM provider conformance (every registered provider)', () => {
 	const providers = listPMProviders();
@@ -89,6 +105,123 @@ describe('PM provider conformance (every registered provider)', () => {
 			// parseWebhookPayload on the integration is tested per-provider; the
 			// harness only verifies the wiring.
 			expect(manifest.pmIntegration).toBeTruthy();
+		});
+
+		// ── Plan 009/1 behavioral contract assertions ─────────────────────
+		//
+		// Each block below is guarded by the manifest opting into the
+		// respective contract (configSchema declared, discoveryCapabilities
+		// declared, lifecycle.enabled, etc.). Legacy manifests that haven't
+		// opted in get skipped — migration plans 2/3/4 flip each real
+		// provider on.
+
+		describe('behavioral: config round-trip', () => {
+			const canRun = !!manifest.configSchema;
+			it.skipIf(!canRun)('a fixture config round-trips through the declared schema', () => {
+				const schema = manifest.configSchema!;
+				const fixture = manifest.configFixture;
+				if (fixture === undefined) {
+					// No fixture declared — parse is sufficient to prove the
+					// schema doesn't crash on its own defaults (if any).
+					expect(() => schema.parse({})).not.toThrow();
+					return;
+				}
+				const parsed1 = schema.parse(fixture);
+				const parsed2 = schema.parse(JSON.parse(JSON.stringify(parsed1)));
+				expect(parsed2).toEqual(parsed1);
+			});
+		});
+
+		describe('behavioral: discovery shape', () => {
+			const canRun = !!manifest.discoveryCapabilities;
+			it.skipIf(!canRun)(
+				'every declared capability returns an array from the adapter',
+				async () => {
+					// Prefer the fake provider when the manifest id is 'fake'
+					// (the fake's discover implementation is in-memory). For
+					// real providers, plans 2/3/4 wire their own lifecycle
+					// fixture — this block is guarded to skip them in plan 1.
+					if (id !== 'fake') return;
+					const { provider } = createFakePMProvider();
+					const caps = manifest.discoveryCapabilities!;
+					const capabilities = (Object.keys(caps) as Array<keyof typeof caps>).filter(
+						(k) => caps[k],
+					);
+					expect(capabilities.length).toBeGreaterThan(0);
+					for (const capability of capabilities) {
+						const args =
+							capability === 'containers'
+								? ({} as never)
+								: capability === 'teams' || capability === 'boards' || capability === 'projects'
+									? ({ containerId: 'fake-container-a' } as never)
+									: ({ containerId: 'fake-container-a' } as never);
+						const result = await provider.discover?.(capability, args);
+						expect(Array.isArray(result), `${capability} must return an array`).toBe(true);
+					}
+				},
+			);
+		});
+
+		describe('behavioral: lifecycle scenario', () => {
+			const canRun = manifest.lifecycle?.enabled === true;
+			it.skipIf(!canRun)(
+				'runs the full create → list → move → checklist → comment → delete scenario',
+				async () => {
+					if (id !== 'fake') return;
+					const { provider } = createFakePMProvider();
+					const report = await runLifecycleScenario(provider, 'fake-container-a', {
+						title: 'Conformance lifecycle item',
+					});
+					expect(report.created.id).toBeTruthy();
+					expect(report.listed.length).toBeGreaterThan(0);
+					expect(report.moved).toBe(true);
+					expect(report.checklistId).toBeTruthy();
+					expect(report.commentId).toBeTruthy();
+					expect(report.deleted).toBe(true);
+				},
+			);
+		});
+
+		describe('behavioral: trigger self-hook filter', () => {
+			const canRun = typeof manifest.isSelfAuthoredHook === 'function';
+			it.skipIf(!canRun)('isSelfAuthoredHook returns a boolean for a baseline event', async () => {
+				// Minimal invariant — the hook accepts a fabricated event and
+				// returns a boolean. Real per-provider assertions of which
+				// payloads count as self-authored live in the provider's
+				// trigger tests.
+				const fakeEvent = {
+					provider: id,
+					eventName: 'synthetic',
+					rawBody: '{}',
+					headers: {},
+				} as unknown as Parameters<NonNullable<typeof manifest.isSelfAuthoredHook>>[0];
+				const result = await manifest.isSelfAuthoredHook!(fakeEvent, {}, 'proj-xyz');
+				expect(typeof result).toBe('boolean');
+			});
+		});
+
+		describe('behavioral: webhook verify accept/reject', () => {
+			// Only fake provider declares a harness-compatible HMAC-SHA256
+			// verifier with the header convention the harness knows. Real
+			// providers' verify accept/reject fixtures land in their
+			// migration plans (2/3/4) — the plan 1 harness only exercises
+			// the fake to prove the assertion machinery works.
+			const canRun = id === 'fake';
+			it.skipIf(!canRun)('accepts a correctly-signed body and rejects a tampered one', () => {
+				const secret = 'fake-secret';
+				const body = '{"hello":"world"}';
+				const signature = createHmac('sha256', secret).update(body).digest('hex');
+				const headers = { 'x-fake-signature': signature };
+				expect(manifest.verifyWebhookSignature(body, headers, secret)).toBe(true);
+
+				// Tamper with one byte of the signature.
+				const tampered = signature.slice(0, -1) + (signature.slice(-1) === 'a' ? 'b' : 'a');
+				const tamperedHeaders = { 'x-fake-signature': tampered };
+				expect(manifest.verifyWebhookSignature(body, tamperedHeaders, secret)).toBe(false);
+
+				// Tamper with the body — the correct signature no longer matches.
+				expect(manifest.verifyWebhookSignature(`${body}-tampered`, headers, secret)).toBe(false);
+			});
 		});
 	});
 });
