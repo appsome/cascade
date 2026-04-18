@@ -172,12 +172,13 @@ describe('appRouter', () => {
 
 	it('has integrationsDiscovery sub-router with all procedures', () => {
 		const procedures = Object.keys(appRouter._def.procedures);
-		expect(procedures).toContain('integrationsDiscovery.verifyTrello');
-		expect(procedures).toContain('integrationsDiscovery.verifyJira');
+		// Plan 009/5 removed verifyTrello / verifyJira / verifyLinear —
+		// wizard verification now goes through pm.discover.
 		expect(procedures).toContain('integrationsDiscovery.trelloBoards');
 		expect(procedures).toContain('integrationsDiscovery.trelloBoardDetails');
 		expect(procedures).toContain('integrationsDiscovery.jiraProjects');
 		expect(procedures).toContain('integrationsDiscovery.jiraProjectDetails');
 		expect(procedures).toContain('integrationsDiscovery.verifyGithubToken');
+		expect(procedures).toContain('pm.discovery.discover');
 	});
 });

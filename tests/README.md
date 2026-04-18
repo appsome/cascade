@@ -387,6 +387,54 @@ mockProvider.getWorkItem.mockResolvedValue({
 
 All PMProvider methods are stubbed: `getWorkItem`, `getChecklists`, `getAttachments`, `getWorkItemComments`, `updateWorkItem`, `addComment` (→ resolves `''`), `updateComment`, `createWorkItem`, `listWorkItems`, `moveWorkItem`, `addLabel`, `removeLabel`, `createChecklist`, `addChecklistItem`, `updateChecklistItem`, `deleteChecklistItem`, `addAttachment`, `addAttachmentFile`, `linkPR` (→ resolves `undefined`), `getCustomFieldNumber`, `updateCustomFieldNumber`, `getWorkItemUrl`, `getAuthenticatedUser`.
 
+### `createMockPMProvider` vs `createFakePMProvider` vs `testPMProvider`
+
+Three PM provider fixtures exist for different test shapes:
+
+| Fixture | What it is | When to use |
+|---|---|---|
+| `createMockPMProvider()` (`mockPMProvider.ts`) | Bag of `vi.fn()` stubs — every method returns `undefined` by default | Unit tests that mock specific method return values with `mockResolvedValue` |
+| `createFakePMProvider()` (`fakePMProvider.ts`) | **Real in-memory implementation** backed by Maps | Behavioral / lifecycle tests where you need `createWorkItem` → `listWorkItems` → `moveWorkItem` to actually round-trip |
+| `testPMProvider` (`testPMProvider.ts`) | Minimal `PMProviderManifest` fixture with no adapter behavior | Conformance-harness fixture proving the manifest wiring contract |
+
+### FakePMProvider + behavioral conformance harness (spec 009)
+
+`tests/helpers/fakePMProvider.ts` ships three exports used by spec 009's hardened PM contracts:
+
+1. **`createFakePMProvider()`** → returns `{ provider, store }`. The provider implements every PMProvider method against the in-memory `store` (Maps of containers, states, labels, work items, checklists, comments, attachments). Exercises branded IDs end-to-end via `parseContainerId` / `parseStateId` / `parseLabelId`.
+
+2. **`createFakePMManifest()`** → returns a `PMProviderManifest` that opts into every plan 009/1 behavioral contract: `configSchema` (Zod), `configFixture`, full `discoveryCapabilities`, a `wizardSpec` covering every standard step kind, `lifecycle.enabled: true`, and a `createDiscoveryProvider` factory.
+
+3. **`runLifecycleScenario(provider, containerId, config)`** → a shared runner that exercises create → list → move → checklist (add + toggle) → comment → delete. Used by both the fake's own unit tests and the expanded conformance harness (`pm-conformance.test.ts`). Real providers adopt it via their manifest's `lifecycle.enabled` in plans 2/3/4.
+
+```ts
+import {
+  createFakePMProvider,
+  runLifecycleScenario,
+} from '../../helpers/fakePMProvider.js';
+
+const { provider, store } = createFakePMProvider();
+const report = await runLifecycleScenario(
+  provider,
+  'fake-container-a',
+  { title: 'Hello' },
+);
+expect(report.created.title).toBe('Hello');
+expect(store.workItems.has(report.created.id)).toBe(false); // DELETE sentinel removes it
+```
+
+Run the conformance harness locally with:
+
+```bash
+npx vitest run --project unit-core tests/unit/integrations/pm-conformance.test.ts
+```
+
+It currently produces 80 tests — 59 behavioral assertions against the fake + 21 skipped groups for real providers pending plans 2/3/4.
+
+### Auth-header provenance test
+
+`tests/unit/integrations/auth-header-provenance.test.ts` greps `src/` for hand-assembled `Bearer ${...}` auth-header patterns outside the shared helper `src/integrations/pm/_shared/auth-headers.ts`. Any offender fails the test with an explanatory error pointing to spec 009. Non-PM files that need their own direct auth (GitHub SCM, Sentry alerting, OpenRouter LLM) are explicitly accept-listed with reasons. The same test runs at pre-commit (via `lefthook.yml`) so violations surface before they land.
+
 ---
 
 ## Conventions

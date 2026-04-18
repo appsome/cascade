@@ -1,0 +1,304 @@
+---
+id: 006
+slug: pm-integration-plug-and-play
+plan: 1
+plan_slug: infrastructure
+level: plan
+parent_spec: docs/specs/006-pm-integration-plug-and-play.md
+depends_on: []
+status: done
+---
+
+# 006/1: Manifest contract, registry, conformance harness, and generic wizard renderer
+
+> Part 1 of 5 in the 006-pm-integration-plug-and-play plan. See [parent spec](../../specs/006-pm-integration-plug-and-play.md).
+
+## Summary
+
+Lands the manifest contract, the PM provider registry, a conformance test harness, the generic wizard renderer, and the rewritten integration author's guide. **No real provider is migrated yet** — Trello, JIRA, and Linear continue to register through the legacy path. A test-only `TestProvider` fixture exists solely to prove the harness works; it is not user-visible.
+
+The generic wizard renderer reads the registry first and falls back to the existing per-provider branches for any provider not yet in the registry — so the dashboard wizard's behavior is unchanged for end users. Backend registries (trigger registry, job extractor, tRPC discovery router) likewise check the manifest registry before falling through to legacy branches.
+
+Doc rewrite: `src/integrations/README.md` becomes the new manifest-centric guide with a short transitional note that Trello/JIRA/Linear will migrate in plans 006/2–006/4.
+
+**Components delivered:**
+- `src/integrations/pm/manifest.ts` — `PMProviderManifest` interface + sub-types
+- `src/integrations/pm/registry.ts` — `pmProviderRegistry` singleton + `registerPMProvider()` + `listPMProviders()`
+- `src/integrations/pm/_shared/auth-headers.ts` — canonical API auth-header builders (Linear bare-key, GitHub Bearer, JIRA Basic)
+- `src/integrations/pm/_shared/webhook-verifier.ts` — HMAC-SHA256 verifier factory consumed by manifests
+- `src/integrations/pm/_shared/label-id-resolver.ts` — UUID-validating label resolver helper, exported for adapter use
+- `src/integrations/pm/_shared/project-id-extractor.ts` — manifest-driven replacement for `extractProjectIdFromJob`
+- `src/api/routers/pm-discovery.ts` — generic registry-driven discovery router (new file; existing `integrationsDiscovery` stays as fallback)
+- `web/src/components/projects/pm-providers/types.ts` — `ProviderWizardDefinition` + `ProviderWizardStep` types
+- `web/src/components/projects/pm-providers/registry.ts` — frontend provider registry keyed by the same `id` as the backend manifest
+- `web/src/components/projects/pm-wizard.tsx` — refactored to check the registry first, fall back to legacy branches
+- `tests/unit/integrations/pm-conformance.test.ts` — conformance harness iterating the registry
+- `tests/helpers/testPMProvider.ts` — `TestProvider` manifest fixture exercising every contract hook
+- `src/integrations/README.md` — full rewrite with transitional note
+- `CLAUDE.md` — pointer update in the "Integration abstraction" section
+
+**Deferred to later plans in this spec:**
+- Plan 006/2 migrates Trello onto the manifest (adds Trello to the registry, removes Trello-specific legacy registrations)
+- Plan 006/3 migrates JIRA onto the manifest
+- Plan 006/4 migrates Linear onto the manifest
+- Plan 006/5 deletes the legacy registration infrastructure and the transitional doc note
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #1** (drop-in provider folder + CI rejection on incomplete contract) — **partial**: this plan delivers the contract + harness that enforce rejection. Full coverage requires at least one real provider migrated (plan 006/2).
+- **Spec AC #2** (harness exercises every registered provider) — **partial**: this plan builds the harness and proves it via `TestProvider`. Real coverage grows as plans 006/2–006/4 add providers.
+- **Spec AC #4** (canonical cross-cutting logic, no divergent copies) — **full**: shared helpers (`auth-headers`, `webhook-verifier`, `label-id-resolver`, `project-id-extractor`) land in this plan. Plans 006/2–006/4 adopt them; plan 006/5 deletes the divergent copies.
+- **Spec AC #5** (wizard adapts from manifest registry) — **partial**: this plan delivers the generic wizard renderer that reads the registry. Plans 006/2–006/4 feed real providers into it.
+- **Spec AC #7** (integration author's guide rewritten) — **partial**: primary rewrite lands here with a transitional note. Plan 006/5 removes the note.
+
+---
+
+## Depends On
+
+- None. This is the foundation plan.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Manifest contract types
+
+**Tests first** (`tests/unit/integrations/manifest-types.test.ts`):
+- `PMProviderManifest — type-level: id field is required` — compile-time test via `expectTypeOf` confirming `id` is a non-optional string.
+- `PMProviderManifest — type-level: category is literal 'pm'` — confirms the discriminator.
+- `PMProviderManifest — type-level: webhookRoute matches /${id}/webhook convention` — documented via JSDoc; runtime check lives in conformance harness.
+- `ProviderWizardStep — type-level: Component prop signature accepts state + dispatch + providerHooks` — ensures the generic renderer can call every step component uniformly.
+
+**Implementation** (`src/integrations/pm/manifest.ts`):
+
+```typescript
+export interface PMProviderManifest {
+  readonly id: string;
+  readonly label: string;
+  readonly category: 'pm';
+  readonly credentialRoles: readonly CredentialRoleSpec[];
+  readonly webhookRoute: string;                                 // conventionally `/${id}/webhook`
+  readonly verifyWebhookSignature: WebhookVerifier;
+  readonly parseWebhookPayload: (raw: unknown) => ParsedWebhookEvent | null;
+  readonly routerAdapter: RouterPlatformAdapter;
+  readonly extractProjectIdFromJob: (jobData: CascadeJob) => Promise<string | null>;
+  readonly pmIntegration: PMIntegration;
+  readonly triggerHandlers: readonly TriggerHandler[];
+  readonly platformClientFactory: (projectId: string) => PlatformCommentClient;
+  readonly isSelfAuthoredHook?: (event: ParsedWebhookEvent, payload: unknown, projectId: string) => Promise<boolean>;
+}
+
+export interface CredentialRoleSpec { role: string; label: string; envVarKey: string; optional?: boolean; }
+export type WebhookVerifier = (rawBody: string, headers: Record<string, string | undefined>, secret: string | null) => boolean;
+```
+
+- Export all sub-types (`CredentialRoleSpec`, `WebhookVerifier`). Keep runtime code out of this file — types only.
+
+### 2. PM provider registry
+
+**Tests first** (`tests/unit/integrations/pm-registry.test.ts`):
+- `registerPMProvider — registers a manifest and listPMProviders returns it` — set up, expect one entry.
+- `registerPMProvider — throws on duplicate id` — expect `/already registered/` error.
+- `getPMProvider — returns null for unknown id` — sanity.
+- `getPMProvider — returns the registered manifest by id` — sanity.
+- `listPMProviders — returns manifests in registration order` — preserves ordering for deterministic wizard dropdown.
+
+**Implementation** (`src/integrations/pm/registry.ts`):
+- Module-local `Map<string, PMProviderManifest>`.
+- `registerPMProvider(manifest: PMProviderManifest): void` — throws on duplicate `id`.
+- `getPMProvider(id: string): PMProviderManifest | null`.
+- `listPMProviders(): readonly PMProviderManifest[]` — iteration order = registration order.
+- Plan 006/2+ providers register themselves at module-load time via the provider's `index.ts`.
+
+### 3. Shared auth-header helpers
+
+**Tests first** (`tests/unit/integrations/auth-headers.test.ts`):
+- `linearAuthHeader — returns bare API key (no Bearer prefix)` — regression against the session's Bearer bug.
+- `githubAuthHeader — returns 'Bearer <token>' plus Accept + api-version` — mirror existing `resolveGitHubHeaders` behavior.
+- `jiraAuthHeader — returns 'Basic <base64(email:token)>'` — mirror existing JIRA builder.
+
+**Implementation** (`src/integrations/pm/_shared/auth-headers.ts`):
+- `linearAuthHeader(apiKey: string): Record<string, string>` → `{ Authorization: apiKey, 'Content-Type': 'application/json' }`.
+- `githubAuthHeader(token: string): Record<string, string>` → moves logic from `src/router/platformClients/credentials.ts::resolveGitHubHeaders`. Legacy wrapper in the old location stays until plan 006/5, just delegating.
+- `jiraAuthHeader(email: string, apiToken: string): Record<string, string>`.
+- Single source of truth for each convention. Manifests pull from here.
+
+### 4. Webhook verifier factory
+
+**Tests first** (`tests/unit/integrations/webhook-verifier.test.ts`):
+- `makeHmacSha256Verifier — valid signature returns true` — well-known vector.
+- `makeHmacSha256Verifier — tampered body returns false`.
+- `makeHmacSha256Verifier — missing signature header returns false when secret is set`.
+- `makeHmacSha256Verifier — missing signature header returns true when secret is null (opt-in)` — matches existing opt-in behavior.
+- `makeHmacSha256Verifier — header prefix ('sha256=') is tolerated` — mimics Trello/GitHub formats.
+
+**Implementation** (`src/integrations/pm/_shared/webhook-verifier.ts`):
+- `makeHmacSha256Verifier(opts: { headerName: string; headerPrefix?: string }): WebhookVerifier`.
+- Returns a function matching the `WebhookVerifier` type.
+- Manifests call this factory instead of writing bespoke HMAC code.
+
+### 5. Label ID resolver
+
+**Tests first** (`tests/unit/integrations/label-id-resolver.test.ts`):
+- `resolveLabelId — returns UUID when mapping holds UUID` — sanity.
+- `resolveLabelId — returns null and logs when mapping holds a name (not UUID)` — regression against the session's label-name bug.
+- `resolveLabelId — returns UUID when input is already a UUID not in mapping` — passthrough.
+- `resolveLabelId — returns null for unmapped non-UUID slot` — short-circuit.
+
+**Implementation** (`src/integrations/pm/_shared/label-id-resolver.ts`):
+- `resolveLabelId(slotOrId: string, mapping: Record<string, string> | undefined, logContext: { providerId: string }): string | null`.
+- Encapsulates the `UUID_PATTERN` check that currently lives in `src/pm/linear/adapter.ts`.
+- Trello/JIRA adapters can opt into it in their migration plans; current Linear adapter keeps its local copy until plan 006/4 migrates it.
+
+### 6. Manifest-driven project-id extractor
+
+**Tests first** (`tests/unit/integrations/project-id-extractor.test.ts`):
+- `extractProjectIdFromJobViaRegistry — returns projectId when a registered provider owns the job type` — simulate with `TestProvider`.
+- `extractProjectIdFromJobViaRegistry — returns null for unknown job type` — sanity.
+- `extractProjectIdFromJobViaRegistry — delegates to manifest.extractProjectIdFromJob` — verifies the registry iterates manifests.
+
+**Implementation** (`src/integrations/pm/_shared/project-id-extractor.ts`):
+- `extractProjectIdFromJobViaRegistry(jobData: CascadeJob): Promise<string | null>`.
+- Iterates `listPMProviders()`; the first manifest whose `extractProjectIdFromJob` returns non-null wins.
+- Plan 006/1 also updates `src/router/worker-env.ts::extractProjectIdFromJob` to **check the registry first, then fall back to legacy branches** for providers not yet in the registry.
+
+### 7. Frontend registry + generic wizard renderer
+
+**Tests first**:
+- `tests/unit/web/pm-provider-registry.test.ts — registerProviderWizard registers and listProviderWizards returns` — frontend-side parity with backend registry.
+- `tests/unit/web/pm-wizard-generic-renderer.test.ts — renders registered provider's steps via manifest.wizard.steps` — uses `TestProvider` wizard definition.
+- `tests/unit/web/pm-wizard-generic-renderer.test.ts — falls back to legacy branch for unregistered provider` — confirms Trello/JIRA/Linear UI is unchanged in this plan.
+
+**Implementation**:
+- `web/src/components/projects/pm-providers/types.ts` — `ProviderWizardDefinition { steps, buildIntegrationConfig, isSetupComplete }`, `ProviderWizardStep { id, title, Component, isComplete }`.
+- `web/src/components/projects/pm-providers/registry.ts` — `registerProviderWizard(def)`, `getProviderWizard(id)`, `listProviderWizards()`. Frontend-only; mirrors the backend registry.
+- `web/src/components/projects/pm-wizard.tsx` — refactor: before the `state.provider === 'trello'` branch chain, check `getProviderWizard(state.provider)`. If found, render `def.steps.map(s => <WizardStep><s.Component .../></WizardStep>)`. Otherwise fall through to existing branches.
+
+### 8. Conformance harness + TestProvider fixture
+
+**Tests first** (`tests/unit/integrations/pm-conformance.test.ts`):
+- For each manifest in `listPMProviders()`:
+  - `id is non-empty and URL-safe (matches /^[a-z0-9-]+$/)` — registry hygiene.
+  - `webhookRoute matches /${id}/webhook convention` — router wiring.
+  - `routerAdapter.type === id` — adapter wiring.
+  - `triggerHandlers have unique names and supportedTriggers arrays` — trigger registry hygiene.
+  - `credentialRoles list has at least one non-optional role` — ensures every provider requires auth.
+  - `extractProjectIdFromJob returns null for foreign job type` — isolation; feed a job with `type: 'some-other-provider'`.
+  - `extractProjectIdFromJob returns projectId for well-formed own job` — happy path.
+  - `platformClientFactory produces a PlatformCommentClient instance` — wiring check.
+  - `parseWebhookPayload returns null for unrecognized payload` — robustness.
+  - `pmIntegration.type === id` — integration wiring.
+- Fixture in `tests/helpers/testPMProvider.ts` registers a complete `TestProvider` manifest. The harness proves it green against `TestProvider` in this plan; as plans 006/2–006/4 add real providers, the harness iterates them too.
+
+**Implementation**:
+- `tests/helpers/testPMProvider.ts` exports `testPMProvider: PMProviderManifest` + `registerTestProvider()` / `unregisterTestProvider()` helpers (isolate from other tests).
+- `tests/unit/integrations/pm-conformance.test.ts` — `beforeAll` registers `TestProvider`, `afterAll` unregisters, `describe.each(listPMProviders())` runs the shared behaviors.
+
+### 9. tRPC discovery auto-merge
+
+**Tests first** (`tests/unit/api/pm-discovery.test.ts`):
+- `pmDiscoveryRouter — exposes listProviders procedure returning registry entries` — frontend provider-select reads from this.
+- `pmDiscoveryRouter — falls through to legacy integrationsDiscovery for unregistered providers` — keeps Trello/JIRA/Linear working.
+- `pmDiscoveryRouter — providerCredentialRoles(projectId, providerId) returns roles for registered provider` — proves the registry-driven endpoint works.
+
+**Implementation** (`src/api/routers/pm-discovery.ts`):
+- New tRPC router; entry point `pm.discovery.*`.
+- `listProviders` procedure returns `listPMProviders().map(m => ({ id: m.id, label: m.label, credentialRoles: m.credentialRoles }))`.
+- `providerCredentialRoles(projectId, providerId)` proxies to the manifest.
+- Dashboard provider-select reads from this endpoint starting in plan 006/2 when Trello migrates. Legacy `integrationsDiscovery` router remains until plan 006/5.
+
+### 10. Docs rewrite + CLAUDE.md pointer update
+
+**Implementation**:
+- `src/integrations/README.md` — rewrite top-to-bottom as the manifest-first author's guide. Section ordering:
+  1. "Adding a new PM provider (manifest-first)" — the canonical path, end-to-end, referencing the contract at `src/integrations/pm/manifest.ts`.
+  2. "Conformance harness — what CI enforces" — explains the test pack.
+  3. "Shared helpers" — `auth-headers`, `webhook-verifier`, `label-id-resolver`, `project-id-extractor`.
+  4. Transitional note: "Trello, JIRA, and Linear are being migrated onto this contract in plans 006/2–006/4. Until those PRs merge, those three providers continue to register through the legacy path documented below." Keep the legacy section at the bottom, to be deleted in plan 006/5.
+- `CLAUDE.md` — update the "Integration abstraction" bullet to point at the new README section title.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/integrations/manifest-types.test.ts`: 4 tests (type-level)
+- [ ] `tests/unit/integrations/pm-registry.test.ts`: 5 tests
+- [ ] `tests/unit/integrations/auth-headers.test.ts`: 3 tests
+- [ ] `tests/unit/integrations/webhook-verifier.test.ts`: 5 tests
+- [ ] `tests/unit/integrations/label-id-resolver.test.ts`: 4 tests
+- [ ] `tests/unit/integrations/project-id-extractor.test.ts`: 3 tests
+- [ ] `tests/unit/integrations/pm-conformance.test.ts`: ~10 tests × 1 provider (TestProvider) = 10 tests this plan
+- [ ] `tests/unit/api/pm-discovery.test.ts`: 3 tests
+- [ ] `tests/unit/web/pm-provider-registry.test.ts`: 2 tests
+- [ ] `tests/unit/web/pm-wizard-generic-renderer.test.ts`: 2 tests
+
+**Total: ~41 new tests.**
+
+### Integration tests
+- None this plan — no real provider migrated, no E2E path changes.
+
+### Acceptance tests
+- Conformance harness passes against `TestProvider` (per-plan AC #3).
+- Dashboard wizard renders Trello/JIRA/Linear identically to before (per-plan AC #4 — unchanged legacy behavior).
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `PMProviderManifest` interface and sub-types exist in `src/integrations/pm/manifest.ts` with the shape described in task 1.
+2. `pmProviderRegistry` accepts and enforces unique `id` registrations (`src/integrations/pm/registry.ts`); unit tests pass.
+3. Conformance harness (`tests/unit/integrations/pm-conformance.test.ts`) registers `TestProvider`, runs the 10 shared behaviors against it, all green.
+4. Dashboard wizard behavior for Trello, JIRA, and Linear is **byte-for-byte identical** to before this plan, verified by existing wizard SSR tests staying green.
+5. `src/integrations/README.md` is rewritten with the manifest-first author's guide plus the transitional note; the legacy section remains at the bottom for reference.
+6. `CLAUDE.md` points at the new README section title.
+7. Shared helpers (`auth-headers`, `webhook-verifier`, `label-id-resolver`, `project-id-extractor`) exist and have unit-test coverage; **no existing call sites are migrated to them in this plan** — migrations happen in 006/2–006/4.
+8. All new/modified code has corresponding tests.
+9. `npm run build` passes.
+10. `npm test` passes (full suite — 7687 pre-existing + 41 new = ~7728).
+11. `npm run lint` passes.
+12. `npm run typecheck` passes.
+
+**Partial-state criterion**: The new registry holds only `TestProvider` (registered inside the test harness, not at module load). Trello/JIRA/Linear continue to register through `bootstrap.ts` and `builtins.ts`. Every backend registry check (trigger dispatch, project-id extractor, tRPC discovery) consults `pmProviderRegistry` first and falls through to the legacy path. Operators see no behavioral change.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Full rewrite with manifest-first author's guide + transitional note + legacy section kept at bottom |
+| `CLAUDE.md` | Update the "Integration abstraction" bullet to link the new README section title |
+| `CHANGELOG.md` | Entry: "Internal: introduce PM provider manifest contract + conformance harness (dormant)" |
+
+---
+
+## Out of Scope (this plan)
+
+- Migrating Trello, JIRA, or Linear onto the manifest (plans 006/2, 006/3, 006/4).
+- Deleting any legacy registration code (plan 006/5).
+- Removing the transitional note from the README (plan 006/5).
+- SCM (GitHub) and alerting (Sentry) integrations — explicitly deferred by the parent spec.
+- Gadgets layer refactor — out of scope per spec.
+- New form framework (RJSF / JSON Forms) — OSS decision says skip.
+- Runtime plugin discovery — out of scope per spec.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1 Manifest interface defined
+- [x] AC #2 Registry with unique-id enforcement
+- [x] AC #3 Conformance harness green against TestProvider
+- [x] AC #4 Legacy provider UX unchanged
+- [x] AC #5 README rewritten with transitional note
+- [x] AC #6 CLAUDE.md updated
+- [x] AC #7 Shared helpers landed + tested (not yet adopted)
+- [x] AC #8 All new code has tests
+- [x] AC #9 Build passes
+- [x] AC #10 All tests pass (7729/7729)
+- [x] AC #11 Lint passes
+- [x] AC #12 Typecheck passes

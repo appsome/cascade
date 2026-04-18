@@ -7,6 +7,13 @@ pre-commit:
       stage_fixed: true
     typecheck:
       run: npx tsc --noEmit
+    auth-header-provenance:
+      # Enforces the plan 009/1 invariant that PM provider auth headers
+      # are assembled only through src/integrations/pm/_shared/auth-headers.ts.
+      # Biome can't natively express the required string-pattern rule;
+      # the grep-style check lives in this test file and runs here at
+      # pre-commit for fast feedback (~250ms).
+      run: npx vitest run --project unit-core tests/unit/integrations/auth-header-provenance.test.ts
 
 pre-push:
   parallel: true

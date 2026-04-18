@@ -59,31 +59,10 @@ async function withLinearCreds<T>(
 }
 
 export const integrationsDiscoveryRouter = router({
-	verifyTrello: protectedProcedure.input(trelloCredsInput).mutation(async ({ ctx, input }) => {
-		logger.debug('integrationsDiscovery.verifyTrello called', { orgId: ctx.effectiveOrgId });
-		return withTrelloCreds(input, 'Failed to verify Trello credentials', (creds) =>
-			withTrelloCredentials(creds, () =>
-				trelloClient.getMe().then((me) => ({
-					id: me.id,
-					fullName: me.fullName,
-					username: me.username,
-				})),
-			),
-		);
-	}),
-
-	verifyJira: protectedProcedure.input(jiraCredsInput).mutation(async ({ ctx, input }) => {
-		logger.debug('integrationsDiscovery.verifyJira called', { orgId: ctx.effectiveOrgId });
-		return withJiraCreds(input, 'Failed to verify JIRA credentials', (creds) =>
-			withJiraCredentials(creds, () =>
-				jiraClient.getMyself().then((me) => ({
-					displayName: (me as { displayName?: string }).displayName ?? '',
-					emailAddress: (me as { emailAddress?: string }).emailAddress ?? '',
-					accountId: (me as { accountId?: string }).accountId ?? '',
-				})),
-			),
-		);
-	}),
+	// verifyTrello / verifyJira were removed by spec 009/5 — callers now
+	// use `pm.discover({ providerId: 'trello'|'jira', capability: 'boards'|'projects', ... })`.
+	// See web/src/components/projects/pm-wizard-hooks.ts for the migrated caller.
+	// verifyLinear was removed in the same commit (see below in this file).
 
 	trelloBoards: protectedProcedure.input(trelloCredsInput).mutation(async ({ ctx, input }) => {
 		logger.debug('integrationsDiscovery.trelloBoards called', { orgId: ctx.effectiveOrgId });
@@ -301,6 +280,10 @@ export const integrationsDiscoveryRouter = router({
 			);
 		}),
 
+	// TODO (spec 009 follow-up): migrate the five `create*Label` /
+	// `create*CustomField` procedures below to a generic `pm.create*`
+	// endpoint backed by per-manifest factory hooks. They remain here
+	// because they're mutations and `pm.discover` is read-only.
 	createTrelloLabel: protectedProcedure
 		.input(
 			trelloCredsInput.extend({
@@ -513,23 +496,9 @@ export const integrationsDiscoveryRouter = router({
 			});
 		}),
 
-	/**
-	 * Verify a raw Linear API key.
-	 * Accepts a plaintext API key from the form and calls getMe() to verify it.
-	 * Returns the authenticated user's id, name, and displayName.
-	 */
-	verifyLinear: protectedProcedure.input(linearCredsInput).mutation(async ({ ctx, input }) => {
-		logger.debug('integrationsDiscovery.verifyLinear called', { orgId: ctx.effectiveOrgId });
-		return withLinearCreds(input, 'Failed to verify Linear credentials', (creds) =>
-			withLinearCredentials(creds, () =>
-				linearClient.getMe().then((me) => ({
-					id: me.id,
-					name: me.name,
-					displayName: me.displayName,
-				})),
-			),
-		);
-	}),
+	// verifyLinear was removed by spec 009/5 — callers migrated to
+	// `pm.discover({ providerId: 'linear', capability: 'teams', ... })`.
+	// See web/src/components/projects/pm-wizard-hooks.ts.
 
 	/**
 	 * Fetch Linear teams using raw API key credentials.

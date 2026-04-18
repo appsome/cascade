@@ -1,469 +1,208 @@
-# Integration Architecture
+# PM Integration Architecture
 
-CASCADE uses a unified integration abstraction layer that lets PM, SCM, and alerting providers
-plug in without changing core infrastructure. This guide explains the architecture and walks
-through adding a new integration from scratch.
+CASCADE's PM providers (Trello, JIRA, Linear, and any future Asana/GitLab/ClickUp) are built on a **provider manifest** pattern. One file describes the provider end-to-end; one registry iterates manifests; a behavioral conformance harness guarantees each manifest satisfies its declared contracts.
 
-## Overview
+This document is the canonical guide for adding a new PM provider. Two specs shape it:
 
-Every integration is a class that implements `IntegrationModule` (and optionally a
-category-specific sub-interface). Modules register themselves into `IntegrationRegistry` at
-bootstrap time. Infrastructure — the router, worker, and webhook handler — looks up
-integrations by `type` string and calls the standard interface methods, with no provider-specific
-branching in shared code.
-
-```
-IntegrationModule (base contract)
-├── PMIntegration       — project management (Trello, JIRA, Linear)
-├── SCMIntegration      — source control (GitHub)
-└── AlertingIntegration — monitoring/alerting (Sentry)
-```
-
-### Key files
-
-| File | Purpose |
-|------|---------|
-| `src/integrations/types.ts` | `IntegrationModule` interface + `IntegrationWebhookEvent` |
-| `src/integrations/registry.ts` | `IntegrationRegistry` class + `integrationRegistry` singleton |
-| `src/integrations/scm.ts` | `SCMIntegration` interface (SCM-specific extension) |
-| `src/integrations/alerting.ts` | `AlertingIntegration` interface (alerting-specific extension) |
-| `src/integrations/bootstrap.ts` | **One place** — registers all 5 built-in integrations |
-| `src/integrations/index.ts` | Public barrel exports |
-| `src/pm/integration.ts` | `PMIntegration` interface (PM-specific extension) |
-| `src/pm/registry.ts` | `PMIntegrationRegistry` singleton (PM-specific; backward compat) |
-| `src/config/integrationRoles.ts` | Credential role definitions + `registerCredentialRoles()` |
-
-### How data flows
-
-```
-Webhook arrives → Router webhook handler
-  → RouterPlatformAdapter.parseWebhook()
-  → RouterPlatformAdapter.dispatchWithCredentials()
-    → TriggerRegistry.dispatch()
-      → TriggerHandler.handle()   ← per-event business logic
-  → RouterPlatformAdapter.postAck()  ← acknowledgment comment
-  → BullMQ queue
-    → Worker picks up job
-      → Agent execution (backend + gadgets)
-```
-
-Each integration plugs in at three distinct layers:
-1. **IntegrationModule / PMIntegration** — credential scoping and check
-2. **RouterPlatformAdapter** — router-side webhook processing
-3. **TriggerHandler(s)** — event-to-agent routing
+- **Spec [006](../../docs/specs/006-pm-integration-plug-and-play.md.done)** — introduced the manifest pattern + wiring-level conformance (2026-04-15/16).
+- **Spec [009](../../docs/specs/009-pm-integration-hardening.md)** — hardened the contracts: branded ID types, manifest-owned config schemas (eliminating the #1138/#1142 drift class), unified `pm.discover` endpoint, behavioral conformance harness with in-memory lifecycle scenario, single registration entrypoint, and auth-header provenance enforcement.
 
 ---
 
-## Integration categories
+## Architecture in one picture
 
-### PM (Project Management)
+```
+A new PM provider is ONE manifest backed by ONE provider folder + ONE wizard folder.
 
-Implements `PMIntegration` (extends `IntegrationModule`). Required for any board/issue-tracker
-provider. In addition to the base `IntegrationModule` methods, PM integrations implement:
+  src/integrations/pm/<provider>/
+    index.ts          // registerPMProvider(<provider>Manifest) on module load
+    manifest.ts       // the PMProviderManifest object
+    client.ts         // provider API client (GraphQL, REST, etc.)
+    adapter.ts        // PMProvider implementation
+    router-adapter.ts // RouterPlatformAdapter implementation
+    triggers/         // trigger handlers for webhook events
+    webhook.ts        // parseWebhookPayload + (optional) custom signature verifier
+    platform-client.ts// PlatformCommentClient (ack comments)
 
-- `createProvider(project)` — returns a `PMProvider` for data operations (read/write cards, lists)
-- `resolveLifecycleConfig(project)` — normalises provider-specific config into `ProjectPMConfig`
-  (labels, statuses)
-- `parseWebhookPayload(raw)` → `PMWebhookEvent | null`
-- `isSelfAuthored(event, projectId)` — filter bot-authored events
-- `postAckComment`, `deleteAckComment`, `sendReaction` — router-side acknowledgment operations
-- `lookupProject(identifier)` — map board/project identifier → project config
-- `extractWorkItemId(text)` — parse work-item ID from freeform text (e.g. PR body)
+  web/src/components/projects/pm-providers/<provider>/
+    index.ts          // registerProviderWizard(<provider>ProviderWizard) on module load
+    wizard.ts         // ProviderWizardDefinition (steps, save transform, completion predicates)
+    adapters.tsx      // step-component adapters that bridge providerHooks → existing step props
+    steps.tsx         // React components for each wizard step (or re-export from pm-wizard-<provider>-steps.tsx)
+```
 
-Implementations live in `src/pm/<provider>/integration.ts`.
-Example: `src/pm/trello/integration.ts`, `src/pm/jira/integration.ts`.
-
-PM integrations are registered in **both** the `integrationRegistry` (unified) and the
-`pmRegistry` (PM-specific, backward compat).
-
-### SCM (Source Control)
-
-Implements `SCMIntegration` (extends `IntegrationModule`). Required for PR-based workflows.
-Adds `hasPersonaToken(projectId, persona)` — check whether an implementer or reviewer token
-is configured.
-
-Implementation: `src/github/scm-integration.ts` (`GitHubSCMIntegration`).
-
-### Alerting
-
-Implements `AlertingIntegration` (extends `IntegrationModule`). Required for alert-triggered
-automation. Adds `getConfig(projectId)` — retrieve the provider-specific alerting config.
-
-Implementation: `src/sentry/alerting-integration.ts` (`SentryAlertingIntegration`).
+Nothing outside those two folders needs to change when you add a provider. The registries are the only surface the rest of the codebase sees.
 
 ---
 
-## Adding a new integration — step by step
-
-The example below uses **Linear** as a PM integration (already implemented — see
-`src/pm/linear/integration.ts`). Adapt the names for your actual provider and category.
-
-### Step 1 — Implement the interface
-
-Create `src/pm/linear/integration.ts` (for a PM integration) implementing `PMIntegration`:
-
-```typescript
-import { registerCredentialRoles } from '../../config/integrationRoles.js';
-import { getIntegrationCredential, getIntegrationCredentialOrNull } from '../../config/provider.js';
-import { getIntegrationProvider } from '../../db/repositories/credentialsRepository.js';
-import type { PMIntegration, PMWebhookEvent } from '../integration.js';
-import type { ProjectPMConfig } from '../lifecycle.js';
-import type { ProjectConfig } from '../../types/index.js';
-import type { PMProvider } from '../types.js';
-
-// Self-register credential roles at module load time
-registerCredentialRoles('linear', 'pm', [
-  { role: 'api_key', label: 'API Key', envVarKey: 'LINEAR_API_KEY' },
-  { role: 'webhook_secret', label: 'Webhook Secret', envVarKey: 'LINEAR_WEBHOOK_SECRET', optional: true },
-]);
-
-export class LinearIntegration implements PMIntegration {
-  readonly type = 'linear';
-  readonly category = 'pm' as const;
-
-  async hasIntegration(projectId: string): Promise<boolean> {
-    const provider = await getIntegrationProvider(projectId, 'pm');
-    if (provider !== 'linear') return false;
-    const key = await getIntegrationCredentialOrNull(projectId, 'pm', 'linear', 'api_key');
-    return key !== null;
-  }
-
-  createProvider(project: ProjectConfig): PMProvider {
-    return new LinearPMProvider(); // your PMProvider adapter
-  }
-
-  async withCredentials<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-    const apiKey = await getIntegrationCredential(projectId, 'pm', 'linear', 'api_key');
-    // set process.env.LINEAR_API_KEY, call fn, restore
-    const prev = process.env.LINEAR_API_KEY;
-    process.env.LINEAR_API_KEY = apiKey;
-    try {
-      return await fn();
-    } finally {
-      process.env.LINEAR_API_KEY = prev;
-    }
-  }
-
-  resolveLifecycleConfig(project: ProjectConfig): ProjectPMConfig {
-    // map Linear-specific config → normalised ProjectPMConfig
-    const cfg = project.pm?.config as Record<string, unknown> | undefined;
-    return {
-      labels: { processing: cfg?.processingLabel as string | undefined },
-      statuses: { todo: cfg?.todoStateId as string | undefined },
-    };
-  }
-
-  parseWebhookPayload(raw: unknown): PMWebhookEvent | null {
-    // parse raw Linear webhook body → PMWebhookEvent
-    // return null if irrelevant
-    return null; // implement per Linear webhook format
-  }
-
-  async isSelfAuthored(event: PMWebhookEvent, projectId: string): Promise<boolean> {
-    return false; // implement bot identity check
-  }
-
-  async postAckComment(projectId: string, workItemId: string, message: string): Promise<string | null> {
-    return null; // call Linear API to post comment
-  }
-
-  async deleteAckComment(projectId: string, workItemId: string, commentId: string): Promise<void> {
-    // call Linear API to delete comment
-  }
-
-  async sendReaction(projectId: string, event: PMWebhookEvent): Promise<void> {
-    // send emoji reaction if Linear supports it
-  }
-
-  async lookupProject(identifier: string) {
-    // look up project by Linear team ID or similar
-    return null;
-  }
-
-  extractWorkItemId(text: string): string | null {
-    const match = text.match(/https:\/\/linear\.app\/[^/]+\/issue\/([A-Z]+-\d+)/);
-    return match?.[1] ?? null;
-  }
-}
-```
-
-> **SCM integration** — implement `SCMIntegration` from `src/integrations/scm.ts` instead,
-> and place the file in `src/<provider>/scm-integration.ts`.
->
-> **Alerting integration** — implement `AlertingIntegration` from `src/integrations/alerting.ts`
-> instead, and place the file in `src/<provider>/alerting-integration.ts`.
-
-### Step 2 — Register credential roles
-
-Credential roles map a logical `role` name → env-var key. They tell the config provider how to
-resolve credentials for the integration and let the dashboard/CLI enumerate them.
-
-Call `registerCredentialRoles()` at module load time (shown in Step 1 above):
-
-```typescript
-import { registerCredentialRoles } from '../../config/integrationRoles.js';
-
-registerCredentialRoles('linear', 'pm', [
-  { role: 'api_key', label: 'API Key', envVarKey: 'LINEAR_API_KEY' },
-  { role: 'webhook_secret', label: 'Webhook Secret', envVarKey: 'LINEAR_WEBHOOK_SECRET', optional: true },
-]);
-```
-
-Roles marked `optional: true` are excluded from the "all required credentials present" check in
-`hasIntegration()`. Roles without `optional` are **required**.
-
-Role definitions live in `src/config/integrationRoles.ts`. The built-in providers (trello, jira,
-github, sentry) are hardcoded there; new providers use `registerCredentialRoles()` instead.
-
-### Step 3 — Register in bootstrap
-
-Open `src/integrations/bootstrap.ts` and add your integration:
-
-```typescript
-// src/integrations/bootstrap.ts
-import { LinearIntegration } from '../pm/linear/integration.js';
-
-// ... existing registrations ...
-
-if (!pmRegistry.getOrNull('linear')) {
-  const linear = new LinearIntegration();
-  pmRegistry.register(linear);
-  if (!integrationRegistry.getOrNull('linear')) integrationRegistry.register(linear);
-}
-```
-
-For an SCM integration, register only in `integrationRegistry`:
-```typescript
-if (!integrationRegistry.getOrNull('gitlab')) {
-  integrationRegistry.register(new GitLabSCMIntegration());
-}
-```
-
-Bootstrap is safe to import from both the **router** and **worker** — it does not pull in
-template files or agent execution code.
-
-### Step 4 — Add a webhook route in the router
-
-Open `src/router/index.ts` and add a route for the new provider's webhook. Routes follow the
-`/<provider>/webhook` pattern and use `createWebhookHandler()` (from
-`src/webhook/webhookHandlers.ts`) with a config object:
-
-```typescript
-import { createWebhookHandler, parseLinearPayload } from '../webhook/webhookHandlers.js';
-import { verifyLinearWebhookSignature } from './webhookVerification.js';
-import { LinearRouterAdapter } from './adapters/linear.js';
-
-// Existing pattern (Trello for reference):
-app.post(
-  '/trello/webhook',
-  createWebhookHandler({
-    source: 'trello',
-    parsePayload: parseTrelloPayload,
-    verifySignature: verifyTrelloWebhookSignature,
-    processWebhook: async (payload) => {
-      const adapter = new TrelloRouterAdapter();
-      const result = await processRouterWebhook(adapter, payload, triggerRegistry);
-      return { processed: result.shouldProcess, projectId: result.projectId, decisionReason: result.decisionReason };
-    },
-  }),
-);
-
-// New route:
-app.post(
-  '/linear/webhook',
-  createWebhookHandler({
-    source: 'linear',
-    parsePayload: parseLinearPayload,
-    verifySignature: verifyLinearWebhookSignature,
-    processWebhook: async (payload) => {
-      const adapter = new LinearRouterAdapter();
-      const result = await processRouterWebhook(adapter, payload, triggerRegistry);
-      return { processed: result.shouldProcess, projectId: result.projectId, decisionReason: result.decisionReason };
-    },
-  }),
-);
-```
-
-Key points:
-- URL paths are `/<provider>/webhook` (e.g. `/linear/webhook`), **not** `/webhook/<provider>`
-- `createWebhookHandler()` accepts a config object — there is no inline middleware or Hono context
-  parameter
-- `processRouterWebhook(adapter, payload, triggerRegistry)` takes the adapter instance, the parsed
-  payload, and the trigger registry — no Hono context `c` or provider type string
-- You must also add `parseLinearPayload` to `src/webhook/webhookHandlers.ts` and
-  `verifyLinearWebhookSignature` to `src/router/webhookVerification.ts`
-
-See `src/router/webhookVerification.ts` for details on how HMAC verification works and how to add
-support for a new provider's signature format.
-
-### Step 5 — Create a router adapter
-
-Create `src/router/adapters/linear.ts` implementing `RouterPlatformAdapter`:
-
-```typescript
-import type { RouterPlatformAdapter, AckResult, ParsedWebhookEvent } from '../platform-adapter.js';
-
-export class LinearRouterAdapter implements RouterPlatformAdapter {
-  readonly type = 'linear' as const;
-
-  async parseWebhook(payload: unknown): Promise<ParsedWebhookEvent | null> {
-    // Extract projectIdentifier, eventType, workItemId from Linear payload
-    // Return null for unrecognised or non-processable payloads
-    return null;
-  }
-
-  isProcessableEvent(event: ParsedWebhookEvent): boolean {
-    return true; // already filtered in parseWebhook
-  }
-
-  async isSelfAuthored(event: ParsedWebhookEvent, payload: unknown): Promise<boolean> {
-    return false;
-  }
-
-  sendReaction(event: ParsedWebhookEvent, payload: unknown): void {
-    // fire-and-forget reaction
-  }
-
-  async resolveProject(event: ParsedWebhookEvent): Promise<RouterProjectConfig | null> {
-    // load project config, find by event.projectIdentifier
-    return null;
-  }
-
-  async dispatchWithCredentials(event, payload, project, triggerRegistry) {
-    const ctx: TriggerContext = { project: fullProject, source: 'linear', payload };
-    return withLinearCredentials(() => triggerRegistry.dispatch(ctx));
-  }
-
-  async postAck(event, payload, project, agentType): Promise<AckResult | undefined> {
-    // post acknowledgment comment
-    return undefined;
-  }
-
-  buildJob(event, payload, project, result, ackResult): CascadeJob {
-    return {
-      type: 'linear',
-      source: 'linear',
-      payload,
-      projectId: project.id,
-      workItemId: event.workItemId ?? '',
-      actionType: event.eventType,
-      receivedAt: new Date().toISOString(),
-      triggerResult: result,
-      ackCommentId: ackResult?.commentId as string | undefined,
-    };
-  }
-}
-```
-
-The adapter is instantiated once and passed directly to `processRouterWebhook()` — no registry
-lookup needed. See `src/router/adapters/trello.ts` for a complete reference implementation.
-
-### Step 6 — Create trigger handlers
-
-Trigger handlers fire for specific events and decide which agent to invoke.
-
-**Create `src/triggers/linear/status-changed.ts`:**
-
-```typescript
-import type { TriggerHandler, TriggerContext, TriggerResult } from '../../types/index.js';
-
-export const LinearStatusChangedTodoTrigger: TriggerHandler = {
-  id: 'linear:status-changed:todo',
-
-  // Supported trigger events (used by cascade definitions triggers / trigger-discover)
-  supportedTriggers: [{ category: 'pm', event: 'pm:status-changed' }],
-
-  async handle(ctx: TriggerContext): Promise<TriggerResult | null> {
-    // ctx.payload is the raw Linear webhook payload
-    // ctx.project is the full ProjectConfig
-    // Return null to skip, or a TriggerResult to dispatch an agent
-    return null;
-  },
-};
-```
-
-**Create `src/triggers/linear/register.ts`:**
-
-```typescript
-import type { TriggerRegistry } from '../registry.js';
-import { LinearStatusChangedTodoTrigger } from './status-changed.js';
-
-export function registerLinearTriggers(registry: TriggerRegistry): void {
-  registry.register(LinearStatusChangedTodoTrigger);
-  // add more triggers as needed
-}
-```
-
-**Register in `src/triggers/builtins.ts`:**
-
-```typescript
-import { registerLinearTriggers } from './linear/register.js';
-
-export function registerBuiltInTriggers(registry: TriggerRegistry): void {
-  // existing registrations ...
-  registerLinearTriggers(registry);
-}
-```
-
-> **Important:** `builtins.ts` must only import trigger _handler_ classes, not webhook handlers.
-> Webhook handlers transitively pull in the agent execution pipeline (including `.eta` template
-> files that are not present in the router Docker image). Importing them from `builtins.ts`
-> would crash the router.
-
-### Step 7 — Add gadgets and capabilities
-
-Gadgets are the tools agents use during execution. PM, SCM, and alerting gadgets live in
-`src/gadgets/pm/`, `src/gadgets/github/`, and `src/gadgets/sentry/` respectively.
-
-If your integration requires new gadget operations not already covered by the provider-agnostic
-PM gadgets (`ReadWorkItem`, `PostComment`, etc.), add them in `src/gadgets/<provider>/`.
-
-Each gadget:
-1. Has a `ToolDefinition` in `definitions.ts` (or equivalent)
-2. Is implemented as a class in its own file
-3. Is exported from the directory's `index.ts`
-4. Is listed in the relevant agent YAML definitions under `tools:`
-
-Agent YAML definitions live in `src/agents/definitions/`. Add your gadgets to the relevant
-agent's `tools:` list, or create a new agent definition via `cascade definitions import`.
-
-See `src/gadgets/sentry/` for a compact three-gadget example.
+## The PMProviderManifest contract
+
+See [`src/integrations/pm/manifest.ts`](./pm/manifest.ts) for the authoritative type. Summary:
+
+| Field | What it does |
+|---|---|
+| `id` | Stable slug (kebab/lowercase). Used as the webhook route segment, job type, and registry key. |
+| `label` | Human-readable name shown in the dashboard provider-select. |
+| `category` | Literal `'pm'`. |
+| `credentialRoles` | List of credential slots (api_key, webhook_secret, etc.) with env-var keys + optional flag. |
+| `webhookRoute` | Conventionally `/${id}/webhook`. Enforced by the conformance harness. |
+| `verifyWebhookSignature` | `(rawBody, headers, secret) => boolean`. Use `makeHmacSha256Verifier` from `_shared/webhook-verifier.ts` unless your provider has a non-standard signing scheme. |
+| `routerAdapter` | Your `RouterPlatformAdapter` implementation — handles parsing, dispatching, and ack. |
+| `extractProjectIdFromJob` | `(jobData) => Promise<projectId \| null>`. **Must return `null` for jobs belonging to other providers.** Forgetting this invariant caused the Linear-worker-without-credentials bug (PR #1118). |
+| `pmIntegration` | Your `PMIntegration` implementation — the agent-facing provider API. |
+| `triggerHandlers` | Array of `TriggerHandler` instances for webhook events. |
+| `platformClientFactory` | `(projectId) => PlatformCommentClient`. Used by the router to post ack comments; must pull auth headers from `_shared/auth-headers.ts`. |
+| `isSelfAuthoredHook?` | Optional — returns `true` when the event was authored by CASCADE itself (for loop prevention). |
+| `createLabel?` | Optional — enables the wizard's "Create label" button for this provider. |
+
+### Plan 009 hardened-contract fields (all optional; providers opt in)
+
+| Field | What it does |
+|---|---|
+| `configSchema?: z.ZodType` | Declarative Zod schema for the persisted integration config. The conformance harness asserts round-trip identity — the #1138/#1142 bug class (`projectId` stripped by Zod twice) becomes a CI failure instead of a production outage. |
+| `configFixture?` | Sample config used by the harness's round-trip asserter. Must parse against `configSchema`. |
+| `discoveryCapabilities?` | `{ teams?, boards?, labels?, states?, projects?, containers?, customFields? }`. Each flag means "`adapter.discover(capability, args)` returns a list of that shape". The generic `pm.discover` tRPC endpoint dispatches through this registry. |
+| `createDiscoveryProvider?` | `(opts) => PMProvider`. Factory producing a discovery-scoped adapter outside a project context (wizard setup, before the config is saved). Receives raw credentials from the wizard. |
+| `wizardSpec?` | `{ steps: Array<StandardStep \| CustomStep> }`. Declarative step list the shared wizard generator renders. Standard kinds: `credentials`, `container-pick`, `status-mapping`, `label-mapping`, `webhook-url-display`, `project-scope`. |
+| `lifecycle?` | `{ enabled: true, fixtureKey: string }`. Opts into the behavioral conformance harness's full lifecycle scenario. `fixtureKey` is looked up in the test-local `LIFECYCLE_FIXTURES` registry — the manifest doesn't import from `tests/helpers/`. |
 
 ---
 
-## Testing checklist
+## The ProviderWizardDefinition contract
 
-Before submitting a new integration:
+See [`web/src/components/projects/pm-providers/types.ts`](../../web/src/components/projects/pm-providers/types.ts). Summary:
 
-- [ ] `IntegrationModule` interface fully implemented (type, category, withCredentials, hasIntegration)
-- [ ] `registerCredentialRoles()` called at module load time with all credential roles
-- [ ] Integration registered in `src/integrations/bootstrap.ts`
-- [ ] Webhook route added in `src/router/index.ts`
-- [ ] `RouterPlatformAdapter` implemented in `src/router/adapters/<provider>.ts`
-- [ ] At least one `TriggerHandler` implemented in `src/triggers/<provider>/`
-- [ ] Trigger handlers registered via `registerBuiltInTriggers()` in `src/triggers/builtins.ts`
-- [ ] `src/triggers/<provider>/register.ts` created with `registerXxxTriggers(registry)`
-- [ ] Gadgets added for any new provider-specific operations
-- [ ] Unit tests for the `IntegrationModule` implementation (see `tests/unit/pm/` for examples)
-- [ ] Unit tests for trigger handlers (see `tests/unit/triggers/` for examples)
-- [ ] `npm run typecheck` passes
-- [ ] `npm run lint` passes
-- [ ] `npm test` passes
+| Field | What it does |
+|---|---|
+| `id` | Must match the backend manifest `id`. |
+| `label` | Shown in the provider-select dropdown. |
+| `steps` | Array of `{ id, title, Component, isComplete }`. The generic wizard renders them in order. |
+| `buildIntegrationConfig` | Transforms wizard state into the integration config payload sent at save time. |
+| `isSetupComplete` | `(state) => boolean`. True when the wizard can be saved. |
+| `useProviderHooks?` | Optional — composes the provider's React hooks (discovery, label creation, custom-field creation) inside a shell component. Return value flows into each step's `providerHooks` prop. |
+
+`ManifestProviderWizardSection` (`web/src/components/projects/pm-providers/manifest-section.tsx`) is the shell component that hosts the unconditional `useProviderHooks` call — it's only mounted when a manifest is registered for the active provider, so React's rules-of-hooks hold.
 
 ---
 
-## Reference: built-in integrations
+## Shared helpers (consume these; don't fork)
 
-| Provider | Category | Module file | Adapter | Triggers |
-|----------|----------|-------------|---------|---------|
-| `trello` | pm | `src/pm/trello/integration.ts` | `src/router/adapters/trello.ts` | `src/triggers/trello/` |
-| `jira` | pm | `src/pm/jira/integration.ts` | `src/router/adapters/jira.ts` | `src/triggers/jira/` |
-| `linear` | pm | `src/pm/linear/integration.ts` | `src/router/adapters/linear.ts` | `src/triggers/linear/` |
+Single-source-of-truth utilities live in `src/integrations/pm/_shared/`:
 
-### Linear — operator setup
+- **`auth-headers.ts`** — `linearAuthHeader`, `githubAuthHeader`, `jiraAuthHeader`. The session that produced spec 006 shipped a `Bearer`-prefix bug from three divergent copies of the Linear builder (PR #1119). Use the shared function.
+- **`webhook-verifier.ts`** — `makeHmacSha256Verifier({ headerName, headerPrefix? })` for the common case. Opt-out semantics (secret = `null` → always `true`) preserve existing router behavior. JIRA (hex + `sha256=` prefix) and Linear (hex, no prefix) both consume this factory.
+- **`label-id-resolver.ts`** — `resolveLabelId(slot, mapping, ctx)` validates UUIDs before passing labelIds to APIs that require them (Linear). Returns `null` and logs a warn for misconfigurations.
+- **`project-id-extractor.ts`** — `extractProjectIdFromJobViaRegistry(jobData)` iterates the registry. Used by `src/router/worker-env.ts` before its (now-minimal) legacy branches.
 
-Linear webhooks are configured **manually in Linear** (CASCADE cannot create them programmatically). The authoritative setup instructions — including the three event families CASCADE consumes (**Issues**, **Comments**, **Issue Labels**) and the inline signing-secret input — live in the dashboard PM wizard at `web/src/components/projects/pm-wizard-common-steps.tsx` (`LinearWebhookInfoPanel`). Any changes to the trigger handlers in `src/triggers/linear/` should be reflected there.
+---
 
-A CASCADE project can optionally scope to a specific Linear **Project** (initiative) in the "Board / Project Selection" wizard step. When set, webhooks for issues outside that project are dropped by the router (Linear webhooks themselves remain team-scoped; the filter is applied by CASCADE). Leaving the selector empty preserves full-team behavior.
-| `github` | scm | `src/github/scm-integration.ts` | `src/router/adapters/github.ts` | `src/triggers/github/` |
-| `sentry` | alerting | `src/sentry/alerting-integration.ts` | `src/router/adapters/sentry.ts` | `src/triggers/sentry/` |
+## Registration at startup
+
+Every runtime surface (router, worker, CLI bootstrap, dashboard) imports a single canonical entrypoint:
+
+```typescript
+import './integrations/entrypoint.js';  // registers every PM + SCM + alerting integration
+```
+
+`src/integrations/entrypoint.ts` is a side-effect-only module that imports each category's barrel — PM via `./pm/index.js`, SCM via `../github/register.js`, alerting via `../sentry/register.js`. The entrypoint exists because forgetting to register a provider in one surface but not others shipped four production bugs during Linear's rollout (#1097, #1118, #1131, #1134). The single-entrypoint invariant is guarded by `tests/unit/integrations/entrypoint-usage.test.ts`, which greps every process-entry file and fails if the import is missing.
+
+The PM barrel (`src/integrations/pm/index.ts`):
+1. Imports each provider's `index.js` (side effect: `registerPMProvider(manifest)`).
+2. Iterates `listPMProviders()` and mirrors each manifest's `pmIntegration` into the cross-category `integrationRegistry` — so `integration-validation.ts` and the capability resolver see PM providers alongside SCM + alerting.
+
+SCM (GitHub) and alerting (Sentry) integrations remain on the legacy `IntegrationModule` pattern — the manifest pattern is PM-only (spec 006 scope). Both self-register via their own `register.ts` side-effect modules, transitively pulled in by the entrypoint.
+
+`pmRegistry` (`src/pm/registry.ts`) still exists as a **read-only delegate** over `pmProviderRegistry` — the ~9 unmigrated call sites (webhook handlers, manual runner, credential scope, lifecycle, GitHub adapter) keep working without changes. Prefer `getPMProvider(id)` / `listPMProviders()` from `src/integrations/pm/registry.ts` in new code.
+
+### Behavioral contract fields (spec 009/1)
+
+The manifest accepts four optional fields beyond the wiring contracts — each opts the provider into a behavioral assertion group in the conformance harness:
+
+| Field | Purpose | Harness assertion |
+|---|---|---|
+| `configSchema: z.ZodType` | Declarative Zod schema for the persisted integration config | Round-trip identity: parse → serialize → re-parse → deep-equal |
+| `discoveryCapabilities: { teams?, boards?, labels?, states?, projects?, customFields?, containers? }` | Which discovery queries the adapter can serve | Each declared capability returns an array from `adapter.discover(k, args)` |
+| `wizardSpec: { steps: [...] }` | Declarative list of standard wizard steps | Rendered by the generator at `web/src/components/projects/pm-providers/generator.tsx` |
+| `lifecycle: { enabled: true, fixture? }` | Opt into the full lifecycle scenario | Harness runs `runLifecycleScenario` (create → list → move → checklist → comment → delete) |
+| `createDiscoveryProvider: (opts?) => PMProvider` | Factory producing a discovery-scoped adapter outside a project context | Powers the generic `pm.discover` tRPC endpoint |
+
+All fields are optional; legacy manifests that don't declare them skip the corresponding harness groups. Plans 2/3/4 flip each real provider on individually.
+
+---
+
+## Conformance harness — what CI enforces
+
+`tests/unit/integrations/pm-conformance.test.ts` iterates `listPMProviders()` and runs a shared test pack against every manifest:
+
+- `id` is URL-safe kebab/lowercase
+- `category` is `'pm'`
+- `webhookRoute` follows the `/${id}/webhook` convention
+- `routerAdapter.type === id`
+- At least one required credential role
+- Credential roles have unique `role` strings
+- `extractProjectIdFromJob` returns `null` for foreign job types
+- `extractProjectIdFromJob` returns the projectId for `{ type: id, projectId }`
+- `triggerHandlers` have unique names
+- `platformClientFactory(projectId)` returns an object with `postComment` + `deleteComment`
+- `pmIntegration.type` is wired
+
+A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal reference implementation — copy its shape when starting a new provider. The harness runs against TestProvider + Trello + JIRA + Linear (44 assertions total).
+
+### Provider migration status (plan 009 — PM integration hardening)
+
+| Provider | configSchema | discoveryCapabilities | wizardSpec | lifecycle | Branded IDs on adapter |
+|---|---|---|---|---|---|
+| **Trello** (plan 009/2) | ✅ `trelloConfigSchema` | ✅ boards, labels, customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'trello'` | ✅ move/addLabel/removeLabel/listWorkItems |
+| **JIRA** (plan 009/3) | ✅ `jiraConfigSchema` | ✅ projects, states, labels (empty — JIRA is free-form), customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'jira'` | ✅ move/addLabel/removeLabel/listWorkItems |
+| **Linear** (plan 009/4) | ✅ `linearConfigSchema` (locks #1138/#1142) | ✅ teams, states, labels, projects | ✅ 6 standard steps (includes project-scope from spec 005) | ✅ `lifecycle.fixtureKey: 'linear'` | ✅ move/addLabel/removeLabel/listWorkItems (locks #1117/#1137/#1139) |
+| **Fake** (plan 009/1, test fixture) | ✅ | ✅ all | ✅ | ✅ | N/A (the fake parses branded IDs internally) |
+
+All three real providers are now on the hardened contracts. Plan 009/4 also ships `tests/unit/pm/linear/regression-2026-04.test.ts` — 12 tests, one set per 2026-04 bug class, that fail loudly if any of the six classes regresses. See `linearManifest` at `src/integrations/pm/linear/manifest.ts` for the reference migration (Linear's surface area is the richest).
+
+---
+
+## Adding a new PM provider (step by step)
+
+Spec 009 AC #10: **a new PM provider PR should not need to edit shared router / worker / CLI / dashboard / configMapper / central schema files**. Everything lives in your provider folder + your wizard folder + a single import in `src/integrations/pm/index.ts`. The `tests/unit/integrations/new-provider-surface.test.ts` guard enforces this.
+
+1. **Backend folder** at `src/integrations/pm/<provider>/`:
+   - `client.ts` (or reuse a sibling under `src/<provider>/`) — your REST / GraphQL client. Must use `withXxxCredentials()` + AsyncLocalStorage credential scoping; never hand-assemble Bearer headers (see `_shared/auth-headers.ts`).
+   - `adapter.ts` — your `PMProvider` implementation. Narrow method parameters to branded `ContainerId` / `LabelId` / `StateId` from `src/pm/ids.ts` via TypeScript method bivariance — direct adapter callers then get compile-time protection against state-name-vs-ID confusion (#1117/#1137/#1139). `createWorkItem` keeps `CreateWorkItemConfig` due to TS object-property invariance; parse `config.containerId` at the boundary.
+   - `config-schema.ts` — Zod schema for the project-scoped config. This is the **single source of truth** — the central `src/config/schema.ts` imports it.
+   - `manifest.ts` — the `PMProviderManifest`, wiring shared helpers (`auth-headers`, `makeHmacSha256Verifier`). Declare `configSchema`, `configFixture`, `discoveryCapabilities`, `wizardSpec`, `lifecycle.enabled`, `createDiscoveryProvider`. The conformance harness runs round-trip + lifecycle + webhook-verify + trigger-self-hook checks against each declared contract.
+   - `router-adapter.ts`, `triggers/*.ts`, `webhook.ts`, `platform-client.ts` — same as before.
+   - `index.ts` — side-effect module calling `registerPMProvider(<provider>Manifest)`.
+
+2. **Wire the manifest** via a single import in `src/integrations/pm/index.ts` (`import './<provider>/index.js';`). No other edit to any shared file is needed for registration — the `single-entrypoint` test guards this.
+
+3. **Frontend folder** at `web/src/components/projects/pm-providers/<provider>/`: `adapters.tsx`, `wizard.ts` (`ProviderWizardDefinition`), `index.ts`. Add one line to `pm-wizard.tsx` to register. For shared wizard steps declared on `manifest.wizardSpec`, the generator in `pm-providers/generator.tsx` handles rendering — real shared step components are follow-up scope; today the generator renders typed placeholders.
+
+4. **Lifecycle fixture** at `tests/helpers/<provider>LifecycleFixture.ts`. Add the fixture key to `LIFECYCLE_FIXTURES` in `tests/unit/integrations/pm-conformance.test.ts`. Trivial providers can reuse `createFakePMProvider()` (see Trello/JIRA/Linear fixtures).
+
+5. **Run the conformance harness**: `npx vitest run --project unit-core tests/unit/integrations/pm-conformance.test.ts`. Behavioral contracts run against your provider automatically once `configSchema` / `discoveryCapabilities` / `lifecycle` are declared. Failures name the contract.
+
+6. **Provider-specific unit tests** in `tests/unit/pm/<provider>/` — adapter tests (vi.mock the client), config-schema round-trip, discovery shape, wizardSpec, adapter branded IDs.
+
+That's it. The `new-provider-surface` snapshot test proves your PR touches **no** shared infrastructure file.
+
+---
+
+## Non-PM integrations
+
+SCM (GitHub) and alerting (Sentry) integrations retain the legacy `IntegrationModule` pattern with self-registration in `src/github/register.ts` and `src/sentry/register.ts`. A future spec may extend the manifest pattern to those categories.
+
+---
+
+## Checklist implementation by provider
+
+Different PM providers have different native concepts of "checklist". The `PMProvider` interface exposes a uniform API (`getChecklists`, `createChecklist`, `addChecklistItem`, `updateChecklistItem`, `deleteChecklistItem`), but adapters implement them differently:
+
+| Provider | Implementation | Where items live |
+|---|---|---|
+| **Trello** | Native Trello checklist API | In-card checklists (lightweight items, not separate cards) |
+| **Linear** | Inline markdown in description | `### {Checklist Name}` heading + `- [ ]` / `- [x]` lines in the issue's description |
+| **JIRA** | Inline markdown in description (via ADF round-trip) | `### {Checklist Name}` heading + `- [ ]` / `- [x]` lines in the issue's description |
+
+**Why inline markdown for Linear and JIRA?** Both providers support markdown checkboxes natively in their description editors but lack a dedicated lightweight checklist primitive — sub-issues and subtasks are full work items, which clutters boards when used for things like acceptance criteria or implementation steps. Inline markdown matches Trello's lightweight semantics without creating orphan issues. See [spec 008](../../docs/specs/008-inline-checklists.md) for full rationale.
+
+The shared engine that parses, appends, toggles, and removes inline checklist items lives at `src/pm/_shared/inline-checklist.ts` and is consumed by both the Linear and JIRA adapters.

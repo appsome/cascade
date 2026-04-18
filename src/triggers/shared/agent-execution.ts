@@ -3,7 +3,6 @@ import type { LifecycleHooks } from '../../agents/definitions/schema.js';
 import { runAgent } from '../../agents/registry.js';
 import { createWorkItem, linkPRToWorkItem } from '../../db/repositories/prWorkItemsRepository.js';
 import { updateRunPRNumber } from '../../db/repositories/runsRepository.js';
-import { getJiraConfig, getTrelloConfig } from '../../pm/config.js';
 import { getPMProvider } from '../../pm/context.js';
 import {
 	createPMProvider,
@@ -11,10 +10,15 @@ import {
 	PMLifecycleManager,
 	resolveProjectPMConfig,
 } from '../../pm/index.js';
+import {
+	buildReviewDispatchKey,
+	claimReviewDispatch,
+} from '../../triggers/github/review-dispatch-dedup.js';
 import { checkTriggerEnabled } from '../../triggers/shared/trigger-check.js';
 import type { AgentResult, CascadeConfig, ProjectConfig } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
 import { extractPRNumber } from '../../utils/prUrl.js';
+import { parseRepoFullName } from '../../utils/repo.js';
 import type { TriggerResult } from '../types.js';
 import { handleAgentResultArtifacts } from './agent-result-handler.js';
 import { isPipelineAtCapacity } from './backlog-check.js';
@@ -230,6 +234,96 @@ async function linkPRPostExecution(
 }
 
 /**
+ * Dispatch a review agent after a successful implementation run, if the PR's
+ * CI is green and no review has been dispatched yet.
+ *
+ * Uses `claimReviewDispatch` with the same dedup key format as the
+ * `check-suite-success` trigger, so the two paths cannot double-enqueue.
+ * If CI isn't green yet, does nothing — the webhook-triggered path will
+ * handle it when CI finishes.
+ *
+ * Runs inside the worker container, before exit. Uses the same recursive
+ * `runAgentExecutionPipeline` pattern as the splitting → backlog-manager chain.
+ *
+ * Best-effort: errors are logged as warn but never break the implementation
+ * pipeline.
+ */
+async function tryDispatchPostCompletionReview(
+	agentResult: AgentResult & { prUrl: string },
+	project: ProjectConfig & { repo: string },
+	workItemId: string | undefined,
+	config: CascadeConfig,
+	executionConfig: AgentExecutionConfig,
+): Promise<void> {
+	try {
+		const prNumber = extractPRNumber(agentResult.prUrl);
+		if (!prNumber) return;
+
+		const { owner, repo } = parseRepoFullName(project.repo);
+		const { githubClient } = await import('../../github/client.js');
+
+		const pr = await githubClient.getPR(owner, repo, prNumber);
+		const headSha = pr.headSha;
+		if (!headSha) return;
+
+		const checkStatus = await githubClient.getCheckSuiteStatus(owner, repo, headSha);
+		if (!checkStatus.allPassing) {
+			logger.debug('Skipping post-completion review: CI not all passing', {
+				prNumber,
+				workItemId,
+			});
+			return;
+		}
+
+		const dedupKey = buildReviewDispatchKey(owner, repo, prNumber, headSha);
+		if (!claimReviewDispatch(dedupKey, 'post-completion-hook', { prNumber, headSha })) {
+			logger.info('Skipping post-completion review: already dispatched', {
+				prNumber,
+				workItemId,
+				dedupKey,
+			});
+			return;
+		}
+
+		logger.info('Post-completion review dispatch: firing review for implementation PR', {
+			prNumber,
+			workItemId,
+			headSha,
+		});
+
+		const reviewResult: TriggerResult = {
+			agentType: 'review',
+			agentInput: {
+				prNumber,
+				prBranch: pr.headRef,
+				repoFullName: project.repo,
+				headSha,
+				triggerType: 'ci-success',
+				triggerEvent: 'scm:check-suite-success',
+				workItemId,
+			},
+			prNumber,
+			prUrl: agentResult.prUrl,
+			prTitle: pr.title,
+			workItemId,
+		};
+
+		await runAgentExecutionPipeline(reviewResult, project, config, {
+			...executionConfig,
+			skipPrepareForAgent: true,
+			skipHandleFailure: true,
+			logLabel: 'review (post-completion)',
+		});
+	} catch (err) {
+		logger.warn('Post-completion review dispatch failed (non-fatal)', {
+			prUrl: agentResult.prUrl,
+			workItemId,
+			error: String(err),
+		});
+	}
+}
+
+/**
  * Post an agent summary to the PM work item after a successful agent run.
  * Cross-source concern: fires for all trigger types (GitHub, Trello, JIRA).
  *
@@ -395,7 +489,21 @@ export async function runAgentExecutionPipeline(
 
 	const { skipPrepareForAgent = false, onSuccess, onFailure, logLabel = 'Agent' } = executionConfig;
 
-	const workItemId = result.workItemId;
+	// Re-resolve workItemId at run time. The trigger handler (e.g. PROpenedTrigger)
+	// captures workItemId synchronously at webhook arrival, before any other
+	// pipeline has had time to link the PR. By the time we run, the DB may have
+	// caught up — preferring the live value avoids carrying a stale `undefined`
+	// into runAgent (and therefore agent_runs.work_item_id) and into the
+	// post-execution linkPRToWorkItem write.
+	const workItemId = await resolveWorkItemId(result.workItemId, project.id, result.prNumber);
+
+	// If we recovered a workItemId the trigger didn't have, patch agentInput so
+	// the corrected value flows into runAgent and into the agent_runs row that
+	// tryCreateRun (src/agents/shared/runTracking.ts) writes.
+	const agentInput =
+		workItemId && workItemId !== result.workItemId
+			? { ...result.agentInput, workItemId }
+			: result.agentInput;
 
 	let remainingBudgetUsd: number | undefined;
 	if (workItemId) {
@@ -448,7 +556,7 @@ export async function runAgentExecutionPipeline(
 	}
 
 	const agentResult = await runAgent(agentType, {
-		...result.agentInput,
+		...agentInput,
 		remainingBudgetUsd,
 		project,
 		config,
@@ -491,6 +599,21 @@ export async function runAgentExecutionPipeline(
 
 	if (onFailure && !agentResult.success) {
 		await onFailure(result, agentResult);
+	}
+
+	// Post-completion review dispatch: when an implementation agent succeeds
+	// with a PR, check CI and fire review deterministically. This guarantees
+	// review dispatch within seconds of completion, regardless of webhook
+	// timing (spec 007). Uses the same recursive pattern as the splitting →
+	// backlog-manager chain below.
+	if (agentType === 'implementation' && agentResult.success && agentResult.prUrl && project.repo) {
+		await tryDispatchPostCompletionReview(
+			agentResult as AgentResult & { prUrl: string },
+			project as ProjectConfig & { repo: string },
+			workItemId,
+			config,
+			executionConfig,
+		);
 	}
 
 	// After a successful splitting run, propagate auto label and optionally chain backlog-manager
@@ -544,43 +667,12 @@ async function propagateAutoLabelAfterSplitting(
 	const autoLabelId = pmConfig.labels.auto;
 	if (!autoLabelId) return null;
 
-	// List all backlog items and add auto label
+	// List backlog items via the unified call shape — provider self-resolves
+	// scope (Trello list / JIRA project / Linear team) and maps the CASCADE
+	// status key to its native identifier from its own config.
 	let backlogItems: Awaited<ReturnType<typeof provider.listWorkItems>>;
 	try {
-		if (provider.type === 'trello') {
-			// Trello: containerId is the list ID
-			const backlogListId = getTrelloConfig(project)?.lists?.backlog;
-			if (!backlogListId) {
-				logger.warn(
-					'propagateAutoLabelAfterSplitting: no backlog list configured for Trello, skipping',
-					{ workItemId },
-				);
-				return null;
-			}
-			backlogItems = await provider.listWorkItems(backlogListId);
-		} else if (provider.type === 'jira') {
-			// JIRA: use server-side JQL filtering by status to avoid fetching all project issues
-			const jiraConfig = getJiraConfig(project);
-			const backlogStatus = jiraConfig?.statuses?.backlog;
-			const projectKey = jiraConfig?.projectKey;
-			if (!backlogStatus || !projectKey) {
-				logger.warn(
-					'propagateAutoLabelAfterSplitting: no backlog status or projectKey configured for JIRA, skipping',
-					{ workItemId },
-				);
-				return null;
-			}
-			backlogItems = await provider.listWorkItems(projectKey, { status: backlogStatus });
-			logger.info('JIRA backlog items fetched for auto-label propagation', {
-				backlogCount: backlogItems.length,
-				projectKey,
-			});
-		} else {
-			logger.warn('propagateAutoLabelAfterSplitting: unsupported PM provider type', {
-				providerType: provider.type,
-			});
-			return null;
-		}
+		backlogItems = await provider.listWorkItems(undefined, { status: 'backlog' });
 	} catch (err) {
 		logger.warn('propagateAutoLabelAfterSplitting: failed to list backlog items', {
 			workItemId,

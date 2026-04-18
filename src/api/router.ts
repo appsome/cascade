@@ -4,6 +4,7 @@ import { agentTriggerConfigsRouter } from './routers/agentTriggerConfigs.js';
 import { authRouter } from './routers/auth.js';
 import { integrationsDiscoveryRouter } from './routers/integrationsDiscovery.js';
 import { organizationRouter } from './routers/organization.js';
+import { pmDiscoveryRouter } from './routers/pm-discovery.js';
 import { projectsRouter } from './routers/projects.js';
 import { promptsRouter } from './routers/prompts.js';
 import { prsRouter } from './routers/prs.js';
@@ -26,6 +27,9 @@ export const appRouter = router({
 	webhooks: webhooksRouter,
 	webhookLogs: webhookLogsRouter,
 	integrationsDiscovery: integrationsDiscoveryRouter,
+	pm: router({
+		discovery: pmDiscoveryRouter,
+	}),
 	prs: prsRouter,
 	workItems: workItemsRouter,
 	users: usersRouter,

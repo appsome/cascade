@@ -30,7 +30,9 @@ vi.mock('../../../src/router/acknowledgments.js', () => mockAcknowledgmentsModul
 vi.mock('../../../src/router/reactions.js', () => mockReactionsModule);
 
 // Register PM integrations in the registry via the canonical bootstrap path
-import '../../../src/integrations/bootstrap.js';
+import '../../../src/integrations/pm/index.js';
+import '../../../src/github/register.js';
+import '../../../src/sentry/register.js';
 
 import { JiraReadyToProcessLabelTrigger } from '../../../src/triggers/jira/label-added.js';
 import { checkTriggerEnabled } from '../../../src/triggers/shared/trigger-check.js';

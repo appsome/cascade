@@ -1,0 +1,241 @@
+---
+id: 009
+slug: pm-integration-hardening
+plan: 4
+plan_slug: migrate-linear
+level: plan
+parent_spec: docs/specs/009-pm-integration-hardening.md
+depends_on: [1-infra.md]
+status: done
+---
+
+# 009/4: Migrate Linear onto the Hardened PM Contracts
+
+> Part 4 of 5 in the 009-pm-integration-hardening plan. See [parent spec](../../specs/009-pm-integration-hardening.md).
+
+## Summary
+
+Migrate the Linear PM provider onto the hardening primitives. Linear is the payoff case: every one of the six recurring bug classes from the 2026-04 workstream is addressed here, either at the type level or in the behavioral harness.
+
+- **Config schema drift** → the Linear manifest owns its Zod schema, so the `projectId`-stripped-twice pattern (#1138 + #1142) cannot recur. Round-trip assertion in conformance.
+- **State-ID vs state-name** → branded `StateId` makes it a compile error to store a name where an ID is expected, which would have caught #1117 / #1137 / #1139 before they shipped.
+- **Auth-header divergence** → Biome rule + grep assertion from plan 1 proves no Linear-specific auth builder exists outside `_shared/auth-headers.ts`. #1112 / #1119 classes fail the build.
+- **Registration miss** → single entrypoint means Linear cannot be registered in some surfaces but not others; #1131 / #1134 / #1097 / #1118 classes are structurally impossible.
+- **`listWorkItems` contract mismatch** → harness runs the lifecycle scenario against Linear; #1133 class is covered.
+- **Hand-wired discovery sprawl** → Linear declares `teams`, `states`, `labels`, `projects` capabilities; `pm.discover` dispatches them; plan 5 deletes the hand-coded endpoints.
+
+**Components delivered:**
+- Linear manifest declares `configSchema` (includes `projectId` this time), `discoveryCapabilities` (`teams`, `states`, `labels`, `projects`), `wizardSpec` (credentials, container-pick = team-pick, status-mapping, label-mapping, project-scope, webhook-url-display).
+- Linear adapter implements `discover('teams' | 'states' | 'labels' | 'projects')` via the existing Linear GraphQL client.
+- Linear adapter accepts branded `StateId` / `LabelId` / `ContainerId` (= team UUID) at public surfaces — including the methods involved in #1117, #1137, #1139.
+- Linear wizard consumes standard steps from `renderStandardStep`; only Linear-specific UI remains.
+- Behavioral conformance harness runs full lifecycle against Linear using an in-memory mock GraphQL client, exercising the inline-checklist round-trip from spec 008.
+- `LinearConfigSchema` in `src/config/schema.ts` marked `@deprecated`; plan 5 deletes.
+
+**Deferred to later plans in this spec:**
+- Cleanup of legacy Linear tRPC procedures (`verifyLinear`, `createLinearLabel`, `createLinearLabels`) — plan 5.
+- Deletion of `LinearConfigSchema` — plan 5.
+- Routing `configMapper` through registry — plan 5.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #2** (all 3 providers migrated) — **partial (3/3)** — Linear migrated; spec AC #2 is now fully covered when this plan lands.
+- **Spec AC #3** (state/label name→ID compile error) — **partial** — Linear adopts branded IDs; combined with plans 2/3 this AC is fully covered.
+- **Spec AC #4** (no divergent auth header) — **partial** — Linear's three divergent builders from #1119 are guaranteed gone (grep + Biome).
+- **Spec AC #6** (wizard from manifest) — **partial** — Linear wizard renders standard steps via generator.
+- **Spec AC #7** (unified discovery) — **partial** — Linear's discovery flows through `pm.discover`.
+- **Spec AC #8** (lifecycle harness vs every provider) — **partial** — Linear passes full lifecycle scenario (including inline-checklist round-trip from spec 008).
+- **Spec AC #9** (config round-trip) — **partial** — Linear's manifest declares `configSchema` with `projectId`; round-trip passes.
+
+---
+
+## Depends On
+
+- Plan 1 (infra) — provides branded IDs, manifest fields, wizard generator, `pm.discover`, behavioral harness, fake fixture, single entrypoint, auth-header lint.
+- Plans 2 and 3 are not hard dependencies; Linear's migration is structurally independent. `/implement` can run plans 2/3/4 in parallel review tracks.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Linear manifest: declare `configSchema` (with `projectId`)
+
+**Tests first** (`tests/unit/pm/linear/manifest-config-schema.test.ts`):
+- Round-trip: parse → re-serialize → re-parse → deep-equal including `projectId`.
+- `projectId` is optional (preserving the post-spec-005 behavior).
+- Explicit regression test mirroring #1142: a config object with `projectId` survives round-trip through the manifest's schema (the test that would have caught the bug).
+- Rejects missing `apiKey`, `teamId`.
+- Diff-test against today's `LinearConfigSchema` to prove no shape change beyond the existing fields.
+
+**Implementation** (`src/integrations/pm/linear/config-schema.ts`):
+- New file exporting the Linear Zod schema including `projectId` and any `statusMapping` / `labelMapping` fields.
+- Wire `configSchema: linearConfigSchema` on the manifest.
+
+### 2. Linear manifest: declare `discoveryCapabilities`
+
+**Tests first** (`tests/unit/pm/linear/manifest-discovery.test.ts`):
+- `manifest.discoveryCapabilities` contains `teams`, `states`, `labels`, `projects`.
+- `adapter.discover('teams', { credentialHash })` returns `{ id: ContainerId, name: string, key: string }[]`.
+- `adapter.discover('states', { containerId })` returns `{ id: StateId, name: string, type: 'triage'|'backlog'|'unstarted'|'started'|'completed'|'canceled' }[]`.
+- `adapter.discover('labels', { containerId })` returns `{ id: LabelId, name: string, color?: string }[]`.
+- `adapter.discover('projects', { containerId })` returns `{ id: string, name: string }[]` (Linear projects; optional scope from spec 005).
+
+**Implementation**:
+- `src/integrations/pm/linear/manifest.ts` — declare capabilities.
+- `src/integrations/pm/linear/adapter.ts` — implement `discover` switch, delegating to the existing Linear GraphQL client (the methods added in PR #1104).
+
+### 3. Linear adapter: adopt branded IDs (the payoff)
+
+**Tests first** (`tests/unit/pm/linear/adapter-branded-ids.test.ts`):
+- Type-level: `adapter.moveWorkItem(id, 'In Progress')` is a compile error; `adapter.moveWorkItem(id, parseStateId('<uuid>'))` compiles. (Regression guard for #1137.)
+- Type-level: status-mapping storage accepts only `StateId`. (Regression guard for #1117.)
+- Type-level: checklist sub-issue creation accepts only `StateId` for the sub-issue's state. (Regression guard for #1139.)
+- Runtime: passing a non-UUID string through `parseStateId` throws `InvalidIdError` with a message pointing to Linear's ID format.
+
+**Implementation** (`src/integrations/pm/linear/adapter.ts`):
+- Update signatures for `listWorkItems`, `createWorkItem`, `moveWorkItem`, `setStatusMapping`, `getChecklists`, `addChecklistItem`, `updateChecklistItem` — all `StateId` / `LabelId` / `ContainerId` branded.
+- `unwrap()` at the boundary before hitting the GraphQL client.
+- Audit every call site in `src/integrations/pm/linear/` for bare string IDs — if any remain, either they're user-supplied (wrap in `parseStateId` with error reporting) or they're internal GraphQL-response strings (wrap at the deserialisation boundary).
+
+### 4. Linear manifest: declare `wizardSpec`
+
+**Tests first** (`tests/unit/pm/linear/manifest-wizard-spec.test.ts`):
+- Standard steps in order: `credentials`, `container-pick` (team), `status-mapping`, `label-mapping`, `project-scope`, `webhook-url-display`.
+- Custom steps include any Linear-specific UI (reaction configuration if applicable).
+
+**Implementation**:
+- `src/integrations/pm/linear/manifest.ts` — set `wizardSpec`.
+
+### 5. Linear wizard: consume `renderStandardStep`
+
+**Tests first** (`tests/unit/web/linear-wizard-generator.test.tsx`):
+- Wizard renders standard steps via the generator.
+- `project-scope` step works correctly (from spec 005).
+- Label-dropdown UX (from #1121) still works via the standard `label-mapping` step.
+- Snapshot matches current per-provider wizard output.
+
+**Implementation**:
+- `web/src/components/projects/pm-providers/linear/wizard.ts` — consume `manifest.wizardSpec` via `renderStandardStep`.
+- Remove per-provider duplicates of standard steps.
+
+### 6. Opt Linear into behavioral conformance harness
+
+**Tests first** — the harness (plan 1) picks up Linear once `lifecycle.enabled: true` is declared.
+
+**Implementation**:
+- `src/integrations/pm/linear/manifest.ts` — `lifecycle.enabled: true`, point at `tests/helpers/linearLifecycleFixture.ts`.
+- `tests/helpers/linearLifecycleFixture.ts` — in-memory mock Linear GraphQL client driving the adapter through the lifecycle, including inline-checklist round-trip (from spec 008).
+
+### 7. Regression tests for the six bug classes
+
+**Tests first** (`tests/unit/pm/linear/regression-2026-04.test.ts`):
+- #1117 / #1137 / #1139: assert that the adapter rejects (compile-time OR `parseStateId` throw) any attempt to pass a state name where a state ID is expected, at every call site.
+- #1138 / #1142: round-trip identity test for `projectId` through the manifest's config schema.
+- #1112 / #1119: `Bearer ` does not appear in any Linear-specific file outside `_shared/auth-headers.ts` (subset of the plan 1 global assertion, but Linear-scoped with an explicit regression comment).
+- #1133: Linear's `listWorkItems` returns the same shape as Trello/JIRA (dynamic assertion against the manifest's declared `WorkItem` schema).
+- #1118 / #1131 / #1134 / #1097: assert that `extractProjectIdFromJob({ type: 'linear', projectId: 'p1' })` returns `'p1'`, and that the single entrypoint covers Linear in every runtime surface (assertions already in plan 1's `entrypoint-usage.test.ts`).
+
+**Implementation**:
+- This is a test-only file; no production code changes. Every assertion either passes today (because the prior fix PR landed) or is a defense-in-depth guard.
+
+### 8. Central schema deprecation
+
+**Tests first** — N/A.
+
+**Implementation** (`src/config/schema.ts`):
+- Mark `LinearConfigSchema` `@deprecated`. Keep exported until plan 5.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/pm/linear/manifest-config-schema.test.ts` — 5 tests (including #1142 regression).
+- [ ] `tests/unit/pm/linear/manifest-discovery.test.ts` — 5 tests.
+- [ ] `tests/unit/pm/linear/adapter-branded-ids.test.ts` — 5 tests.
+- [ ] `tests/unit/pm/linear/manifest-wizard-spec.test.ts` — 2 tests.
+- [ ] `tests/unit/web/linear-wizard-generator.test.tsx` — 3 tests.
+- [ ] `tests/unit/pm/linear/regression-2026-04.test.ts` — 6 tests (one per bug class).
+- [ ] `tests/unit/integrations/pm-conformance.test.ts` — behavioral asserts now exercise Linear.
+
+### Integration tests
+- None — all Linear tests run against in-memory mock.
+
+### Acceptance tests
+- [ ] Full PM lifecycle (create → list → move → inline-checklist add/toggle → comment → delete) passes against Linear mock.
+- [ ] `cascade-tools pm list --project <linear-project>` output unchanged.
+- [ ] Dashboard wizard renders Linear setup identically.
+- [ ] All six regression tests pass green, proving the 2026-04 bug classes are type-locked or harness-locked.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `linearManifest.configSchema` declared, passes round-trip, and explicitly preserves `projectId`.
+2. `linearManifest.discoveryCapabilities` declares `teams`, `states`, `labels`, `projects`; adapter's `discover` returns expected shapes.
+3. Linear adapter's public surfaces accept branded `StateId` / `LabelId` / `ContainerId`; bare strings are compile errors at call sites involved in #1117, #1137, #1139.
+4. `linearManifest.wizardSpec` declared; wizard renders standard steps via generator with no visual regression; project-scope + label-dropdown UX preserved.
+5. Behavioral conformance harness runs full lifecycle against Linear (including inline-checklist round-trip) and passes.
+6. `LinearConfigSchema` in `src/config/schema.ts` marked `@deprecated`.
+7. Six regression tests (one per 2026-04 bug class) pass.
+8. All new/modified code has tests.
+9. `npm run build` passes.
+10. `npm test` passes.
+11. `npm run lint` passes.
+12. `npm run typecheck` passes.
+13. No user-visible regression in Linear setup wizard, CLI, or agent runs.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Note "Linear migrated to hardened contracts"; full rewrite in plan 5. |
+| `CHANGELOG.md` | Entry: "feat(pm): migrate Linear onto hardened PM contracts; type-lock the six bug classes from the 2026-04 workstream". |
+
+---
+
+## Out of Scope (this plan)
+
+Deferred to plan 5:
+- Deletion of legacy Linear tRPC procedures (`verifyLinear`, `createLinearLabel`, `createLinearLabels`).
+- Deletion of `LinearConfigSchema`.
+- Routing `configMapper` through manifest registry.
+- Final doc rewrite, root `CLAUDE.md` update, spec 006 forward-reference.
+
+Originally out of scope for the spec:
+- SCM / alerting integration changes.
+- Adding a new PM provider.
+- Agent-facing PM interface changes.
+- Credential storage/encryption changes.
+- Inline-checklist engine changes beyond round-trip coverage.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1 (configSchema incl projectId) — `src/integrations/pm/linear/config-schema.ts` with explicit `projectId: z.string().optional()`; 9 tests including the #1142 regression guard
+- [x] AC #2 (discoveryCapabilities) — teams/states/labels/projects wired; `classifyLinearStateType` maps Linear types to canonical categories; 7 tests
+- [x] AC #3 (branded IDs) — moveWorkItem destination/addLabel/removeLabel/listWorkItems narrowed via method bivariance; `parseStateId` throws `InvalidIdError` on empty input
+- [x] AC #4 (wizardSpec + generator adoption) — 6 standard steps including project-scope (spec 005); 5 tests
+- [x] AC #5 (lifecycle harness) — `lifecycle.fixtureKey: 'linear'` + `linearLifecycleFixture` registered; conformance 63/17 → 65/15
+- [x] AC #6 (LinearConfigSchema deprecated) — jsdoc + explicit #1138/#1142 reference
+- [x] AC #7 (regression tests for 6 bug classes) — `tests/unit/pm/linear/regression-2026-04.test.ts` ships 12 tests covering all six 2026-04 bug classes (#1117/#1137/#1139, #1138/#1142, #1112/#1119, #1133, #1097/#1118/#1131/#1134)
+- [x] AC #8 (tests) — 5 new test files, 38 new tests
+- [x] AC #9 (build) — npm run build passes
+- [x] AC #10 (tests) — npm test: 429 files / 8049 pass / 15 skip
+- [x] AC #11 (lint) — clean
+- [x] AC #12 (typecheck) — clean
+- [x] AC #13 (no regression) — all 135 pre-existing Linear tests still pass
+
+## Plan divergence notes
+
+1. **`createWorkItem` stays on `CreateWorkItemConfig`** — same TS object-property invariance issue as plans 2/3. Internal narrowing via `parseStateId` at the boundary when needed.
+2. **API credentials in `project_credentials`**, not the config — same as Trello/JIRA. Plan's "rejects missing apiKey, teamId" was scoped to teamId only (apiKey lives in credentials).
+3. **`labels` color: `null` → `undefined`** — Linear's `getTeamLabels` returns `color: string | null`; the discovery result type uses `color?: string`. Explicit conversion `l.color ?? undefined` at the boundary.
+4. **Lifecycle fixture reuses the fake** — same pattern as Trello/JIRA. Real Linear adapter lifecycle coverage (including inline-checklist round-trip via spec 008) lives in `tests/unit/pm/linear/adapter.test.ts` which uses vi.mock.
+5. **Regression test file is **the** payoff** — 12 tests explicitly reference every 2026-04 bug number. Future reviewers can `git grep "#1117"` etc. and land on the guard.

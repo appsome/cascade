@@ -3,7 +3,55 @@
  * future project-management integrations must implement.
  */
 
+import type { ContainerId, LabelId, StateId } from './ids.js';
+
 export type PMType = 'trello' | 'jira' | 'linear';
+
+// ── Discovery capability type machinery ───────────────────────────────────
+// Plan 009/1 introduces an optional `discover?` method on PMProvider that
+// providers use to surface teams/boards/labels/states/etc. through a single
+// generic tRPC endpoint. The capability union + per-capability input/output
+// types give the endpoint discriminated typing; providers opt in by
+// declaring `discoveryCapabilities` on their manifest AND implementing
+// `discover(capability, args)` on their adapter.
+
+/** Every discovery capability a PM provider may declare support for. */
+export type DiscoveryCapability =
+	| 'teams'
+	| 'boards'
+	| 'labels'
+	| 'states'
+	| 'projects'
+	| 'customFields'
+	| 'containers';
+
+/**
+ * Per-capability argument shapes. Top-level lookups (teams/boards/projects/
+ * containers) take an optional containerId; nested lookups
+ * (labels/states/customFields) require one.
+ */
+export type DiscoveryArgs<K extends DiscoveryCapability> = K extends 'containers'
+	? Record<string, never>
+	: K extends 'teams' | 'boards' | 'projects'
+		? { containerId?: ContainerId }
+		: K extends 'labels' | 'states' | 'customFields'
+			? { containerId: ContainerId }
+			: never;
+
+/** Per-capability result shapes. */
+export type DiscoveryResult<K extends DiscoveryCapability> = K extends 'labels'
+	? Array<{ id: LabelId; name: string; color?: string }>
+	: K extends 'states'
+		? Array<{
+				id: StateId;
+				name: string;
+				category: 'todo' | 'in_progress' | 'done' | 'canceled' | 'unknown';
+			}>
+		: K extends 'customFields'
+			? Array<{ id: string; name: string; type: string }>
+			: K extends 'teams' | 'boards' | 'containers' | 'projects'
+				? Array<{ id: ContainerId; name: string }>
+				: never;
 
 /**
  * A reference to an inline media item (image, etc.) embedded in a work item
@@ -81,7 +129,15 @@ export interface CreateWorkItemConfig {
 
 /** Optional filters for listWorkItems to enable server-side filtering */
 export interface ListWorkItemsFilter {
-	/** Filter by status name (JIRA: adds status filter to JQL; Trello: ignored since lists are status-scoped) */
+	/**
+	 * CASCADE-canonical status key (e.g. `'backlog'`, `'todo'`, `'inProgress'`).
+	 * Each provider maps this through its own config:
+	 * - Trello: looks up `config.lists[status]` to find the list ID.
+	 * - JIRA: looks up `config.statuses[status]` for the status name in JQL.
+	 * - Linear: looks up `config.statuses[status]` for the state UUID.
+	 *
+	 * Falls through to literal value when no mapping exists (backwards compat).
+	 */
 	status?: string;
 }
 
@@ -95,7 +151,16 @@ export interface PMProvider {
 	addComment(id: string, text: string): Promise<string>;
 	updateComment(id: string, commentId: string, text: string): Promise<void>;
 	createWorkItem(config: CreateWorkItemConfig): Promise<WorkItem>;
-	listWorkItems(containerId: string, filter?: ListWorkItemsFilter): Promise<WorkItem[]>;
+	/**
+	 * List work items in a container (Trello list / JIRA project / Linear team).
+	 *
+	 * Pass `undefined` for `containerId` to fetch by status — each provider
+	 * self-resolves the natural scope from its config: Trello looks up
+	 * `lists[filter.status]`, JIRA defaults to `projectKey`, Linear defaults
+	 * to `teamId`. Returns `[]` when neither containerId nor a resolvable
+	 * scope is available.
+	 */
+	listWorkItems(containerId: string | undefined, filter?: ListWorkItemsFilter): Promise<WorkItem[]>;
 
 	// Lifecycle
 	moveWorkItem(id: string, destination: string): Promise<void>;
@@ -132,4 +197,22 @@ export interface PMProvider {
 	// Utility
 	getWorkItemUrl(id: string): string;
 	getAuthenticatedUser(): Promise<{ id: string; name: string; username: string }>;
+
+	/**
+	 * Optional — generic discovery dispatch. Providers that implement this
+	 * method must also declare the corresponding capability flags on their
+	 * `PMProviderManifest.discoveryCapabilities`. The `pm.discover` tRPC
+	 * endpoint routes to this method; the wizard consumes it through the
+	 * generic provider-hooks shell instead of per-provider tRPC procedures.
+	 *
+	 * Plans 2, 3, 4 migrate Trello, JIRA, and Linear onto this method. While
+	 * the method is optional, per-provider method signatures (moveWorkItem,
+	 * createWorkItem, etc.) continue to accept plain `string` at the
+	 * interface level; adapter implementations narrow to branded types in
+	 * their migration plans.
+	 */
+	discover?<K extends DiscoveryCapability>(
+		capability: K,
+		args: DiscoveryArgs<K>,
+	): Promise<DiscoveryResult<K>>;
 }

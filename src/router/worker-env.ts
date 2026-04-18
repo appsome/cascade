@@ -7,6 +7,7 @@
 
 import type { Job } from 'bullmq';
 import { findProjectByRepo, getAllProjectCredentials } from '../config/provider.js';
+import { extractProjectIdFromJobViaRegistry } from '../integrations/pm/_shared/project-id-extractor.js';
 import { captureException } from '../sentry.js';
 import { logger } from '../utils/logging.js';
 import { routerConfig } from './config.js';
@@ -16,16 +17,26 @@ import type { CascadeJob } from './queue.js';
  * Extract projectId from job data for credential resolution.
  * Different job types have the projectId in different locations.
  *
+ * Resolution order:
+ *   1. PM provider manifest registry — any registered PM provider whose
+ *      `extractProjectIdFromJob` returns non-null wins. Plan 006/1 lands this
+ *      path; plans 006/2–006/4 migrate real providers into it.
+ *   2. Legacy per-provider branches below — kept during the migration window.
+ *
  * Note: Dashboard jobs (manual-run, retry-run, debug-analysis) come through
  * cascade-dashboard-jobs queue and are cast to CascadeJob for spawning.
  */
 export async function extractProjectIdFromJob(data: CascadeJob): Promise<string | null> {
+	// Manifest registry first — dormant during plan 006/1 because no real
+	// providers register here yet, so this returns null and we fall through.
+	const fromRegistry = await extractProjectIdFromJobViaRegistry(data);
+	if (fromRegistry !== null) return fromRegistry;
+
 	// Use type assertion since dashboard jobs are cast to CascadeJob
 	const jobData = data as unknown as { type: string; projectId?: string; repoFullName?: string };
 
-	if (jobData.type === 'trello' || jobData.type === 'jira' || jobData.type === 'linear') {
-		return jobData.projectId ?? null;
-	}
+	// All PM providers (trello / jira / linear) now route through the
+	// manifest registry above. Non-PM job types remain below.
 	if (jobData.type === 'github') {
 		if (!jobData.repoFullName) return null;
 		const project = await findProjectByRepo(jobData.repoFullName);

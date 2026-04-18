@@ -23,7 +23,7 @@ Three separate services, **no monolithic server mode**:
 
 Flow: `PM/SCM/alerting webhook → Router → Redis → Worker → TriggerRegistry → Agent → Code → PR`.
 
-Integration abstraction lives in `src/integrations/`. For **adding a new integration, trigger, or agent**, see @src/integrations/README.md — don't improvise, it covers all extension points.
+Integration abstraction lives in `src/integrations/`. For **adding a new PM provider**, see @src/integrations/README.md — PM providers (Trello, JIRA, Linear) use the `PMProviderManifest` registry with a **behavioral conformance harness** (spec 009 — config round-trip, discovery shape, full lifecycle scenario, auth-header provenance, single-entrypoint invariant). Each provider owns its Zod config schema (`src/integrations/pm/<provider>/config-schema.ts`) as the single source of truth — the central `src/config/schema.ts` imports it. PM adapter method signatures use branded `StateId` / `LabelId` / `ContainerId` from `src/pm/ids.ts` to make state-name-vs-ID confusion a compile error at direct-adapter call sites. All runtime surfaces (router, worker, CLI, dashboard) register integrations through a single entrypoint at `src/integrations/entrypoint.ts`. SCM (GitHub) and alerting (Sentry) still use the legacy `IntegrationModule` pattern via self-registration in `src/github/register.ts` + `src/sentry/register.ts`. Don't improvise; the README covers both patterns.
 
 ## PR checkout (worker) — gotcha
 
@@ -116,6 +116,10 @@ cascade projects trigger-set <project-id> --agent <type> --event <event> --enabl
 ```
 
 Some triggers take params (e.g. `review` + `scm:check-suite-success` accepts `{"authorMode":"own"|"external"}`). Legacy configs on `project_integrations.triggers` are auto-migrated on merge to `dev`/`main`.
+
+**Work-item concurrency lock** — the router prevents duplicate agent runs via a per-agent-type lock on `(projectId, workItemId, agentType)`. Only same-type duplicates are blocked; **different agent types can run concurrently** on the same work item (e.g. review starts while implementation's container is still cleaning up). The lock has a 30-minute TTL hard ceiling that auto-clears stale entries after router restart.
+
+**Post-completion review dispatch** — when an implementation agent succeeds with a PR, the execution pipeline checks CI status and fires the review agent deterministically (before the container exits). This guarantees review dispatch within seconds of implementation completion, regardless of GitHub webhook timing. Uses the same `claimReviewDispatch` dedup key as the `check-suite-success` trigger, so the two paths cannot double-enqueue.
 
 ## Review agent — context shape (debugging)
 

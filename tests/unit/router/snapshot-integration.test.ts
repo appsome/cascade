@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
 	mockDockerCreateContainer,
 	mockDockerGetContainer,
+	mockDockerGetImage,
 	mockLoadProjectConfig,
 	mockGetSnapshot,
 	mockRegisterSnapshot,
@@ -23,6 +24,12 @@ const {
 } = vi.hoisted(() => ({
 	mockDockerCreateContainer: vi.fn(),
 	mockDockerGetContainer: vi.fn(),
+	// commitContainerToSnapshot inspects the freshly committed image to
+	// populate imageSizeBytes; default to a fixed size so registerSnapshot
+	// receives a deterministic 4th argument.
+	mockDockerGetImage: vi.fn().mockReturnValue({
+		inspect: vi.fn().mockResolvedValue({ Size: 1_234_567_890 }),
+	}),
 	mockLoadProjectConfig: vi.fn().mockResolvedValue({ projects: [], fullProjects: [] }),
 	mockGetSnapshot: vi.fn().mockReturnValue(undefined),
 	mockRegisterSnapshot: vi.fn(),
@@ -37,6 +44,7 @@ vi.mock('dockerode', () => ({
 	default: vi.fn().mockImplementation(() => ({
 		createContainer: mockDockerCreateContainer,
 		getContainer: mockDockerGetContainer,
+		getImage: mockDockerGetImage,
 	})),
 }));
 
@@ -107,6 +115,10 @@ vi.mock('../../../src/router/config.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { getAllProjectCredentials } from '../../../src/config/provider.js';
+// Trello resolution goes through the PM provider manifest registry as of
+// plan 006/2 — the side-effect import registers the manifest before spawn
+// resolves the job's projectId.
+import '../../../src/integrations/pm/trello/index.js';
 import { detachAll, spawnWorker } from '../../../src/router/container-manager.js';
 import type { CascadeJob } from '../../../src/router/queue.js';
 
@@ -153,6 +165,19 @@ function setupMockContainer(exitCode = 0) {
 		resolveWait: (code = exitCode) => resolveWait({ StatusCode: code }),
 	};
 }
+
+// ---------------------------------------------------------------------------
+// File-wide setup — vi.restoreAllMocks() in per-describe afterEach hooks wipes
+// mockReturnValue on hoisted mocks. Re-arm the docker getImage mock here so
+// commitContainerToSnapshot's image-size lookup always resolves to a known
+// value across every describe.
+// ---------------------------------------------------------------------------
+
+beforeEach(() => {
+	mockDockerGetImage.mockReturnValue({
+		inspect: vi.fn().mockResolvedValue({ Size: 1_234_567_890 }),
+	});
+});
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -427,6 +452,7 @@ describe('spawnWorker — snapshot hit (existing snapshot)', () => {
 			'proj-snap',
 			'card-snap',
 			expect.stringContaining('cascade-snapshot-proj-snap-card-snap'),
+			1_234_567_890, // size from mockDockerGetImage's inspect mock
 		);
 	});
 });

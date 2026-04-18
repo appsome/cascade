@@ -45,7 +45,9 @@ vi.mock('../../../src/db/repositories/prWorkItemsRepository.js', () => ({
 }));
 
 // Register PM integrations in the registry via the canonical bootstrap path
-import '../../../src/integrations/bootstrap.js';
+import '../../../src/integrations/pm/index.js';
+import '../../../src/github/register.js';
+import '../../../src/sentry/register.js';
 
 import { lookupWorkItemForPR } from '../../../src/db/repositories/prWorkItemsRepository.js';
 import { githubClient } from '../../../src/github/client.js';

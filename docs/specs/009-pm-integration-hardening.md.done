@@ -1,0 +1,144 @@
+---
+id: 009
+slug: pm-integration-hardening
+level: spec
+title: PM Integration Hardening — Make the Next Provider Boring
+created: 2026-04-18
+status: done
+---
+
+# 009: PM Integration Hardening — Make the Next Provider Boring
+
+## Problem & Motivation
+
+Over the last ten days CASCADE shipped its third PM provider (Linear) and the workstream exposed that the plug-and-play manifest pattern delivered by spec 006 is **structurally correct but contractually thin**. The initial Linear integration landed in ~15 PRs of expected work (#1094–#1108). Another **18 PRs of corrective work** followed (#1112–#1142), each a real production defect or papercut. Those 18 PRs cluster into six repeating shapes — every one a case where the manifest *allowed* drift rather than *preventing* it:
+
+- **Config schema drift** — `projectId` was stripped by a Zod schema that did not declare it. The same class of bug was fixed in the mapper layer (#1138) and then in the schema layer (#1142) — twice, at two different depths, for the same missing field.
+- **State-ID vs state-name confusion** — Linear demands UUIDs; the adapter silently accepted names in three different places (#1117 status mapping, #1137 issue creation, #1139 checklist sub-issue), each caught only when a user hit it.
+- **Auth header divergence** — three hand-rolled copies of the Linear auth header existed across the codebase; the `Bearer ` prefix bug (#1112) was fixed once, then shipped again from two other copies (#1119).
+- **Registration miss** — the provider was registered in the router and worker but not in the CLI bootstrap, not in the worker extractor, and not in the CLI PM-scope synth path (#1097, #1118, #1131, #1134). Each miss surfaced only when a specific user path exercised it.
+- **Contract mismatch across adapters** — `listWorkItems` returned different shapes for different providers, silently compiling because TypeScript's structural typing accepted both (#1133).
+- **Hand-wired discovery & wizard sprawl** — every provider added 3–5 bespoke tRPC endpoints for teams/boards/labels/states (#1103, #1104, #1105) and a bespoke wizard pane despite doing semantically identical work (#1113, #1121).
+
+The meta-finding: the conformance harness today asserts that the manifest is **wired** but not that the adapter **behaves** correctly. Adapters can diverge on schema shape, ID types, `listWorkItems` return shape, auth header origin, and registration completeness without any test failing. The next PM provider (Asana, GitLab, ClickUp, or any other we add) will reproduce the same 18-PR tail unless we fix this.
+
+This spec is the contract-hardening pass that turns the manifest from a wiring convention into a behavioral contract. The outcome we want: the next PM provider ships in a single PR with zero follow-up bug tail, because every drift vector that broke Linear is caught at the manifest or conformance layer rather than in production.
+
+---
+
+## Goals
+
+- A new PM provider can be added and validated against a full behavioral contract in a single reviewable PR.
+- Every drift vector that caused a Linear follow-up PR (config schema, state/label IDs, auth header builders, registration completeness, `listWorkItems` shape, discovery endpoint wiring, wizard duplication) is either impossible (type-level) or caught by the conformance harness before merge.
+- The conformance harness exercises **behavior**, not only wiring — including a full lifecycle run against an in-memory fake provider that gives us a regression bed.
+- A single canonical entrypoint guarantees every runtime surface (router, worker, CLI, dashboard API, tests) sees the same set of registered providers.
+- Standard wizard steps (credential entry, container/project scope pick, status mapping, label mapping, webhook URL display) are generated from manifest declarations; provider folders contain only genuinely provider-specific UI.
+
+---
+
+## Non-goals
+
+- Unifying SCM (GitHub) or alerting (Sentry) integrations onto the manifest pattern. A future spec may do so; this one is strictly PM.
+- Adding a new PM provider. The hardening is validated by re-running it against Trello, JIRA, and Linear with no behavior change. The next provider is out of scope.
+- Reworking the agent-facing PM API surface. Adapters keep the interface they have; this spec tightens what types pass through it, not what methods exist.
+- Changing the wizard's hosting/rendering framework. Generating standard steps from manifest declarations is in scope; rewriting how those steps render is not.
+- Migrating credential storage, encryption, or the `project_credentials` table. Already handled by spec 004.
+
+---
+
+## Constraints
+
+- Must preserve behavioral parity with today for Trello, JIRA, and Linear. No user-visible regressions in the wizard, CLI, or agent runs.
+- The migration path must be incremental (one provider per plan) so each step is reviewable independently and ships green.
+- Must not expand the runtime surface area in a way that slows container cold start or adds mandatory new env variables.
+- Any behavioral contract added to the conformance harness must run fast enough to stay inside the existing unit-test budget (the harness is imported by CI on every PR); the in-memory fake must not require network or Postgres.
+- No changes to agent-facing trigger categories (`pm:…`, `scm:…`, `alerting:…`) — those are part of a stable contract used by agent configs in the database.
+
+---
+
+## User stories / Requirements
+
+1. **As a CASCADE contributor adding a new PM provider**, I can scaffold one provider folder + one wizard folder, declare a manifest, and my test run tells me exactly which contract surfaces are missing — with actionable, specific failure messages — before I open a PR.
+2. **As a CASCADE contributor**, I never have to remember to register my provider in multiple bootstrap entry points; a single import covers every runtime surface.
+3. **As a CASCADE contributor**, I cannot accidentally store a state name where a state ID is expected, because the type system rejects the assignment at compile time.
+4. **As a CASCADE contributor**, I cannot add a second copy of the auth header builder for my provider, because the conformance harness fails the build when outbound HTTP in my provider does not use the shared auth-header helpers.
+5. **As a CASCADE contributor**, I never have to add a new tRPC endpoint to surface a standard discovery capability (teams, boards, labels, states, projects). Declaring the capability on the manifest is sufficient.
+6. **As a CASCADE contributor**, when I change a shared type in the PM core, the conformance harness runs the full lifecycle against every registered provider plus an in-memory fake, so I find breaking changes before CI does.
+7. **As an operator** setting up a project, the wizard behaves consistently across providers for the steps that are semantically identical (credentials, container pick, status mapping, label mapping), with provider-specific deviations restricted to genuinely provider-specific concerns.
+8. **As a CASCADE user** whose project uses any PM provider, the CLI (`cascade-tools pm …`) works without special casing — the same scope synth and registration path covers all providers.
+
+---
+
+## Research Notes
+
+- **Pact / Consumer-Driven Contract Testing** distinguishes *explicit* contracts (declared schemas) from *implicit* contracts (harness-enforced). The current PM conformance harness is purely implicit. Lifting some contracts to explicit (manifest-declared schema, declared discovery capabilities, declared wizard spec) lets the harness validate declared-vs-implementation equivalence rather than hand-rolling per-contract asserts. ([Pact docs](https://docs.pact.io/), [Microsoft CDC playbook](https://microsoft.github.io/code-with-engineering-playbook/automated-testing/cdc-testing/))
+- **Terraform Plugin Framework** is the closest-fit paradigm: every provider declares a typed schema with pluggable validators; schemas are themselves unit-testable. Acceptance tests exercise a full create → read → update → delete lifecycle via a stateful test harness. The analogue for CASCADE is a lifecycle harness that exercises `createWorkItem → listWorkItems → moveWorkItem → createChecklist → postComment → deleteWorkItem` against every provider plus an in-memory fake. ([Terraform Plugin Framework — acceptance tests](https://developer.hashicorp.com/terraform/plugin/framework/acctests), [schema validation](https://developer.hashicorp.com/terraform/plugin/framework/validation))
+- **Solid Conformance Test Harness** validates the pattern of one test runtime against many conformant implementations, confirming the "single harness, many providers" shape is mature prior art. ([Solid CTH](https://github.com/solid-contrib/conformance-test-harness/blob/main/README.md))
+- **Branded / nominal types in TypeScript** are the standard idiom for eliminating "stringly typed" confusion — the mechanism we need to make state-ID-vs-name drift a compile error rather than a production defect.
+- **The "many-bugs-from-one-root-cause" failure mode** (three divergent copies of a helper, two-layer schema drift) is a recognised symptom of insufficient structural enforcement. The fix is to make the wrong thing *unrepresentable* — a principle attributed to Yaron Minsky and well-known from OCaml/Haskell literature — rather than to catch it in review.
+
+---
+
+## Open Source Decisions
+
+| Tool | Solves | Decision | Reason |
+|------|--------|----------|--------|
+| [Pact](https://docs.pact.io/) | Consumer-driven contract testing across services | **Skip** | Our providers are in-process; Pact is optimised for HTTP service contracts. Its ideas inform our harness; its implementation doesn't fit. |
+| [Zod](https://zod.dev/) | Declarative schema + parser | **Reuse** (already adopted) | Already the project standard. The spec uses it harder: manifest owns the schema, harness round-trips it. No new dependency. |
+| Terraform Plugin Framework (Go, not reusable) | Conformance patterns | **Inspiration only** | Wrong language, wrong domain. We steal the schema-first + lifecycle-harness pattern and implement it in our TS stack. |
+| Branded-type helper libraries (e.g. [ts-brand](https://github.com/kourge/ts-brand)) | Nominal typing for IDs | **Skip (build inline)** | 8 lines of TypeScript. A dependency is not worth the reach-in. |
+| A grep-style "banned import" lint rule (e.g. `no-restricted-imports`) | Forbid direct auth-header assembly | **Reuse ESLint/Biome primitives** | We already run Biome; the rule is a config entry, not a new tool. |
+
+---
+
+## Strategic decisions
+
+1. **Manifest owns the config schema.** The `PMProviderManifest` declares its Zod config schema; the central config module composes manifest schemas via the registry. Round-trip identity (save → load → equal) is asserted by the conformance harness. Reason: eliminates the two-layer drift class that caused the `projectId` bug at two different depths.
+2. **Typed, branded ID refs for state, label, and container.** Public PM-adapter surfaces (move, create, status-mapping storage) accept only branded ID types; bare `string` is rejected at compile time. Parsers at the wizard/UI boundary convert user-visible strings into the branded types. Reason: moves the state-name-vs-ID confusion from production to the type checker.
+3. **Single canonical registration entrypoint** imported by router, worker, CLI, dashboard API, and test setup. Other bootstrap code paths stop importing provider barrels directly. Reason: kills the "forgot to register here" class of bug.
+4. **Unified discovery contract.** Manifests declare their discovery capabilities (teams, boards, labels, states, projects, etc.); a single generic dispatch endpoint replaces per-provider tRPC procedures. Reason: 3–5 endpoints per provider with identical shapes is duplication the spec eliminates.
+5. **Behavioral conformance, not just wiring.** The harness asserts config round-trip, `listWorkItems` return shape, auth-header provenance (no outbound HTTP in the provider's code bypasses the shared auth helpers), trigger self-hook detection filters known personas, webhook verification accepts known-good and rejects tampered payloads, and the barrel's side-effect import actually registers the provider. Reason: wiring-only conformance let every 2026-04 bug ship.
+6. **In-memory fake PM provider fixture** lives under the tests helper tree, implements the full interface, and is exercised by the harness through a full lifecycle scenario. Reason: gives us a regression bed for contract changes and a reference implementation for new-provider contributors to copy.
+7. **Wizard step generation from manifest declarations.** Standard steps (credentials, container pick, status mapping, label mapping, webhook URL display) are generated from the manifest; provider folders contain only genuinely provider-specific steps. Reason: every provider re-implemented the same UI concepts.
+8. **Scope boundary: PM category only.** SCM and alerting integrations keep the legacy `IntegrationModule` pattern. Reason: different access shapes; conflating doubles the review surface and slows Linear-pain remediation.
+9. **Incremental migration, not big-bang.** Infrastructure lands in one plan; each provider migrates in its own plan; harness prevents partial migrations. Reason: the point of the spec is to make providers cheap to add — a single unreviewable mega-PR would undercut that.
+10. **Auth-header divergence caught by a codebase-wide lint assertion**, not a runtime wrapped fetch. Reason: cheaper, zero runtime cost, and it fails in CI rather than in prod.
+11. **Fake provider is a test-only artefact**, not shipped in the runtime tree. Reason: it exists to exercise the harness and serve as a reference implementation for contributors. If a future need for a demo-mode shipped fake appears, it can be promoted then.
+
+---
+
+## Acceptance Criteria (outcome-level)
+
+1. A contributor adding a new PM provider produces one provider folder and one wizard folder, declares a manifest, and receives actionable conformance-harness failures listing each unmet contract with a specific message — before opening a PR.
+2. All three existing PM providers (Trello, JIRA, Linear) are migrated onto the hardened contracts with no user-visible regression in the wizard, CLI, or agent runs.
+3. Attempting to store a state name where a state ID is expected (or a label name where a label ID is expected) is a compile-time error.
+4. Attempting to add a second copy of a provider auth-header builder anywhere outside the shared helpers fails the conformance harness with a message pointing to the offending file.
+5. Only one file in the repository imports the PM provider barrels for registration; router, worker, CLI, dashboard API, and test setup all transit that file. A regression test proves that removing the file from any runtime surface breaks that surface's startup loudly.
+6. The dashboard's PM wizard serves standard steps (credentials, container pick, status mapping, label mapping, webhook URL display) from manifest declarations — across Trello, JIRA, and Linear — with no duplicated per-provider copies of those steps.
+7. Discovery operations (teams, boards, labels, states, projects) are served by a single generic endpoint parametrised by provider + capability; no per-provider tRPC endpoint exists for standard discovery shapes.
+8. The conformance harness runs the full work-item lifecycle (create, list, move, checklist add, comment post, delete) against every registered provider plus an in-memory fake provider, and surfaces specific failure messages for each step.
+9. The conformance harness asserts round-trip identity of the declared config schema for every provider (persisted representation and runtime representation are equivalent under the declared schema).
+10. A new PM provider's first PR does not need to modify shared router, worker, CLI, dashboard, configMapper, or central config-schema files to be functional — only its provider folder, its wizard folder, and the one registration entrypoint line.
+
+---
+
+## Documentation Impact (high-level)
+
+- `src/integrations/README.md` — rewrite the "Adding a new PM provider" section around the hardened contracts; update the conformance-harness scope list; update the "shared helpers" list; add the fake provider fixture as the canonical starting point.
+- `CLAUDE.md` (project root) — update the PM-integration summary to reflect manifest-owned schemas, typed ID refs, unified discovery, single entrypoint, and the behavioral conformance contract.
+- `tests/README.md` — document the fake PM provider fixture, the lifecycle scenarios it exercises, and how to run the conformance harness locally.
+- `docs/specs/006-pm-integration-plug-and-play.md` — add a forward-reference pointer so readers of spec 006 find the hardening pass.
+- Any CLI/operator docs that describe "adding a new PM provider" — supersede with a pointer to the revised integrations README.
+
+---
+
+## Out of Scope
+
+- Extending the manifest pattern to SCM (GitHub) or alerting (Sentry).
+- Adding a new PM provider. The hardening is validated by re-running it against the three existing providers.
+- Changing the agent-facing PM interface (method names, trigger categories, webhook routing conventions).
+- Reworking credential storage, encryption, or resolution (already covered by spec 004).
+- Replacing Zod, tRPC, or Biome.
+- Adding a runtime-wrapped HTTP client to enforce auth-header provenance at call time — this spec uses a codebase lint assertion instead.
+- Shipping the fake PM provider as a user-facing demo mode; it is a test fixture only.
+- Changes to inline-checklist behavior beyond ensuring the hardened contracts compose cleanly with the existing engine from spec 008.

@@ -1,0 +1,115 @@
+---
+id: 006
+slug: pm-integration-plug-and-play
+level: spec
+title: Refactor PM integration layer for plug-and-play extensibility
+created: 2026-04-16
+status: done
+---
+
+# 006: Refactor PM integration layer for plug-and-play extensibility
+
+> **Forward reference:** Spec [009](./009-pm-integration-hardening.md) extends this work with behavioral conformance — manifest-owned config schemas, branded ID types, unified `pm.discover`, full lifecycle scenario harness, single registration entrypoint, auth-header provenance. Read spec 006 for the wiring pattern; read spec 009 for the contractual hardening built on top.
+
+## Problem & Motivation
+
+Adding a new PM provider to CASCADE requires edits in ~10 cross-cutting locations. Linear's recent landing surfaced this as a source of real, production-visible bugs: we shipped the integration, then in a single afternoon chased four separate silent failures — each traceable to a registration that was forgotten or that diverged from the canonical version:
+
+- The router's job-to-project-id extractor had an explicit if/else per provider and silently returned `null` for the Linear branch that didn't exist. Workers spawned without project credentials, crashed on first DB decrypt, and the error surfaced only in worker logs.
+- Two divergent copies of the Linear GraphQL helper (canonical client + router-side ack-comment client + bot-identity resolver) used different `Authorization` header formats. Linear rejected the router-side traffic with HTTP 400; the ack comment never appeared on issues and Linear self-loop prevention was silently disabled.
+- The wizard stored Linear workflow state *names* (via free-text input), but Linear webhooks deliver state *UUIDs* and the trigger handler does strict-equality matching. Every status transition silently no-op'd until re-mapping through a new ID-backed dropdown.
+- The same name-vs-UUID divergence existed for labels, causing `cascade-processing` to never attach to issues.
+
+Each bug is a symptom of the same structural cause: adding a provider today means editing the router entry point, an adapter registry, a trigger registry, a credential-roles registry, a job-dispatch extractor, a wizard state union, a wizard hooks module, a wizard component, and a tRPC discovery router — with no single place that enforces a provider implements all required surface. Future providers (GitLab, Asana, Shortcut, ClickUp) will repeat the same bugs unless we collapse this surface into one self-contained module per provider.
+
+The refactor should make adding a new PM provider feel like dropping one per-provider backend folder plus one per-provider wizard-steps folder into the integrations tree and nothing else — no edits to any shared registry, router, or wizard router code. A conformance test suite should fail loudly the moment a manifest is incomplete.
+
+## Goals
+
+1. **Single entry point per provider.** A new PM provider is added by creating one self-contained backend module (a `PMProviderManifest`) and one matching wizard-steps module. No edits to shared registries, router entry points, trigger builtins, job extractors, or the wizard router.
+2. **No silent-failure seams.** The manifest contract covers every cross-cutting hook currently scattered across the codebase — including the four that caused this session's bugs.
+3. **Parity conformance harness.** A shared test pack runs against every registered provider and asserts each implements the contract correctly (credential resolution, webhook parse, trigger dispatch, job-id extraction, wizard step completion, platform-client auth). Future "forgot to register X" bugs surface at CI time, not production.
+4. **End-to-end type safety preserved.** The refactor keeps tRPC's static type inference across router + worker + dashboard. No runtime plugin loading.
+5. **Zero behavioral regressions for Trello, JIRA, Linear.** Existing integrations migrate one at a time under the new registry; operator-visible behavior stays identical.
+6. **Shared provider operations factored once, not three times.** Platform-client auth header logic, webhook signature verification scaffolding, and label name-vs-ID resolution live in one place per concern and are consumed by every provider.
+
+## Non-goals
+
+- Rework of the SCM integration (GitHub) or alerting integration (Sentry). The same manifest pattern may extend to them later; not in this spec.
+- Runtime plugin loading, dynamic discovery, `.so`/NPM-package-as-plugin, or a marketplace. Providers remain in-tree and compile-time imported.
+- Refactor of the gadgets layer. Its shape is independent and not a source of the bugs we're fixing.
+- Breaking changes to the external webhook URL scheme (`/<provider>/webhook`), credential storage format, trigger event naming (`pm:*`), or config DB schema. This is an internal refactor; operators notice nothing.
+- Re-architecting the worker. Worker-side provider-agnostic code stays as is.
+- Backstage-scale plugin isolation (each plugin as a microservice). Overkill for the cascade domain.
+
+## Constraints
+
+- **Type safety.** tRPC, drizzle, and zod typing must remain end-to-end inferred; no `any` broadening at the manifest boundary.
+- **Compatibility.** Trello, JIRA, and Linear must continue to work identically through the migration. Operators must not need to re-run any wizard or re-encrypt credentials because of this refactor.
+- **Router startup time.** Manifest registration runs once at module init; must not add measurable startup latency (< 50ms cumulative for all PM providers).
+- **Testability.** Every cross-cutting concern in the manifest contract must be exercised by a conformance test that runs against every registered provider.
+- **Deploy model unchanged.** The router, worker, and dashboard are still three separate services; nothing about Docker build or image layout changes.
+- **Incremental migration is mandatory.** The first landed PR must ship the infrastructure + the conformance harness but not migrate any provider. Each provider migrates in its own PR, behind the harness.
+
+## User stories / Requirements
+
+1. **As a cascade maintainer adding a new PM provider**, I create one backend provider folder and one wizard-steps folder. I do not edit any shared registry, router entry, or wizard router file. CI fails if I've missed any contract surface.
+2. **As a cascade maintainer touching cross-cutting code** (e.g. how credentials flow to workers, how webhook signatures are verified), I change one place and every provider picks up the behavior — no per-provider forks.
+3. **As a CASCADE operator** configuring a new provider via the dashboard wizard, I see the same ID-backed dropdowns and "Create" affordances that existing providers offer. No free-text footguns.
+4. **As a future reviewer** triaging "agent didn't run" for a PM event, I can trust that every provider has been exercised by the conformance harness and the missing behavior is a specific manifest surface, not a forgotten branch.
+5. **As a release engineer** rolling the refactor out, I merge the infrastructure PR first with all three existing providers still on the legacy registration path, then I ship three independent migration PRs (Trello, JIRA, Linear) that each pass the conformance harness. At no point are two providers on different halves of the refactor simultaneously breaking.
+
+## Research Notes
+
+- **Self-registering plug-ins** (Mayer et al.) — registry + static-instantiation pattern; widely used (Python decorators, .NET MEF). Plugins own their registration; core never edits a registry list. Reference: [Plug-in architecture overview (Waterloo CS446)](https://cs.uwaterloo.ca/~m2nagapp/courses/CS446/1195/Arch_Design_Activity/PlugIn.pdf)
+- **Backstage extension points** — each plugin exports extension points that siblings can hook; plugin code is isolated from the core. Informs how providers should expose discovery / label-creation operations without the core knowing. Reference: [Backstage backend plugins](https://backstage.io/docs/backend-system/architecture/plugins/)
+- **Registry pattern + Open/Closed Principle** — replaces hard-coded conditionals with dictionary lookups. Reference: [Registry pattern (GeeksforGeeks)](https://www.geeksforgeeks.org/system-design/registry-pattern/)
+- **tRPC in 2026** — the ecosystem pattern is compile-time `t.mergeRouters(...)`, not runtime dynamic procedures. A build-time loop over a provider registry achieves the same effect while preserving end-to-end types. Reference: [tRPC: Define Routers](https://trpc.io/docs/server/routers)
+- **Schema-driven forms** — `react-jsonschema-form` / JSON Forms solve generic form generation but fight custom per-provider UX (OAuth popups, label-create buttons). For this domain a lighter manifest-driven pattern built on existing `react-hook-form` + `zod` is a better fit. References: [RJSF](https://github.com/rjsf-team/react-jsonschema-form), [JSON Forms React](https://jsonforms.io/docs/integrations/react)
+
+## Open Source Decisions
+
+| Tool | Solves | Decision | Reason |
+|------|--------|----------|--------|
+| [react-jsonschema-form](https://github.com/rjsf-team/react-jsonschema-form) | Generic dynamic form renderer | **Skip** | Heavy for ~5 providers; provider-specific UX (OAuth popups, create-label buttons, webhook-secret copy panel) fights a generic renderer. |
+| [JSON Forms](https://jsonforms.io/) | Schema + uischema form rendering | **Skip** | Same reason as above. |
+| Existing `react-hook-form` + `zod` | Typed form state + validation | **Use** | Already in the codebase. Manifest-driven wizard renderer builds on them. |
+| Backstage extension-point model | Plugin-to-plugin extension API | **Inspire only** | Architectural reference; the framework itself is far too heavy for the cascade domain. |
+
+## Strategic decisions
+
+1. **Manifest shape: single `PMProviderManifest` object per provider.** One import per provider in the registry; no other edits to core files. Removes the whole class of "forgot to register X" bugs that caused this session's four production incidents.
+2. **Wizard data-drivenness: hybrid.** Manifest declares steps as structured entries (id, title, component reference, completion predicate, save transform). The generic wizard iterates and renders. Per-provider JSX still owns rich UX (OAuth popups, label creation). No full schema-driven form engine.
+3. **Registration timing: compile-time.** Registry explicitly imports each provider's manifest. Deploy restart = new providers visible. No runtime plugin discovery. End-to-end tRPC type inference preserved.
+4. **Migration: incremental, gated by the parity harness.** Ship infrastructure + harness first with zero providers migrated. Then Trello, then JIRA, then Linear — each as an independent PR with its own rollback story. Legacy registration paths deleted only after the last provider migrates.
+5. **Conformance harness is mandatory, not optional.** Same PR as the manifest infrastructure. Every provider runs through shared behavioral tests at CI time. This is the structural guarantee that "forgot to register X" no longer ships.
+6. **Scope limited to PM.** SCM (GitHub) and alerting (Sentry) deferred. The pattern may extend later if it demonstrates value on the PM side; not this spec.
+
+## Acceptance Criteria (outcome-level)
+
+1. A cascade maintainer can add a new PM provider (e.g. GitLab, Asana) by creating one backend provider folder plus one frontend wizard-steps folder, with zero edits to shared registries, router entry points, wizard routers, or job extractors. CI rejects the change if any contract surface is unimplemented.
+2. The conformance harness exercises every registered provider on every cross-cutting behavior that failed silently in Linear's rollout (credential→worker injection, webhook signature verification, trigger dispatch, job project-id extraction, label ID validation, platform-client auth header, wizard step completion). Adding a missing behavior to a provider manifest makes the harness green; regressing one makes it red.
+3. Existing Trello, JIRA, and Linear integrations continue to work identically from an operator's perspective. No re-run of any wizard, no re-encryption of credentials, no change to webhook URLs, no change to trigger event names, no change to persisted configuration shape.
+4. Cross-cutting provider logic (platform-client auth header convention, webhook verifier scaffolding, label name-vs-ID resolution, job project-id extraction) has exactly one canonical implementation per concern. Divergent copies — which caused the Bearer-prefix and UUID-vs-name incidents — are no longer possible because the contract doesn't expose the seam for forking.
+5. The dashboard PM wizard adapts its step list and field rendering from the manifest registry. Adding a provider to the registry makes that provider selectable and configurable in the wizard without edits to the wizard router or the provider-select dropdown.
+6. The migration rolls out with zero cross-provider "half-migrated" states visible to operators or CI: at every merged commit, either all providers are on the legacy path or the migrated subset is fully on the new path alongside unmigrated providers still on legacy. Each migration PR is independently revertable.
+7. The PM integration author's guide is rewritten to describe the manifest contract only. A reader following the guide can land a new provider without reading any other file.
+
+## Documentation Impact (high-level)
+
+- `src/integrations/README.md` — full rewrite. Manifest contract becomes the canonical reference; per-step "touch file X then file Y" instructions go away.
+- `CLAUDE.md` — update the "Integration abstraction" section pointer and the "Adding a new integration" pointer to reflect the manifest-first model.
+- `CHANGELOG.md` — entry per migration PR (infrastructure landing, then one per provider).
+- Any `docs/` pages referencing the old per-file wiring steps — audit during the verify phase.
+
+## Out of Scope
+
+- SCM (GitHub) and alerting (Sentry) integrations remain on their current registration shape for this spec.
+- Gadgets layer is not refactored here.
+- Webhook URL scheme changes (`/<provider>/webhook` path).
+- Credential storage format changes or any changes that would invalidate existing encrypted credentials.
+- Persisted config DB schema changes or trigger event naming changes.
+- Runtime plugin discovery, hot-reload, or NPM-distributed plugins.
+- A new form framework (RJSF, JSON Forms, Formik). Existing `react-hook-form` + `zod` stay.
+- Worker runtime changes. Provider-agnostic worker code is unaffected.
+- Backwards-compat shims for removed registration paths. The legacy paths are deleted atomically in the last migration PR, not kept alongside.

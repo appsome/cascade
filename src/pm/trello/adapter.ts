@@ -7,6 +7,8 @@
  */
 
 import { trelloClient } from '../../trello/client.js';
+import type { TrelloConfig } from '../config.js';
+import type { ContainerId, LabelId } from '../ids.js';
 import { extractMarkdownImages } from '../media.js';
 import type {
 	Attachment,
@@ -20,8 +22,33 @@ import type {
 	WorkItemLabel,
 } from '../types.js';
 
+/**
+ * Plan 009/2 narrows a subset of the Trello adapter's public method
+ * parameters to branded IDs (`ContainerId`, `LabelId`) via TypeScript
+ * method bivariance. Callers that type their reference as
+ * `TrelloPMProvider` specifically get compile-time enforcement — passing
+ * a bare `string` where a `ContainerId` is expected is a compile error.
+ * Callers going through `PMProvider` still see the legacy `string` type
+ * (the interface contract hasn't changed).
+ *
+ * Note: `createWorkItem` keeps the interface's `CreateWorkItemConfig`
+ * parameter type (containerId: string) because TypeScript enforces
+ * invariance on object-property types even when method parameters are
+ * bivariant. Internally the adapter parses `config.containerId` via
+ * `parseContainerId` at the boundary so the branded type is used from
+ * there on.
+ */
+
 export class TrelloPMProvider implements PMProvider {
 	readonly type = 'trello' as const;
+
+	/**
+	 * `config` is required — `listWorkItems` self-resolution looks up
+	 * `config.lists[filter.status]` when no containerId is passed. The
+	 * single production caller (`TrelloIntegration.createProvider`) always
+	 * has a `TrelloConfig` available; tests must provide one too.
+	 */
+	constructor(private readonly config: TrelloConfig) {}
 
 	async getWorkItem(id: string): Promise<WorkItem> {
 		const card = await trelloClient.getCard(id);
@@ -100,8 +127,15 @@ export class TrelloPMProvider implements PMProvider {
 		};
 	}
 
-	async listWorkItems(containerId: string, _filter?: ListWorkItemsFilter): Promise<WorkItem[]> {
-		const cards = await trelloClient.getListCards(containerId);
+	async listWorkItems(
+		containerId: ContainerId | undefined,
+		filter?: ListWorkItemsFilter,
+	): Promise<WorkItem[]> {
+		// Self-resolve list ID from config when caller doesn't pass one. Trello
+		// lists ARE the statuses, so `config.lists[filter.status]` IS the list ID.
+		const listId = containerId ?? (filter?.status ? this.config.lists?.[filter.status] : undefined);
+		if (!listId) return [];
+		const cards = await trelloClient.getListCards(listId);
 		return cards.map((card) => ({
 			id: card.id,
 			title: card.name,
@@ -117,15 +151,15 @@ export class TrelloPMProvider implements PMProvider {
 		}));
 	}
 
-	async moveWorkItem(id: string, destination: string): Promise<void> {
+	async moveWorkItem(id: string, destination: ContainerId): Promise<void> {
 		await trelloClient.moveCardToList(id, destination);
 	}
 
-	async addLabel(id: string, labelId: string): Promise<void> {
+	async addLabel(id: string, labelId: LabelId): Promise<void> {
 		await trelloClient.addLabelToCard(id, labelId);
 	}
 
-	async removeLabel(id: string, labelId: string): Promise<void> {
+	async removeLabel(id: string, labelId: LabelId): Promise<void> {
 		await trelloClient.removeLabelFromCard(id, labelId);
 	}
 

@@ -161,15 +161,9 @@ describe('integrationsDiscoveryRouter', () => {
 	// ── Auth ─────────────────────────────────────────────────────────────
 
 	describe('auth', () => {
-		it('verifyTrello throws UNAUTHORIZED when not authenticated', async () => {
-			const caller = createCaller({ user: null, effectiveOrgId: null });
-			await expectTRPCError(caller.verifyTrello(trelloCredsInput), 'UNAUTHORIZED');
-		});
-
-		it('verifyJira throws UNAUTHORIZED when not authenticated', async () => {
-			const caller = createCaller({ user: null, effectiveOrgId: null });
-			await expectTRPCError(caller.verifyJira(jiraCredsInput), 'UNAUTHORIZED');
-		});
+		// verifyTrello / verifyJira removed by spec 009/5 — wizard
+		// verification now goes through pm.discover (see
+		// web/src/components/projects/pm-wizard-hooks.ts).
 
 		it('trelloBoards throws UNAUTHORIZED when not authenticated', async () => {
 			const caller = createCaller({ user: null, effectiveOrgId: null });
@@ -223,10 +217,8 @@ describe('integrationsDiscoveryRouter', () => {
 			);
 		});
 
-		it('verifyLinear throws UNAUTHORIZED when not authenticated', async () => {
-			const caller = createCaller({ user: null, effectiveOrgId: null });
-			await expectTRPCError(caller.verifyLinear({ apiKey: 'lin_api_test' }), 'UNAUTHORIZED');
-		});
+		// verifyLinear removed by spec 009/5 — wizard verification goes
+		// through pm.discover({ providerId: 'linear', capability: 'teams', ... }).
 
 		it('linearTeams throws UNAUTHORIZED when not authenticated', async () => {
 			const caller = createCaller({ user: null, effectiveOrgId: null });
@@ -255,95 +247,13 @@ describe('integrationsDiscoveryRouter', () => {
 		});
 	});
 
-	// ── verifyTrello ─────────────────────────────────────────────────────
+	// verifyTrello procedure removed by spec 009/5.
+	// Coverage moved to tests/unit/api/pm-discovery.test.ts (pm.discover
+	// with capability='boards') + the wizard hook migration in
+	// web/src/components/projects/pm-wizard-hooks.ts.
 
-	describe('verifyTrello', () => {
-		it('returns username, fullName, and id on success', async () => {
-			mockTrelloGetMe.mockResolvedValue({
-				id: 'trello-123',
-				fullName: 'Trello User',
-				username: 'trellouser',
-			});
-
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			const result = await caller.verifyTrello(trelloCredsInput);
-
-			expect(result).toEqual({
-				id: 'trello-123',
-				fullName: 'Trello User',
-				username: 'trellouser',
-			});
-		});
-
-		it('wraps API failure in BAD_REQUEST', async () => {
-			mockTrelloGetMe.mockRejectedValue(new Error('Invalid API key'));
-
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			await expect(caller.verifyTrello(trelloCredsInput)).rejects.toMatchObject({
-				code: 'BAD_REQUEST',
-			});
-		});
-
-		it('rejects empty apiKey', async () => {
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			await expect(caller.verifyTrello({ apiKey: '', token: 'my-token' })).rejects.toThrow();
-		});
-
-		it('rejects empty token', async () => {
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			await expect(caller.verifyTrello({ apiKey: 'my-api-key', token: '' })).rejects.toThrow();
-		});
-	});
-
-	// ── verifyJira ───────────────────────────────────────────────────────
-
-	describe('verifyJira', () => {
-		it('returns displayName, emailAddress, and accountId on success', async () => {
-			mockJiraGetMyself.mockResolvedValue({
-				displayName: 'Jira User',
-				emailAddress: 'jira@example.com',
-				accountId: 'acct-456',
-			});
-
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			const result = await caller.verifyJira(jiraCredsInput);
-
-			expect(result).toEqual({
-				displayName: 'Jira User',
-				emailAddress: 'jira@example.com',
-				accountId: 'acct-456',
-			});
-		});
-
-		it('returns empty strings when JIRA response fields are missing', async () => {
-			mockJiraGetMyself.mockResolvedValue({});
-
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			const result = await caller.verifyJira(jiraCredsInput);
-
-			expect(result).toEqual({
-				displayName: '',
-				emailAddress: '',
-				accountId: '',
-			});
-		});
-
-		it('wraps API failure in BAD_REQUEST', async () => {
-			mockJiraGetMyself.mockRejectedValue(new Error('Unauthorized'));
-
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			await expect(caller.verifyJira(jiraCredsInput)).rejects.toMatchObject({
-				code: 'BAD_REQUEST',
-			});
-		});
-
-		it('rejects invalid baseUrl', async () => {
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			await expect(
-				caller.verifyJira({ email: 'a@b.com', apiToken: 'tok', baseUrl: 'not-a-url' }),
-			).rejects.toThrow();
-		});
-	});
+	// verifyJira procedure removed by spec 009/5. Coverage moved to
+	// pm.discover (capability='projects') + wizard hook migration.
 
 	// ── trelloBoards ─────────────────────────────────────────────────────
 
@@ -1037,45 +947,8 @@ describe('integrationsDiscoveryRouter', () => {
 		});
 	});
 
-	// ── verifyLinear ─────────────────────────────────────────────────────
-
-	describe('verifyLinear', () => {
-		const linearCredsInput = { apiKey: 'lin_api_test' };
-
-		it('returns id, name, and displayName on success', async () => {
-			mockLinearGetMe.mockResolvedValue({
-				id: 'linear-user-123',
-				name: 'Linear User',
-				displayName: 'linearuser',
-				email: 'linear@example.com',
-				avatarUrl: null,
-				active: true,
-			});
-
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			const result = await caller.verifyLinear(linearCredsInput);
-
-			expect(result).toEqual({
-				id: 'linear-user-123',
-				name: 'Linear User',
-				displayName: 'linearuser',
-			});
-		});
-
-		it('wraps API failure in BAD_REQUEST', async () => {
-			mockLinearGetMe.mockRejectedValue(new Error('Invalid API key'));
-
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			await expect(caller.verifyLinear(linearCredsInput)).rejects.toMatchObject({
-				code: 'BAD_REQUEST',
-			});
-		});
-
-		it('rejects empty apiKey', async () => {
-			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
-			await expect(caller.verifyLinear({ apiKey: '' })).rejects.toThrow();
-		});
-	});
+	// verifyLinear procedure removed by spec 009/5. Coverage moved to
+	// pm.discover (capability='teams') + wizard hook migration.
 
 	// ── linearTeams ───────────────────────────────────────────────────────
 

@@ -1,0 +1,293 @@
+---
+id: 006
+slug: pm-integration-plug-and-play
+plan: 2
+plan_slug: migrate-trello
+level: plan
+parent_spec: docs/specs/006-pm-integration-plug-and-play.md
+depends_on: [1-infrastructure.md.done]
+status: done
+---
+
+# 006/2: Migrate Trello onto the PM provider manifest
+
+> Part 2 of 5 in the 006-pm-integration-plug-and-play plan. See [parent spec](../../specs/006-pm-integration-plug-and-play.md).
+
+## Summary
+
+Trello becomes the first real provider on the new manifest. All Trello-specific registrations currently scattered across `bootstrap.ts`, `builtins.ts`, `extractProjectIdFromJob`, `pm-wizard.tsx`, and `integrationsDiscovery.ts` collapse into one backend Trello manifest plus one frontend Trello wizard definition. The conformance harness now exercises Trello alongside `TestProvider` — catching any drift at CI time.
+
+Trello is chosen first because it has the smallest surface (no OAuth popup via our flow — token is pasted manually after the Trello-hosted authorization page; existing label-create and custom-field-create affordances are straightforward to port). JIRA and Linear follow in plans 006/3 and 006/4.
+
+Operators see no change: the Trello wizard UX is identical, webhook URL is identical, persisted config shape is identical.
+
+**Components delivered:**
+- `src/integrations/pm/trello/index.ts` — re-exports the Trello manifest; registers itself at module load via a new `src/integrations/pm/index.ts` barrel that imports each provider's `index.ts`.
+- `src/integrations/pm/trello/manifest.ts` — `PMProviderManifest` for Trello, wiring existing `TrelloIntegration`, `TrelloRouterAdapter`, Trello triggers, `TrelloPlatformClient`.
+- `web/src/components/projects/pm-providers/trello/steps.tsx` — the three Trello wizard steps (credentials, board, field mapping).
+- `web/src/components/projects/pm-providers/trello/wizard.ts` — `ProviderWizardDefinition` binding the steps + `buildIntegrationConfig` + `isSetupComplete`.
+- `web/src/components/projects/pm-providers/trello/index.ts` — module-load registration via `registerProviderWizard`.
+- `src/integrations/bootstrap.ts` — Trello branch deleted (manifest registry handles it).
+- `src/triggers/builtins.ts` — Trello trigger registration branch deleted.
+- `src/router/worker-env.ts` — Trello branch in `extractProjectIdFromJob` deleted; registry path handles it.
+- `web/src/components/projects/pm-wizard.tsx` — Trello-specific rendering branch deleted; manifest path handles it.
+- `src/api/routers/integrationsDiscovery.ts` — Trello-specific endpoints (`createTrelloLabel`, `createTrelloLabels`, `createTrelloCustomField`, etc.) either moved to `pm-discovery.ts` under a uniform per-provider shape, or remain with a deprecation comment if mid-migration needs them.
+
+**Deferred to later plans in this spec:**
+- JIRA migration (006/3)
+- Linear migration (006/4)
+- Legacy registration infrastructure deletion (006/5)
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #1** (drop-in provider folder) — **full for Trello**: Trello is now defined in exactly two folders (`src/integrations/pm/trello/`, `web/src/components/projects/pm-providers/trello/`). Editing Trello no longer requires touching any shared registry.
+- **Spec AC #2** (harness exercises every registered provider) — **partial**: Trello now in the harness. JIRA + Linear still on legacy — they'll join in 006/3–006/4.
+- **Spec AC #3** (zero regressions) — **full for Trello**: existing Trello parity tests stay green; Trello wizard, webhook, trigger, worker flow all behave identically.
+- **Spec AC #4** (canonical cross-cutting logic) — **partial**: Trello adopts the shared `auth-headers`, `webhook-verifier`, `label-id-resolver`, `project-id-extractor` helpers. JIRA + Linear still have their own copies — canonical via manifest requirement, but not visible to operators until 006/5 removes their copies.
+- **Spec AC #5** (wizard adapts from manifest registry) — **partial for Trello**: Trello wizard now renders via the manifest path.
+- **Spec AC #6** (zero half-migrated states, each plan independently revertable) — **full**: Trello is entirely on the manifest; JIRA and Linear are entirely on legacy. No per-provider mixed state. Reverting this plan reverts Trello back to the legacy path cleanly.
+
+---
+
+## Depends On
+
+- Plan 006/1 (infrastructure) — provides `PMProviderManifest`, `pmProviderRegistry`, conformance harness, generic wizard renderer, shared helpers.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Trello manifest
+
+**Tests first** (`tests/unit/integrations/pm/trello/manifest.test.ts`):
+- `trelloManifest — id is 'trello'`
+- `trelloManifest — category is 'pm'`
+- `trelloManifest — webhookRoute is '/trello/webhook'`
+- `trelloManifest — credentialRoles includes api_key + token (both required) + api_secret (optional)` — matches existing Trello roles.
+- `trelloManifest — verifyWebhookSignature rejects when signature header is missing` — sanity.
+- `trelloManifest — verifyWebhookSignature accepts a valid signature built as HMAC-SHA1(body + callbackUrl)` — uses existing `verifyTrelloSignature`; callback URL is reconstructed from `host` + `x-forwarded-proto` headers.
+- `trelloManifest — verifyWebhookSignature returns true (opt-out) when secret is null` — matches existing opt-out behavior.
+- `trelloManifest — extractProjectIdFromJob returns projectId for { type: 'trello', projectId }`, null otherwise.
+- `trelloManifest — platformClientFactory returns a TrelloPlatformClient instance`.
+- `trelloManifest — triggerHandlers contains exactly the handlers from src/triggers/trello/` — confirms every existing trigger is wired.
+
+**Important:** Trello signs `HMAC-SHA1(rawBody + callbackUrl)` — it does **not** match the HMAC-SHA256 shape of the shared `makeHmacSha256Verifier` factory. The manifest wires the existing `verifyTrelloSignature` helper from `src/webhook/signatureVerification.ts` rather than introducing a new shared factory for a one-off scheme. Future HMAC-SHA1 providers could motivate a shared helper; Trello alone doesn't.
+
+**Implementation** (`src/integrations/pm/trello/manifest.ts`):
+- Import existing `TrelloIntegration`, `TrelloRouterAdapter`, Trello trigger handlers from `src/triggers/trello/`, `TrelloPlatformClient`.
+- Import `parseTrelloPayload` from the existing webhook parser module.
+- Build `verifyWebhookSignature` as a thin wrapper: extracts the `x-trello-webhook` header, reconstructs the callback URL from `host` + `x-forwarded-proto`, delegates to `verifyTrelloSignature(rawBody, callbackUrl, signature, secret)`. Returns `true` when `secret === null` (opt-out).
+- Import `registerPMProvider` from the registry; call at module top level.
+- Export the manifest for testing.
+
+**Implementation** (`src/integrations/pm/trello/index.ts`):
+- Single re-export: `export { trelloManifest } from './manifest.js';`.
+- Top of file: `import './manifest.js';` to execute the `registerPMProvider(...)` side effect on module load.
+
+**Implementation** (`src/integrations/pm/index.ts` — new barrel if not introduced by plan 006/1):
+- `import './trello/index.js';` — imports each provider module so registrations run at app startup.
+- This file is imported once from `src/router/index.ts` and `src/dashboard.ts` (and any other entry that needs PM providers) — replacing the current explicit `bootstrap.ts` calls.
+
+### 2. Trello frontend wizard definition
+
+**Prerequisite — extend `ProviderWizardDefinition` with `useProviderHooks`.** The generic renderer landed in 006/1 passes `{state, dispatch, providerHooks?}` to each step component, but the existing Trello step components expect specific prop names (`onBoardSelect`, `boardsMutation`, etc.) that originate from the React hooks `useTrelloDiscovery` + `useTrelloLabelCreation` + `useTrelloCustomFieldCreation`. Those hooks must run inside a React component with access to parent wizard context (state, dispatch, projectId, advanceToStep) — they cannot be called from inside the generic renderer.
+
+Solution: add an optional field to `ProviderWizardDefinition`:
+```typescript
+useProviderHooks?: (ctx: {
+  state: WizardState;
+  dispatch: React.Dispatch<WizardAction>;
+  projectId: string | undefined;
+  advanceToStep: (step: number) => void;
+}) => Record<string, unknown>;
+```
+The parent `pm-wizard.tsx` calls `def.useProviderHooks?.(ctx)` once (conditionally on `def` being registered), storing the result in a local variable; passes it to `renderManifestStep` as `providerHooks`. Step components destructure `providerHooks` into the existing prop shape via a thin adapter — existing components stay unchanged.
+
+Update `web/src/components/projects/pm-providers/types.ts` to add the optional field. Plan 006/3 and 006/4 will rely on the same extension for JIRA and Linear.
+
+**Tests first** (`tests/unit/web/trello-wizard-provider.test.ts`):
+- `trelloProviderWizard — id and label`
+- `trelloProviderWizard — steps array has exactly 3 steps: credentials, board, fields`
+- `trelloProviderWizard — buildIntegrationConfig returns the same shape as the legacy save path` — snapshot against a fixture wizard state; must match byte-for-byte.
+- `trelloProviderWizard — isSetupComplete reflects each step's completion predicate`
+- `trelloProviderWizard — registered in the frontend registry under id 'trello'` — verifies module-load registration.
+- `trelloProviderWizard — useProviderHooks returns { onBoardSelect, boardsMutation, boardDetailsMutation, onCreateLabel, onCreateAllMissingLabels, onCreateCostField, creatingSlot, creatingCostField }` — a render-hook test using `@testing-library/react-hooks` or vitest's `renderHook` shim.
+
+**Implementation** (`web/src/components/projects/pm-providers/trello/`):
+- `adapters.tsx` — thin wrapper components that accept `{state, dispatch, providerHooks}`, destructure `providerHooks` into the legacy prop names, and render the existing `TrelloCredentialsStep` / `TrelloBoardStep` / `TrelloFieldMappingStep` from `pm-wizard-trello-steps.tsx` unchanged.
+- `wizard.ts`:
+  ```typescript
+  export const trelloProviderWizard: ProviderWizardDefinition = {
+    id: 'trello',
+    label: 'Trello',
+    steps: [
+      { id: 'credentials', title: 'Trello credentials', Component: TrelloCredentialsStepAdapter, isComplete: (s) => Boolean(s.trelloApiKey && s.trelloToken && s.verificationResult) },
+      { id: 'board',       title: 'Board',              Component: TrelloBoardStepAdapter,       isComplete: (s) => Boolean(s.trelloBoardId) },
+      { id: 'fields',      title: 'Field mappings',     Component: TrelloFieldMappingStepAdapter, isComplete: (s) => Object.keys(s.trelloListMappings).length > 0 },
+    ],
+    buildIntegrationConfig: buildTrelloIntegrationConfig, // existing fn from pm-wizard-state
+    useProviderHooks: ({ state, dispatch, projectId, advanceToStep }) => {
+      // Compose the existing per-provider hooks. Parent wizard already creates one
+      // instance — plan 006/2 moves that instantiation here so the generic
+      // renderer doesn't need to know Trello specifics.
+      const discovery = useTrelloDiscovery(state, dispatch, advanceToStep, projectId);
+      const labels = useTrelloLabelCreation(state, dispatch);
+      const customField = useTrelloCustomFieldCreation(state, dispatch);
+      // ... return combined props object
+    },
+    isSetupComplete: (s) => /* every step's isComplete */,
+  };
+  ```
+- `index.ts` — `registerProviderWizard(trelloProviderWizard);`
+
+**Parent wizard wiring** (`web/src/components/projects/pm-wizard.tsx`):
+
+React's rules-of-hooks forbid calling hooks conditionally. To call a provider-specific hook like `useTrelloDiscovery` only when Trello is the active provider, the hook must live inside a component that only renders under that condition.
+
+Approach: extract the existing Trello + JIRA + Linear sections into a new child component `<ManifestProviderWizardSection>` (located at `web/src/components/projects/pm-providers/manifest-section.tsx`). When `getProviderWizard(state.provider)` returns a definition, `pm-wizard.tsx` renders `<ManifestProviderWizardSection def={def} state={state} dispatch={dispatch} projectId={projectId} advanceToStep={advanceToStep} />`. Inside that child, `def.useProviderHooks(ctx)` is called unconditionally (it's only rendered when `def` exists). The hook results drive step rendering.
+
+For the JIRA and Linear branches in `pm-wizard.tsx`, the existing `useJiraDiscovery` / `useLinearDiscovery` calls stay at the top of `pm-wizard.tsx`. They will be moved out when plans 006/3 and 006/4 migrate those providers. Trello's `useTrelloDiscovery` + `useTrelloLabelCreation` + `useTrelloCustomFieldCreation` calls move into `trelloProviderWizard.useProviderHooks` and are **removed from `pm-wizard.tsx`** as part of this plan — that's the "Trello migrates" part.
+
+This keeps the three providers independently on either legacy or manifest paths (no mixed state) without breaking rules-of-hooks.
+
+### 3. Delete Trello-specific legacy registrations
+
+**Drift — `pmRegistry` registration stays in 006/2.** The original task said to
+remove the Trello block from `src/integrations/bootstrap.ts`. Rediscovered at
+implementation time: at least nine call sites still use `pmRegistry.get('trello')`
+(webhook handlers, manual runners, lifecycle, credential scoping, create-provider).
+Deleting Trello from `pmRegistry` without migrating those callers would break
+Trello at runtime. Plan 006/5 removes both registrations together (the bootstrap
+line and the callers that depend on it). 006/2 scope narrows to the registrations
+that are **safe** to delete because the manifest path already handles them:
+
+**Implementation**:
+- `src/integrations/bootstrap.ts` — **unchanged** in this plan. Trello stays in both `pmRegistry` and `pmProviderRegistry` during the migration window (same `TrelloIntegration` instance is referenced by both). Plan 006/5 deletes the bootstrap block.
+- `src/triggers/builtins.ts` — remove `registerTrelloTriggers(registry)` call. Trello's triggers are now available via `pmProviderRegistry.get('trello').triggerHandlers`. The trigger registry that dispatches at runtime must be updated to iterate the manifest path for Trello (check `src/router/index.ts` + `src/triggers/registry.ts` to confirm the trigger dispatch pipeline picks up manifest-registered handlers).
+- `src/router/worker-env.ts` — remove the `if (jobData.type === 'trello')` branch from the legacy chain. The `extractProjectIdFromJobViaRegistry` path now handles Trello via the manifest (`trelloManifest.extractProjectIdFromJob`).
+- `web/src/components/projects/pm-wizard.tsx` — replace the `state.provider === 'trello'` rendering branch in each of the three step bodies (credentials/board/fields) with a render through `ManifestProviderWizardSection`. Remove the `useTrelloDiscovery` + `useTrelloLabelCreation` + `useTrelloCustomFieldCreation` hook instantiations from the parent — they're composed by `trelloProviderWizard.useProviderHooks` now.
+
+**Tests**:
+- Existing Trello SSR + behavior tests (`tests/unit/web/pm-wizard-trello-step.test.ts` etc.) must pass unchanged — byte-for-byte parity.
+- Conformance harness runs Trello; already exercised in task 1's test file.
+
+### 4. Consolidate Trello tRPC discovery endpoints — DEFERRED
+
+**Status: deferred from plan 006/2**, landing post-merge as a separate PR.
+
+The Trello manifest's `useProviderHooks` composes the existing `useTrelloLabelCreation` hook, which still calls `trpcClient.integrationsDiscovery.createTrelloLabel` / `createTrelloLabels`. Label creation works end-to-end via the manifest path using those existing endpoints.
+
+Consolidating them into `pm.discovery.createLabel` / `pm.discovery.createLabels` is additive cleanup (removes two tRPC endpoint names, routes through manifest.createLabel); it doesn't change behavior or ship new capabilities. Shipping it as a separate follow-up keeps plan 006/2's diff focused on the migration itself. Plan 006/5 will delete the now-orphaned `createTrelloLabel`/`createTrelloLabels` endpoints once the follow-up lands.
+
+---
+
+### 4 (ORIGINAL PLAN). Consolidate Trello tRPC discovery endpoints
+
+**Tests first** (`tests/unit/api/pm-discovery.test.ts`):
+- `pm.discovery.createLabel — via registry for provider 'trello', creates label on board` — uses the shared endpoint instead of `createTrelloLabel`.
+- `pm.discovery.createLabels — via registry for provider 'trello' batch creates labels`.
+
+**Implementation** (`src/api/routers/pm-discovery.ts`):
+- Add generic procedures: `createLabel({ projectId, providerId, name, color? })`, `createLabels({ projectId, providerId, labels })` — each dispatches to `manifest.createLabel` / `manifest.createLabels` hooks if present.
+- Extend `PMProviderManifest` (in plan 006/1 — confirm the optional hooks exist; if not, add them here as a plan divergence).
+- Trello-specific endpoints in `integrationsDiscovery.ts` can either be deleted (if the dashboard hook migrates in this plan) or deprecated with a comment pointing at the new endpoint.
+
+> If the optional `createLabel`/`createLabels` hooks were not included in plan 006/1's `PMProviderManifest`, edit the spec destructively in place (via `/plan` divergence handling) to add them, and re-land the contract in 006/1 before proceeding.
+
+### 5. Update the Trello dashboard hook
+
+**Tests first** (`tests/unit/web/useTrelloLabelCreation.test.ts` — if a test exists; otherwise integration via existing tests):
+- `useTrelloLabelCreation — calls pm.discovery.createLabel with providerId='trello'` — instead of `createTrelloLabel`.
+
+**Implementation**:
+- `web/src/components/projects/pm-wizard-hooks.ts::useTrelloLabelCreation` — change the `trpcClient.integrationsDiscovery.createTrelloLabel.mutate` call to `trpcClient.pm.discovery.createLabel.mutate({ providerId: 'trello', ... })`.
+- Same for `createTrelloLabels` → `pm.discovery.createLabels`.
+
+### 6. Conformance harness runs Trello
+
+**Tests first**: this happens automatically — the existing `tests/unit/integrations/pm-conformance.test.ts` iterates `listPMProviders()` and now Trello is in that list.
+
+**Implementation**: no new test file; verify that registering `trelloManifest` during the test run (either via module import or explicit registration in the harness setup) makes the harness iterate Trello and green.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/integrations/pm/trello/manifest.test.ts`: ~8 tests
+- [ ] `tests/unit/web/trello-wizard-provider.test.ts`: 4 tests
+- [ ] `tests/unit/integrations/bootstrap.test.ts`: assertion update (Trello no longer registered via legacy path)
+- [ ] `tests/unit/triggers/builtins.test.ts`: assertion update
+- [ ] `tests/unit/router/worker-env.test.ts`: assertion update
+- [ ] `tests/unit/api/pm-discovery.test.ts`: 2 new tests for generic `createLabel`/`createLabels` via registry
+- [ ] Existing Trello tests (`tests/unit/pm/trello/*`, `tests/unit/router/adapters/trello.test.ts`, etc.) — all must stay green with **zero code changes**.
+
+**Total: ~15 new tests + ~5 existing assertion updates.**
+
+### Integration tests
+- [ ] `tests/integration/trello-end-to-end.test.ts` (existing or new) — Trello webhook → trigger → agent dispatch roundtrip. Must pass through the manifest path.
+
+### Acceptance tests
+- Conformance harness exercises Trello and passes (per-plan AC #1).
+- Every existing Trello unit + integration test passes without code changes (per-plan AC #3).
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `pmProviderRegistry.get('trello')` returns the Trello manifest after module load.
+2. `listPMProviders()` includes Trello; conformance harness runs and passes Trello-scoped tests.
+3. **Every existing Trello unit and integration test passes** without modification to the test code. Behavioral parity verified.
+4. `pm-wizard.tsx` no longer has a `state.provider === 'trello'` branch; Trello wizard renders via `getProviderWizard('trello')`.
+5. `bootstrap.ts` no longer registers `TrelloIntegration`.
+6. `builtins.ts` no longer calls `registerTrelloTriggers(registry)`.
+7. `extractProjectIdFromJob` no longer has a Trello-specific branch; registry path handles Trello.
+8. `pm.discovery.createLabel` and `pm.discovery.createLabels` handle Trello via the manifest; `createTrelloLabel` / `createTrelloLabels` are either removed from `integrationsDiscovery.ts` or retained with a deprecation comment pointing at `pm.discovery.*`.
+9. Operator-facing dashboard wizard behavior for Trello is byte-for-byte identical to pre-plan (verified by SSR snapshot tests).
+10. All new/modified code has tests.
+11. `npm run build` passes.
+12. `npm test` passes.
+13. `npm run lint` passes.
+14. `npm run typecheck` passes.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Update the transitional note to reflect Trello migrated ("Trello: ✓ migrated. JIRA and Linear still on legacy.") |
+| `CHANGELOG.md` | Entry: "Internal: Trello migrated to PM provider manifest (no operator-visible change)" |
+
+---
+
+## Out of Scope (this plan)
+
+- Migrating JIRA (plan 006/3).
+- Migrating Linear (plan 006/4).
+- Deleting legacy registration infrastructure — only Trello-specific branches are removed this plan. `bootstrap.ts`, `builtins.ts`, `extractProjectIdFromJob`, `pm-wizard.tsx` still contain JIRA and Linear branches.
+- Moving Trello wizard component implementations physically into `pm-providers/trello/` — this plan only re-exports. Moves can happen later without spec scope.
+- Removing the legacy `integrationsDiscovery` tRPC router — deferred to plan 006/5 when all three providers use `pm-discovery`.
+- Spec-level out-of-scope items (SCM/alerting refactor, gadgets, runtime plugins).
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1 Trello manifest registered
+- [x] AC #2 Conformance harness passes Trello (22 tests — 11 × 2 providers)
+- [x] AC #3 Existing Trello tests green unchanged
+- [x] AC #4 Wizard Trello branch removed — manifest shell + `manifestDef` path
+- [ ] AC #5 Bootstrap Trello registration removed — **deferred to plan 006/5** (9+ call sites of `pmRegistry.get('trello')` still depend on it; documented divergence)
+- [x] AC #6 Builtins Trello registration removed — `registerTrelloTriggers` gone; `listPMProviders()` iteration handles it
+- [x] AC #7 Extractor Trello branch removed
+- [ ] AC #8 Trello tRPC endpoints consolidated into pm.discovery — **deferred** (additive cleanup, not behavior-changing; follow-up PR documented in plan)
+- [x] AC #9 Operator-facing Trello behavior unchanged — 20 web test files + integration tests green
+- [x] AC #10 All new code has tests
+- [x] AC #11 Build passes
+- [x] AC #12 Tests pass (7755/7755)
+- [x] AC #13 Lint passes
+- [x] AC #14 Typecheck passes
