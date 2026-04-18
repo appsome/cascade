@@ -472,6 +472,7 @@ export function createFakePMManifest(): PMProviderManifest {
 			],
 		},
 		lifecycle: { enabled: true },
+		createDiscoveryProvider: () => createFakePMProvider().provider,
 	};
 }
 

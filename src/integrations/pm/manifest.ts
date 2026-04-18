@@ -247,6 +247,20 @@ export interface PMProviderManifest {
 	 * `lifecycle.enabled: true` and provide a fixture.
 	 */
 	readonly lifecycle?: LifecycleOptIn;
+
+	/**
+	 * Optional factory for producing a PM adapter instance outside of a
+	 * project context — used by the generic `pm.discover` tRPC endpoint
+	 * during wizard setup, when the user hasn't saved a project yet so
+	 * `pmIntegration.createProvider(project)` isn't applicable.
+	 *
+	 * Accepts raw credentials in the same shape the wizard collects; adapters
+	 * may ignore the argument when discovery doesn't need credentials (e.g.
+	 * the fake provider). Plans 2/3/4 wire each real provider's factory.
+	 */
+	readonly createDiscoveryProvider?: (opts?: {
+		credentials?: Record<string, string>;
+	}) => import('../../pm/types.js').PMProvider;
 }
 
 /**

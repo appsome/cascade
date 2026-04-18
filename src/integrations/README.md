@@ -84,21 +84,35 @@ Single-source-of-truth utilities live in `src/integrations/pm/_shared/`:
 
 ## Registration at startup
 
-Router and worker entry points import these side-effect modules:
+Every runtime surface (router, worker, CLI bootstrap, dashboard) imports a single canonical entrypoint:
 
 ```typescript
-import './integrations/pm/index.js';  // registers all PM manifests
-import './github/register.js';         // registers GitHubSCMIntegration
-import './sentry/register.js';         // registers SentryAlertingIntegration
+import './integrations/entrypoint.js';  // registers every PM + SCM + alerting integration
 ```
+
+`src/integrations/entrypoint.ts` is a side-effect-only module that imports each category's barrel — PM via `./pm/index.js`, SCM via `../github/register.js`, alerting via `../sentry/register.js`. The entrypoint exists because forgetting to register a provider in one surface but not others shipped four production bugs during Linear's rollout (#1097, #1118, #1131, #1134). The single-entrypoint invariant is guarded by `tests/unit/integrations/entrypoint-usage.test.ts`, which greps every process-entry file and fails if the import is missing.
 
 The PM barrel (`src/integrations/pm/index.ts`):
 1. Imports each provider's `index.js` (side effect: `registerPMProvider(manifest)`).
 2. Iterates `listPMProviders()` and mirrors each manifest's `pmIntegration` into the cross-category `integrationRegistry` — so `integration-validation.ts` and the capability resolver see PM providers alongside SCM + alerting.
 
-SCM (GitHub) and alerting (Sentry) integrations remain on the legacy `IntegrationModule` pattern — the manifest pattern is PM-only (spec 006 scope). Both self-register via their own `register.ts` side-effect modules.
+SCM (GitHub) and alerting (Sentry) integrations remain on the legacy `IntegrationModule` pattern — the manifest pattern is PM-only (spec 006 scope). Both self-register via their own `register.ts` side-effect modules, transitively pulled in by the entrypoint.
 
 `pmRegistry` (`src/pm/registry.ts`) still exists as a **read-only delegate** over `pmProviderRegistry` — the ~9 unmigrated call sites (webhook handlers, manual runner, credential scope, lifecycle, GitHub adapter) keep working without changes. Prefer `getPMProvider(id)` / `listPMProviders()` from `src/integrations/pm/registry.ts` in new code.
+
+### Behavioral contract fields (spec 009/1)
+
+The manifest accepts four optional fields beyond the wiring contracts — each opts the provider into a behavioral assertion group in the conformance harness:
+
+| Field | Purpose | Harness assertion |
+|---|---|---|
+| `configSchema: z.ZodType` | Declarative Zod schema for the persisted integration config | Round-trip identity: parse → serialize → re-parse → deep-equal |
+| `discoveryCapabilities: { teams?, boards?, labels?, states?, projects?, customFields?, containers? }` | Which discovery queries the adapter can serve | Each declared capability returns an array from `adapter.discover(k, args)` |
+| `wizardSpec: { steps: [...] }` | Declarative list of standard wizard steps | Rendered by the generator at `web/src/components/projects/pm-providers/generator.tsx` |
+| `lifecycle: { enabled: true, fixture? }` | Opt into the full lifecycle scenario | Harness runs `runLifecycleScenario` (create → list → move → checklist → comment → delete) |
+| `createDiscoveryProvider: (opts?) => PMProvider` | Factory producing a discovery-scoped adapter outside a project context | Powers the generic `pm.discover` tRPC endpoint |
+
+All fields are optional; legacy manifests that don't declare them skip the corresponding harness groups. Plans 2/3/4 flip each real provider on individually.
 
 ---
 

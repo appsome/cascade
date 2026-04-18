@@ -110,4 +110,63 @@ describe('pmDiscoveryRouter', () => {
 		const result = await caller.providerCredentialRoles({ providerId: 'alpha' });
 		expect(result.map((r) => r.role)).toEqual(['api_key', 'webhook_secret']);
 	});
+
+	describe('discover (plan 009/1 task 10)', () => {
+		beforeEach(async () => {
+			_resetPMProviderRegistryForTesting();
+			const { createFakePMManifest } = await import('../../helpers/fakePMProvider.js');
+			registerPMProvider(createFakePMManifest());
+		});
+
+		it('returns labels from the fake provider', async () => {
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			const result = await caller.discover({
+				providerId: 'fake',
+				capability: 'labels',
+				args: { containerId: 'fake-container-a' },
+			});
+			expect(Array.isArray(result)).toBe(true);
+			expect((result as unknown[]).length).toBeGreaterThan(0);
+		});
+
+		it('returns states with typed category from the fake provider', async () => {
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			const result = await caller.discover({
+				providerId: 'fake',
+				capability: 'states',
+				args: { containerId: 'fake-container-a' },
+			});
+			expect(Array.isArray(result)).toBe(true);
+			const arr = result as Array<{ category: string }>;
+			for (const state of arr) {
+				expect(['todo', 'in_progress', 'done', 'canceled', 'unknown']).toContain(state.category);
+			}
+		});
+
+		it('throws NOT_FOUND for an unknown providerId', async () => {
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			await expect(
+				caller.discover({
+					providerId: 'does-not-exist',
+					capability: 'labels',
+					args: { containerId: 'x' },
+				}),
+			).rejects.toThrow(/does-not-exist|NOT_FOUND|Unknown/);
+		});
+
+		it('throws UNIMPLEMENTED when the provider does not declare the capability', async () => {
+			const { createFakePMManifest } = await import('../../helpers/fakePMProvider.js');
+			const base = createFakePMManifest();
+			registerPMProvider({ ...base, id: 'fake-no-caps', discoveryCapabilities: undefined });
+
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			await expect(
+				caller.discover({
+					providerId: 'fake-no-caps',
+					capability: 'labels',
+					args: { containerId: 'x' },
+				}),
+			).rejects.toThrow(/UNIMPLEMENTED|does not declare|capability/);
+		});
+	});
 });
