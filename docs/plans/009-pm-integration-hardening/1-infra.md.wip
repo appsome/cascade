@@ -6,7 +6,7 @@ plan_slug: infra
 level: plan
 parent_spec: docs/specs/009-pm-integration-hardening.md
 depends_on: []
-status: pending
+status: wip
 ---
 
 # 009/1: Infrastructure — Typed IDs, Manifest Contract Fields, Behavioral Harness, Fake Provider, Single Entrypoint
