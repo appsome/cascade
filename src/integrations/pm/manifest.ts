@@ -118,18 +118,13 @@ export interface WizardSpec {
 export interface LifecycleOptIn {
 	readonly enabled: true;
 	/**
-	 * Opaque fixture path or factory reference the harness uses to
-	 * construct an in-memory mock provider client. The harness imports the
-	 * module by string to avoid a hard dep from production code on tests.
-	 * When the manifest is author-time only (test fixtures), providing a
-	 * factory function inline is also supported.
+	 * Opaque string key the test harness uses to look up the provider's
+	 * lifecycle fixture in a test-only registry. Fixtures live under
+	 * `tests/helpers/` and can't be imported from production code, so
+	 * the manifest references them by key. When omitted, the harness
+	 * falls back to the generic fake provider.
 	 */
-	readonly fixture?:
-		| string
-		| (() => Promise<{
-				configFixture: unknown;
-				containerId: string;
-		  }>);
+	readonly fixtureKey?: string;
 }
 
 export interface PMProviderManifest {

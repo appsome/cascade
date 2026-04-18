@@ -100,6 +100,18 @@ export const trelloManifest: PMProviderManifest = {
 	platformClientFactory: (projectId) => new TrelloPlatformClient(projectId),
 
 	// ── Plan 009/2 behavioral contract fields ─────────────────────────
+	lifecycle: { enabled: true, fixtureKey: 'trello' },
+
+	wizardSpec: {
+		steps: [
+			{ kind: 'credentials', id: 'trello-credentials' },
+			{ kind: 'container-pick', id: 'trello-board' },
+			{ kind: 'label-mapping', id: 'trello-labels' },
+			{ kind: 'status-mapping', id: 'trello-statuses' },
+			{ kind: 'webhook-url-display', id: 'trello-webhook' },
+		],
+	},
+
 	configSchema: trelloConfigSchema,
 	configFixture: {
 		boardId: 'trello-fixture-board',

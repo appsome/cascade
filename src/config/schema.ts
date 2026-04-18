@@ -74,6 +74,13 @@ export const ProjectConfigSchema = z.object({
 		})
 		.default({ type: 'trello' }),
 
+	/**
+	 * @deprecated — use `trelloConfigSchema` from
+	 * `src/integrations/pm/trello/config-schema.ts` (declared on
+	 * `trelloManifest.configSchema` as of plan 009/2). This inline copy
+	 * stays for backward compat until plan 5 routes `configMapper`
+	 * through the manifest registry and deletes this duplicate.
+	 */
 	trello: z
 		.object({
 			boardId: z.string().min(1),

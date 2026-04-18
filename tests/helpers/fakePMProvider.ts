@@ -471,7 +471,7 @@ export function createFakePMManifest(): PMProviderManifest {
 				{ kind: 'webhook-url-display', id: 'wh' },
 			],
 		},
-		lifecycle: { enabled: true },
+		lifecycle: { enabled: true, fixtureKey: 'fake' },
 		createDiscoveryProvider: () => createFakePMProvider().provider,
 	};
 }

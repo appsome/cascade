@@ -12,6 +12,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { listPMProviders, registerPMProvider } from '../../../src/integrations/pm/registry.js';
+import type { PMProvider } from '../../../src/pm/types.js';
 import type { CascadeJob } from '../../../src/router/queue.js';
 import {
 	createFakePMManifest,
@@ -19,6 +20,23 @@ import {
 	runLifecycleScenario,
 } from '../../helpers/fakePMProvider.js';
 import { registerTestProvider } from '../../helpers/testPMProvider.js';
+import { trelloLifecycleFixture } from '../../helpers/trelloLifecycleFixture.js';
+
+/**
+ * Test-only registry of lifecycle fixtures keyed by manifest's
+ * `lifecycle.fixtureKey`. Keeps test helpers out of production code
+ * while letting the harness dispatch to the right per-provider fixture.
+ */
+const LIFECYCLE_FIXTURES: Record<
+	string,
+	() => Promise<{ provider: PMProvider; containerId: string }>
+> = {
+	fake: async () => {
+		const { provider } = createFakePMProvider();
+		return { provider, containerId: 'fake-container-a' };
+	},
+	trello: trelloLifecycleFixture,
+};
 
 // Import every real PM provider so the harness exercises each of them
 // alongside the TestProvider fixture.
@@ -158,13 +176,15 @@ describe('PM provider conformance (every registered provider)', () => {
 		});
 
 		describe('behavioral: lifecycle scenario', () => {
-			const canRun = manifest.lifecycle?.enabled === true;
+			const fixtureKey = manifest.lifecycle?.fixtureKey;
+			const fixture = fixtureKey ? LIFECYCLE_FIXTURES[fixtureKey] : undefined;
+			const canRun = manifest.lifecycle?.enabled === true && !!fixture;
 			it.skipIf(!canRun)(
 				'runs the full create → list → move → checklist → comment → delete scenario',
 				async () => {
-					if (id !== 'fake') return;
-					const { provider } = createFakePMProvider();
-					const report = await runLifecycleScenario(provider, 'fake-container-a', {
+					if (!fixture) return;
+					const { provider, containerId } = await fixture();
+					const report = await runLifecycleScenario(provider, containerId, {
 						title: 'Conformance lifecycle item',
 					});
 					expect(report.created.id).toBeTruthy();

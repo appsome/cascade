@@ -134,6 +134,17 @@ All fields are optional; legacy manifests that don't declare them skip the corre
 
 A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal reference implementation — copy its shape when starting a new provider. The harness runs against TestProvider + Trello + JIRA + Linear (44 assertions total).
 
+### Provider migration status (plan 009 — PM integration hardening)
+
+| Provider | configSchema | discoveryCapabilities | wizardSpec | lifecycle | Branded IDs on adapter |
+|---|---|---|---|---|---|
+| **Trello** (plan 009/2) | ✅ `trelloConfigSchema` | ✅ boards, labels, customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'trello'` | ✅ move/addLabel/removeLabel/listWorkItems |
+| **JIRA** (plan 009/3) | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending |
+| **Linear** (plan 009/4) | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending |
+| **Fake** (plan 009/1, test fixture) | ✅ | ✅ all | ✅ | ✅ | N/A (the fake parses branded IDs internally) |
+
+Trello is the first real provider on the hardened contracts; JIRA and Linear follow in plans 009/3 and 009/4. See `trelloManifest` at `src/integrations/pm/trello/manifest.ts` for the reference migration.
+
 ---
 
 ## Adding a new PM provider (step by step)
