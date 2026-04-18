@@ -331,58 +331,68 @@ export function useVerification(
 ) {
 	const verifyMutation = useMutation({
 		mutationFn: async () => {
+			// Plan 009/5 migrated verification from provider-specific
+			// verifyTrello / verifyJira / verifyLinear procedures to the
+			// generic pm.discover endpoint. The side effect of a successful
+			// discover call is that credentials are authenticated by the
+			// provider — we use the discovered-container count as the
+			// user-facing "verified" signal (simpler than the former
+			// username display, but unambiguous).
 			const provider = state.provider;
 			if (provider === 'trello') {
 				if (!state.trelloApiKey || !state.trelloToken) {
 					throw new Error('Enter both credentials before verifying');
 				}
-				const result = await trpcClient.integrationsDiscovery.verifyTrello.mutate({
-					apiKey: state.trelloApiKey,
-					token: state.trelloToken,
-				});
-				return { provider: 'trello' as const, result };
+				const boards = (await trpcClient.pm.discovery.discover.mutate({
+					providerId: 'trello',
+					capability: 'boards',
+					args: {},
+					credentials: {
+						api_key: state.trelloApiKey,
+						token: state.trelloToken,
+					},
+				})) as Array<{ id: string; name: string }>;
+				return { provider: 'trello' as const, count: boards.length };
 			}
 			if (provider === 'linear') {
 				if (!state.linearApiKey) {
 					throw new Error('Enter your API key before verifying');
 				}
-				const result = await trpcClient.integrationsDiscovery.verifyLinear.mutate({
-					apiKey: state.linearApiKey,
-				});
-				return { provider: 'linear' as const, result };
+				const teams = (await trpcClient.pm.discovery.discover.mutate({
+					providerId: 'linear',
+					capability: 'teams',
+					args: {},
+					credentials: { api_key: state.linearApiKey },
+				})) as Array<{ id: string; name: string }>;
+				return { provider: 'linear' as const, count: teams.length };
 			}
 			if (!state.jiraEmail || !state.jiraApiToken) {
 				throw new Error('Enter both credentials before verifying');
 			}
-			const result = await trpcClient.integrationsDiscovery.verifyJira.mutate({
-				email: state.jiraEmail,
-				apiToken: state.jiraApiToken,
-				baseUrl: state.jiraBaseUrl,
-			});
-			return { provider: 'jira' as const, result };
+			const projects = (await trpcClient.pm.discovery.discover.mutate({
+				providerId: 'jira',
+				capability: 'projects',
+				args: {},
+				credentials: {
+					email: state.jiraEmail,
+					api_token: state.jiraApiToken,
+					base_url: state.jiraBaseUrl,
+				},
+			})) as Array<{ id: string; name: string }>;
+			return { provider: 'jira' as const, count: projects.length };
 		},
-		onSuccess: ({ provider, result }) => {
+		onSuccess: ({ provider, count }) => {
 			// Ignore if provider changed while we were verifying
 			if (provider !== state.provider) return;
-			if (provider === 'trello') {
-				const r = result as { username: string; fullName: string };
-				dispatch({
-					type: 'SET_VERIFICATION',
-					result: { provider: 'trello', display: `@${r.username} (${r.fullName})` },
-				});
-			} else if (provider === 'linear') {
-				const r = result as { name: string; displayName: string };
-				dispatch({
-					type: 'SET_VERIFICATION',
-					result: { provider: 'linear', display: r.displayName || r.name },
-				});
-			} else {
-				const r = result as { displayName: string; emailAddress: string };
-				dispatch({
-					type: 'SET_VERIFICATION',
-					result: { provider: 'jira', display: `${r.displayName} (${r.emailAddress})` },
-				});
-			}
+			const containerLabel =
+				provider === 'trello' ? 'board' : provider === 'linear' ? 'team' : 'project';
+			const display = `Credentials verified — found ${count} ${containerLabel}${
+				count === 1 ? '' : 's'
+			}`;
+			dispatch({
+				type: 'SET_VERIFICATION',
+				result: { provider, display },
+			});
 			advanceToStep(3);
 		},
 		onError: (err) => {

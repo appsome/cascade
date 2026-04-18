@@ -1,8 +1,11 @@
 # PM Integration Architecture
 
-CASCADE's PM providers (Trello, JIRA, Linear, and any future Asana/GitLab/ClickUp) are built on a **provider manifest** pattern. One file describes the provider end-to-end; one registry iterates manifests; a conformance harness guarantees each manifest is complete.
+CASCADE's PM providers (Trello, JIRA, Linear, and any future Asana/GitLab/ClickUp) are built on a **provider manifest** pattern. One file describes the provider end-to-end; one registry iterates manifests; a behavioral conformance harness guarantees each manifest satisfies its declared contracts.
 
-This document is the canonical guide for adding a new PM provider. Spec [006](../../docs/specs/006-pm-integration-plug-and-play.md) delivered the pattern in five plans landed between 2026-04-15 and 2026-04-16.
+This document is the canonical guide for adding a new PM provider. Two specs shape it:
+
+- **Spec [006](../../docs/specs/006-pm-integration-plug-and-play.md.done)** — introduced the manifest pattern + wiring-level conformance (2026-04-15/16).
+- **Spec [009](../../docs/specs/009-pm-integration-hardening.md)** — hardened the contracts: branded ID types, manifest-owned config schemas (eliminating the #1138/#1142 drift class), unified `pm.discover` endpoint, behavioral conformance harness with in-memory lifecycle scenario, single registration entrypoint, and auth-header provenance enforcement.
 
 ---
 
@@ -51,6 +54,17 @@ See [`src/integrations/pm/manifest.ts`](./pm/manifest.ts) for the authoritative 
 | `platformClientFactory` | `(projectId) => PlatformCommentClient`. Used by the router to post ack comments; must pull auth headers from `_shared/auth-headers.ts`. |
 | `isSelfAuthoredHook?` | Optional — returns `true` when the event was authored by CASCADE itself (for loop prevention). |
 | `createLabel?` | Optional — enables the wizard's "Create label" button for this provider. |
+
+### Plan 009 hardened-contract fields (all optional; providers opt in)
+
+| Field | What it does |
+|---|---|
+| `configSchema?: z.ZodType` | Declarative Zod schema for the persisted integration config. The conformance harness asserts round-trip identity — the #1138/#1142 bug class (`projectId` stripped by Zod twice) becomes a CI failure instead of a production outage. |
+| `configFixture?` | Sample config used by the harness's round-trip asserter. Must parse against `configSchema`. |
+| `discoveryCapabilities?` | `{ teams?, boards?, labels?, states?, projects?, containers?, customFields? }`. Each flag means "`adapter.discover(capability, args)` returns a list of that shape". The generic `pm.discover` tRPC endpoint dispatches through this registry. |
+| `createDiscoveryProvider?` | `(opts) => PMProvider`. Factory producing a discovery-scoped adapter outside a project context (wizard setup, before the config is saved). Receives raw credentials from the wizard. |
+| `wizardSpec?` | `{ steps: Array<StandardStep \| CustomStep> }`. Declarative step list the shared wizard generator renders. Standard kinds: `credentials`, `container-pick`, `status-mapping`, `label-mapping`, `webhook-url-display`, `project-scope`. |
+| `lifecycle?` | `{ enabled: true, fixtureKey: string }`. Opts into the behavioral conformance harness's full lifecycle scenario. `fixtureKey` is looked up in the test-local `LIFECYCLE_FIXTURES` registry — the manifest doesn't import from `tests/helpers/`. |
 
 ---
 
@@ -141,29 +155,35 @@ A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal ref
 | **Trello** (plan 009/2) | ✅ `trelloConfigSchema` | ✅ boards, labels, customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'trello'` | ✅ move/addLabel/removeLabel/listWorkItems |
 | **JIRA** (plan 009/3) | ✅ `jiraConfigSchema` | ✅ projects, states, labels (empty — JIRA is free-form), customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'jira'` | ✅ move/addLabel/removeLabel/listWorkItems |
 | **Linear** (plan 009/4) | ✅ `linearConfigSchema` (locks #1138/#1142) | ✅ teams, states, labels, projects | ✅ 6 standard steps (includes project-scope from spec 005) | ✅ `lifecycle.fixtureKey: 'linear'` | ✅ move/addLabel/removeLabel/listWorkItems (locks #1117/#1137/#1139) |
-
-All three providers now on the hardened contracts. Plan 009/4 also ships `tests/unit/pm/linear/regression-2026-04.test.ts` — 12 tests, one set per 2026-04 bug class, that fail loudly if any of the six classes regresses.
 | **Fake** (plan 009/1, test fixture) | ✅ | ✅ all | ✅ | ✅ | N/A (the fake parses branded IDs internally) |
 
-Trello is the first real provider on the hardened contracts; JIRA and Linear follow in plans 009/3 and 009/4. See `trelloManifest` at `src/integrations/pm/trello/manifest.ts` for the reference migration.
+All three real providers are now on the hardened contracts. Plan 009/4 also ships `tests/unit/pm/linear/regression-2026-04.test.ts` — 12 tests, one set per 2026-04 bug class, that fail loudly if any of the six classes regresses. See `linearManifest` at `src/integrations/pm/linear/manifest.ts` for the reference migration (Linear's surface area is the richest).
 
 ---
 
 ## Adding a new PM provider (step by step)
 
-1. **Create the backend folder** at `src/integrations/pm/<provider>/`. Implement `client.ts`, `adapter.ts`, `router-adapter.ts`, `triggers/*.ts`, `webhook.ts`, `platform-client.ts`. None of these files is imported by any file outside `src/integrations/pm/<provider>/`.
+Spec 009 AC #10: **a new PM provider PR should not need to edit shared router / worker / CLI / dashboard / configMapper / central schema files**. Everything lives in your provider folder + your wizard folder + a single import in `src/integrations/pm/index.ts`. The `tests/unit/integrations/new-provider-surface.test.ts` guard enforces this.
 
-2. **Write the manifest** in `manifest.ts` exporting a `PMProviderManifest`. Wire the shared helpers: `auth-headers`, `makeHmacSha256Verifier` for the signature verifier, `resolveLabelId` if your provider rejects non-UUIDs.
+1. **Backend folder** at `src/integrations/pm/<provider>/`:
+   - `client.ts` (or reuse a sibling under `src/<provider>/`) — your REST / GraphQL client. Must use `withXxxCredentials()` + AsyncLocalStorage credential scoping; never hand-assemble Bearer headers (see `_shared/auth-headers.ts`).
+   - `adapter.ts` — your `PMProvider` implementation. Narrow method parameters to branded `ContainerId` / `LabelId` / `StateId` from `src/pm/ids.ts` via TypeScript method bivariance — direct adapter callers then get compile-time protection against state-name-vs-ID confusion (#1117/#1137/#1139). `createWorkItem` keeps `CreateWorkItemConfig` due to TS object-property invariance; parse `config.containerId` at the boundary.
+   - `config-schema.ts` — Zod schema for the project-scoped config. This is the **single source of truth** — the central `src/config/schema.ts` imports it.
+   - `manifest.ts` — the `PMProviderManifest`, wiring shared helpers (`auth-headers`, `makeHmacSha256Verifier`). Declare `configSchema`, `configFixture`, `discoveryCapabilities`, `wizardSpec`, `lifecycle.enabled`, `createDiscoveryProvider`. The conformance harness runs round-trip + lifecycle + webhook-verify + trigger-self-hook checks against each declared contract.
+   - `router-adapter.ts`, `triggers/*.ts`, `webhook.ts`, `platform-client.ts` — same as before.
+   - `index.ts` — side-effect module calling `registerPMProvider(<provider>Manifest)`.
 
-3. **Register the manifest** in `index.ts` — a single side-effect module that calls `registerPMProvider(<provider>Manifest)`. Add one line to `src/integrations/pm/index.ts` that imports `./<provider>/index.js`.
+2. **Wire the manifest** via a single import in `src/integrations/pm/index.ts` (`import './<provider>/index.js';`). No other edit to any shared file is needed for registration — the `single-entrypoint` test guards this.
 
-4. **Create the frontend folder** at `web/src/components/projects/pm-providers/<provider>/`. Implement `adapters.tsx` (thin step-component wrappers), `wizard.ts` (`ProviderWizardDefinition` including `useProviderHooks` if your provider needs React hooks for discovery / label creation), and `index.ts` (`registerProviderWizard(<provider>Wizard)`). Add one line to `pm-wizard.tsx` that imports your `./pm-providers/<provider>/index.js`.
+3. **Frontend folder** at `web/src/components/projects/pm-providers/<provider>/`: `adapters.tsx`, `wizard.ts` (`ProviderWizardDefinition`), `index.ts`. Add one line to `pm-wizard.tsx` to register. For shared wizard steps declared on `manifest.wizardSpec`, the generator in `pm-providers/generator.tsx` handles rendering — real shared step components are follow-up scope; today the generator renders typed placeholders.
 
-5. **Run the conformance harness**: `npm test tests/unit/integrations/pm-conformance.test.ts`. CI fails with a specific message for each missing or incorrect contract surface.
+4. **Lifecycle fixture** at `tests/helpers/<provider>LifecycleFixture.ts`. Add the fixture key to `LIFECYCLE_FIXTURES` in `tests/unit/integrations/pm-conformance.test.ts`. Trivial providers can reuse `createFakePMProvider()` (see Trello/JIRA/Linear fixtures).
 
-6. **Write provider-specific unit tests** in `tests/unit/pm/<provider>/` and `tests/unit/web/<provider>-*.test.ts`. The conformance harness covers contract invariants; you still need tests for your provider-specific logic (webhook parsing, field mappings, trigger dispatch).
+5. **Run the conformance harness**: `npx vitest run --project unit-core tests/unit/integrations/pm-conformance.test.ts`. Behavioral contracts run against your provider automatically once `configSchema` / `discoveryCapabilities` / `lifecycle` are declared. Failures name the contract.
 
-That's it. No edits to shared router code, shared trigger registration, shared job extractor, or the main wizard component.
+6. **Provider-specific unit tests** in `tests/unit/pm/<provider>/` — adapter tests (vi.mock the client), config-schema round-trip, discovery shape, wizardSpec, adapter branded IDs.
+
+That's it. The `new-provider-surface` snapshot test proves your PR touches **no** shared infrastructure file.
 
 ---
 
