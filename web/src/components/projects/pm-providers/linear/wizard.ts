@@ -99,6 +99,10 @@ interface LinearProviderHooks {
 		readonly color?: string;
 	}>;
 	readonly onCreateLabel: (slotKey: string, name: string, color?: string) => void;
+	readonly onCreateMissingLabels: (
+		slots: ReadonlyArray<{ slot: string; name: string; color?: string }>,
+	) => void;
+	readonly creatingMissingLabels: boolean;
 	readonly projectOptions: ReadonlyArray<{ readonly id: string; readonly name: string }>;
 	readonly projectsLoading: boolean;
 	readonly projectsError: string | undefined;
@@ -173,6 +177,8 @@ function LinearLabelMappingAdapter({
 		mappings: state.linearLabels,
 		onMappingChange: (key, value) => dispatch({ type: 'SET_LINEAR_LABEL', key, value }),
 		onCreateLabel: h.onCreateLabel,
+		onCreateMissingLabels: h.onCreateMissingLabels,
+		creatingMissing: h.creatingMissingLabels,
 		labelDefaults: LINEAR_LABEL_DEFAULTS,
 		loading: h.teamDetailsLoading,
 	});
@@ -275,6 +281,18 @@ export const linearProviderWizard: ProviderWizardDefinition = {
 			);
 		};
 
+		const onCreateMissingLabels = (
+			slots: ReadonlyArray<{ slot: string; name: string; color?: string }>,
+		) => {
+			// Resolve default colors for any entry that didn't carry one.
+			const resolved = slots.map((s) => ({
+				slot: s.slot,
+				name: s.name,
+				color: s.color ?? LINEAR_LABEL_DEFAULTS[s.slot]?.color ?? '#0284C7',
+			}));
+			labels.createMissingLabelsMutation.mutate(resolved);
+		};
+
 		const webhookUrl = projectId ? `${window.location.origin}/webhooks/${projectId}/linear` : '';
 
 		const details = state.linearTeamDetails;
@@ -290,6 +308,8 @@ export const linearProviderWizard: ProviderWizardDefinition = {
 			providerStates: details?.states ?? [],
 			providerLabels: details?.labels ?? [],
 			onCreateLabel,
+			onCreateMissingLabels,
+			creatingMissingLabels: labels.createMissingLabelsMutation.isPending,
 			projectOptions: state.linearProjects.map((p) => ({ id: p.id, name: p.name })),
 			projectsLoading: discovery.linearProjectsMutation.isPending,
 			projectsError: discovery.linearProjectsMutation.isError

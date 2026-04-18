@@ -111,6 +111,10 @@ interface TrelloProviderHooks {
 		readonly type: string;
 	}>;
 	readonly onCreateLabel: (slotKey: string, name: string, color?: string) => void;
+	readonly onCreateMissingLabels: (
+		slots: ReadonlyArray<{ slot: string; name: string; color?: string }>,
+	) => void;
+	readonly creatingMissingLabels: boolean;
 	readonly onCreateCustomField: (slotKey: string, name: string) => void;
 	readonly webhookUrl: string;
 	readonly creatingSlot: string | null;
@@ -184,6 +188,8 @@ function TrelloLabelMappingAdapter({
 		mappings: state.trelloLabelMappings,
 		onMappingChange: (key, value) => dispatch({ type: 'SET_TRELLO_LABEL_MAPPING', key, value }),
 		onCreateLabel: h.onCreateLabel,
+		onCreateMissingLabels: h.onCreateMissingLabels,
+		creatingMissing: h.creatingMissingLabels,
 		labelDefaults: TRELLO_LABEL_DEFAULTS,
 		loading: h.boardDetailsLoading,
 	});
@@ -290,6 +296,17 @@ export const trelloProviderWizard: ProviderWizardDefinition = {
 			);
 		};
 
+		const onCreateMissingLabels = (
+			slots: ReadonlyArray<{ slot: string; name: string; color?: string }>,
+		) => {
+			const resolved = slots.map((s) => ({
+				slot: s.slot,
+				name: s.name,
+				color: s.color ?? TRELLO_LABEL_DEFAULTS[s.slot]?.color ?? 'sky',
+			}));
+			labels.createMissingLabelsMutation.mutate(resolved);
+		};
+
 		const onCreateCustomField = (_slotKey: string, name: string) => {
 			customField.createCustomFieldMutation.mutate({ name });
 		};
@@ -354,6 +371,8 @@ export const trelloProviderWizard: ProviderWizardDefinition = {
 			providerLabels: boardDetails?.labels ?? [],
 			providerCustomFields: boardDetails?.customFields.filter((f) => f.type === 'number') ?? [],
 			onCreateLabel,
+			onCreateMissingLabels,
+			creatingMissingLabels: labels.createMissingLabelsMutation.isPending,
 			onCreateCustomField,
 			webhookUrl,
 			creatingSlot,
