@@ -15,6 +15,8 @@ import {
 	removeChecklistItem,
 	toggleChecklistItem,
 } from '../_shared/inline-checklist.js';
+import type { ContainerId, LabelId } from '../ids.js';
+import { parseContainerId } from '../ids.js';
 import { resolveJiraMediaUrls } from '../media.js';
 import type {
 	Attachment,
@@ -27,6 +29,19 @@ import type {
 	WorkItemLabel,
 } from '../types.js';
 import { adfToPlainText, extractAdfMediaNodes, markdownToAdf } from './adf.js';
+
+/**
+ * Plan 009/3 narrows a subset of the JIRA adapter's public method
+ * parameters to branded IDs (`ContainerId`, `LabelId`) via TypeScript
+ * method bivariance. Callers typed as `JiraPMProvider` specifically
+ * get compile-time enforcement; callers going through `PMProvider`
+ * keep the legacy `string` type (the interface contract is unchanged).
+ *
+ * `createWorkItem` keeps `CreateWorkItemConfig` because TypeScript
+ * enforces invariance on object-property types. Internally the adapter
+ * uses `config.containerId` as a JIRA project key — the project-scoped
+ * entry point.
+ */
 
 const INLINE_CHECKLIST_ID_PREFIX = 'inline-';
 
@@ -177,7 +192,10 @@ export class JiraPMProvider implements PMProvider {
 		const backlogStatus = this.config.statuses?.backlog;
 		if (backlogStatus) {
 			try {
-				await this.moveWorkItem(key, backlogStatus);
+				// Parse at the boundary — backlogStatus comes from the
+				// project config's statuses record (always present as a
+				// non-empty string when defined).
+				await this.moveWorkItem(key, parseContainerId(backlogStatus));
 			} catch (err) {
 				logger.warn('[JIRA] Failed to transition new issue to backlog status', {
 					issueKey: key,
@@ -197,7 +215,7 @@ export class JiraPMProvider implements PMProvider {
 	}
 
 	async listWorkItems(
-		containerId: string | undefined,
+		containerId: ContainerId | undefined,
 		filter?: ListWorkItemsFilter,
 	): Promise<WorkItem[]> {
 		// containerId is the JIRA project key — defaults to config.projectKey.
@@ -226,7 +244,7 @@ export class JiraPMProvider implements PMProvider {
 		}));
 	}
 
-	async moveWorkItem(id: string, destination: string): Promise<void> {
+	async moveWorkItem(id: string, destination: ContainerId): Promise<void> {
 		// destination is a JIRA status name — find the transition ID
 		const transitions = await jiraClient.getTransitions(id);
 		const transition = transitions.find(
@@ -246,14 +264,14 @@ export class JiraPMProvider implements PMProvider {
 		await jiraClient.transitionIssue(id, transition.id ?? '');
 	}
 
-	async addLabel(id: string, labelName: string): Promise<void> {
+	async addLabel(id: string, labelName: LabelId): Promise<void> {
 		const currentLabels = await jiraClient.getIssueLabels(id);
 		if (!currentLabels.includes(labelName)) {
 			await jiraClient.updateLabels(id, [...currentLabels, labelName]);
 		}
 	}
 
-	async removeLabel(id: string, labelName: string): Promise<void> {
+	async removeLabel(id: string, labelName: LabelId): Promise<void> {
 		const currentLabels = await jiraClient.getIssueLabels(id);
 		const newLabels = currentLabels.filter((l) => l !== labelName);
 		if (newLabels.length !== currentLabels.length) {

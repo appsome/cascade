@@ -139,7 +139,7 @@ A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal ref
 | Provider | configSchema | discoveryCapabilities | wizardSpec | lifecycle | Branded IDs on adapter |
 |---|---|---|---|---|---|
 | **Trello** (plan 009/2) | ✅ `trelloConfigSchema` | ✅ boards, labels, customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'trello'` | ✅ move/addLabel/removeLabel/listWorkItems |
-| **JIRA** (plan 009/3) | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending |
+| **JIRA** (plan 009/3) | ✅ `jiraConfigSchema` | ✅ projects, states, labels (empty — JIRA is free-form), customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'jira'` | ✅ move/addLabel/removeLabel/listWorkItems |
 | **Linear** (plan 009/4) | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending |
 | **Fake** (plan 009/1, test fixture) | ✅ | ✅ all | ✅ | ✅ | N/A (the fake parses branded IDs internally) |
 

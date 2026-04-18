@@ -16,6 +16,13 @@ const AgentEngineConfigSchema = z.object({
 	overrides: z.record(z.string()).default({}),
 });
 
+/**
+ * @deprecated — use `jiraConfigSchema` from
+ * `src/integrations/pm/jira/config-schema.ts` (declared on
+ * `jiraManifest.configSchema` as of plan 009/3). This inline copy
+ * stays for backward compat until plan 5 routes `configMapper`
+ * through the manifest registry and deletes this duplicate.
+ */
 const JiraConfigSchema = z.object({
 	projectKey: z.string().min(1),
 	baseUrl: z.string().url(),

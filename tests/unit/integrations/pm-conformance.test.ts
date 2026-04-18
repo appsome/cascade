@@ -19,6 +19,7 @@ import {
 	createFakePMProvider,
 	runLifecycleScenario,
 } from '../../helpers/fakePMProvider.js';
+import { jiraLifecycleFixture } from '../../helpers/jiraLifecycleFixture.js';
 import { registerTestProvider } from '../../helpers/testPMProvider.js';
 import { trelloLifecycleFixture } from '../../helpers/trelloLifecycleFixture.js';
 
@@ -36,6 +37,7 @@ const LIFECYCLE_FIXTURES: Record<
 		return { provider, containerId: 'fake-container-a' };
 	},
 	trello: trelloLifecycleFixture,
+	jira: jiraLifecycleFixture,
 };
 
 // Import every real PM provider so the harness exercises each of them

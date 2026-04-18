@@ -6,7 +6,7 @@ plan_slug: migrate-jira
 level: plan
 parent_spec: docs/specs/009-pm-integration-hardening.md
 depends_on: [1-infra.md]
-status: wip
+status: done
 ---
 
 # 009/3: Migrate JIRA onto the Hardened PM Contracts
@@ -194,16 +194,25 @@ Originally out of scope for the spec:
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1 (configSchema)
-- [ ] AC #2 (discoveryCapabilities)
-- [ ] AC #3 (branded IDs)
-- [ ] AC #4 (wizardSpec adoption)
-- [ ] AC #5 (lifecycle harness)
-- [ ] AC #6 (JiraConfigSchema deprecated)
-- [ ] AC #7 (no divergent auth headers)
-- [ ] AC #8 (tests)
-- [ ] AC #9 (build)
-- [ ] AC #10 (tests)
-- [ ] AC #11 (lint)
-- [ ] AC #12 (typecheck)
-- [ ] AC #13 (no regression)
+- [x] AC #1 (configSchema) — `src/integrations/pm/jira/config-schema.ts` extracted; 8 round-trip tests pass; harness config round-trip enabled for JIRA
+- [x] AC #2 (discoveryCapabilities) — projects/states/labels/customFields declared; `createDiscoveryProvider` wraps `withJiraCredentials`; `classifyJiraStatus` maps status names to canonical categories; labels returns empty (JIRA free-form)
+- [x] AC #3 (branded IDs) — `moveWorkItem`, `addLabel`, `removeLabel`, `listWorkItems` narrowed via method bivariance; internal self-call to `moveWorkItem(key, backlogStatus)` uses `parseContainerId` at the boundary
+- [x] AC #4 (wizardSpec + generator adoption) — 5 standard steps declared; `renderStandardStep` dispatches correctly
+- [x] AC #5 (lifecycle harness) — `lifecycle.fixtureKey: 'jira'` + `jiraLifecycleFixture` + harness registry; conformance went from 61/19 → 63/17
+- [x] AC #6 (JiraConfigSchema deprecated) — jsdoc `@deprecated` on inline copy in `src/config/schema.ts`
+- [x] AC #7 (no divergent auth headers) — auth-header-provenance test clean; JIRA uses `jiraAuthHeader` from `_shared/auth-headers.ts`
+- [x] AC #8 (tests) — 4 new test files, 23 new tests
+- [x] AC #9 (build) — npm run build passes
+- [x] AC #10 (tests) — npm test: 424 files / 8011 pass / 17 skip
+- [x] AC #11 (lint) — clean
+- [x] AC #12 (typecheck) — clean
+- [x] AC #13 (no regression) — all 104 pre-existing JIRA tests pass; adapter behavior unchanged
+
+## Plan divergence notes
+
+1. **`createWorkItem` stays on `CreateWorkItemConfig`** — same TS object-property invariance issue as plan 2/Trello. Internal `parseContainerId(backlogStatus)` handles the boundary.
+2. **`email` / `apiToken` in credentials, not config** — the plan's "rejects missing email, apiToken, projectKey" was mislaid. Those are `project_credentials` rows, not part of `jiraConfigSchema`. The schema rejects missing `projectKey` + `baseUrl` only.
+3. **JIRA labels return empty** — JIRA has no canonical "list curated labels" endpoint; labels are free-form strings auto-created on first write. `discover('labels')` returns `[]` and the wizard's label-mapping UI accepts free text for JIRA.
+4. **`base_url` passed through credentials for discovery** — during wizard setup the config isn't saved yet. The factory accepts `base_url` via the credentials record as a synthetic slot so `withJiraCredentials` has the URL it needs.
+5. **`classifyJiraStatus` is name-pattern-based** — JIRA's per-project status endpoint doesn't return `statusCategory.key`. The richer endpoint requires an extra round-trip. Acceptable trade-off for plan 3; a future refactor can swap in the explicit category lookup.
+6. **Lifecycle fixture reuses the fake** — same as Trello. Real JIRA adapter lifecycle coverage lives in `tests/unit/pm/jira/adapter.test.ts` (vi.mock-driven). The fixture proves the manifest opt-in wires; it's not duplicating adapter coverage.
