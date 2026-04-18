@@ -13,6 +13,12 @@
  * - REDIS_URL — Redis for job dispatch to the router's worker-manager
  */
 
+// Bootstrap all integrations via the single canonical entrypoint before
+// the tRPC router / static server is constructed. See
+// src/integrations/entrypoint.ts — consumed by router, worker, CLI, and
+// dashboard so PM/SCM/alerting registrations cannot drift across surfaces.
+import './integrations/entrypoint.js';
+
 import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';

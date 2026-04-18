@@ -1,13 +1,12 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { captureException, flush, setTag } from '../sentry.js';
-// Bootstrap all integrations before any adapters are loaded
-// PM manifests register themselves via this barrel and mirror into
-// integrationRegistry. SCM (GitHub) and alerting (Sentry) register via
-// their own side-effect modules — the legacy `bootstrap.ts` is gone.
-import '../integrations/pm/index.js';
-import '../github/register.js';
-import '../sentry/register.js';
+// Bootstrap all integrations via the single canonical entrypoint. The
+// entrypoint side-effect-imports every PM / SCM / alerting registration
+// barrel; a per-runtime list here is what caused Linear registration to
+// drift across router, worker, CLI, and dashboard during the 2026-04
+// workstream (see plan 009/1 task 4). A single file is the fix.
+import '../integrations/entrypoint.js';
 import { initPrompts } from '../agents/prompts/index.js';
 import { registerBuiltInEngines } from '../backends/bootstrap.js';
 import { initAgentMessages } from '../config/agentMessages.js';

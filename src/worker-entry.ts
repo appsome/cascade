@@ -13,12 +13,11 @@
  * - DATABASE_URL: PostgreSQL connection string for config
  */
 
-// Bootstrap all integrations before processing any jobs. PM via the
-// manifest barrel; SCM (GitHub) + alerting (Sentry) via their own
-// side-effect modules (the legacy bootstrap.ts is gone as of 006/5).
-import './integrations/pm/index.js';
-import './github/register.js';
-import './sentry/register.js';
+// Bootstrap all integrations via the single canonical entrypoint. See
+// src/integrations/entrypoint.ts — one file, consumed by router, worker,
+// CLI, and dashboard, so a new provider can never be registered in some
+// runtime surfaces but not others.
+import './integrations/entrypoint.js';
 import { registerBuiltInEngines } from './backends/bootstrap.js';
 import { loadEnvConfigSafe } from './config/env.js';
 import { loadConfig } from './config/provider.js';
