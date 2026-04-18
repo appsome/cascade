@@ -13,10 +13,18 @@
  * webhooks (`src/router/webhookVerification.ts`).
  */
 
+import { parseContainerId, parseLabelId } from '../../../pm/ids.js';
 import { TrelloIntegration } from '../../../pm/trello/integration.js';
+import type {
+	DiscoveryArgs,
+	DiscoveryCapability,
+	DiscoveryResult,
+	PMProvider,
+} from '../../../pm/types.js';
 import { TrelloRouterAdapter } from '../../../router/adapters/trello.js';
 import { TrelloPlatformClient } from '../../../router/platformClients/trello.js';
 import { buildTrelloCallbackUrl } from '../../../router/webhookVerification.js';
+import { trelloClient, withTrelloCredentials } from '../../../trello/client.js';
 import { TrelloCommentMentionTrigger } from '../../../triggers/trello/comment-mention.js';
 import { ReadyToProcessLabelTrigger } from '../../../triggers/trello/label-added.js';
 import {
@@ -28,6 +36,7 @@ import {
 } from '../../../triggers/trello/status-changed.js';
 import { verifyTrelloSignature } from '../../../webhook/signatureVerification.js';
 import type { PMProviderManifest, WebhookVerifier } from '../manifest.js';
+import { trelloConfigSchema } from './config-schema.js';
 
 const TRELLO_SIGNATURE_HEADER = 'x-trello-webhook';
 
@@ -89,4 +98,105 @@ export const trelloManifest: PMProviderManifest = {
 	],
 
 	platformClientFactory: (projectId) => new TrelloPlatformClient(projectId),
+
+	// ── Plan 009/2 behavioral contract fields ─────────────────────────
+	lifecycle: { enabled: true, fixtureKey: 'trello' },
+
+	wizardSpec: {
+		steps: [
+			{ kind: 'credentials', id: 'trello-credentials' },
+			{ kind: 'container-pick', id: 'trello-board' },
+			{ kind: 'label-mapping', id: 'trello-labels' },
+			{ kind: 'status-mapping', id: 'trello-statuses' },
+			{ kind: 'webhook-url-display', id: 'trello-webhook' },
+		],
+	},
+
+	configSchema: trelloConfigSchema,
+	configFixture: {
+		boardId: 'trello-fixture-board',
+		lists: { backlog: 'list-bl', todo: 'list-td', done: 'list-dn' },
+		labels: { bug: 'label-red', feature: 'label-grn' },
+		customFields: { cost: 'cf-cost' },
+	},
+
+	/**
+	 * Trello's discovery surface: list the user's boards, enumerate labels
+	 * on a board, and expose custom-field metadata for the wizard. `states`
+	 * isn't declared because Trello has no native state concept — lists
+	 * serve both container and status roles, and list lookup lives inside
+	 * `boards`. `containers` isn't declared because in Trello's model it
+	 * would be redundant with `boards`.
+	 */
+	discoveryCapabilities: {
+		boards: true,
+		labels: true,
+		customFields: true,
+	},
+
+	/**
+	 * Produce a discovery-scoped PMProvider. The factory binds the
+	 * provided credentials into Trello's AsyncLocalStorage scope via
+	 * `withTrelloCredentials`, so the singleton trelloClient doesn't need
+	 * per-call credential threading.
+	 *
+	 * Accepts `credentials` as a `Record<string, string>` shaped by
+	 * credentialRoles — the tRPC discover endpoint provides this from
+	 * the wizard's collected inputs.
+	 */
+	createDiscoveryProvider: (opts) => {
+		const creds = opts?.credentials ?? {};
+		const apiKey = creds.api_key ?? '';
+		const token = creds.token ?? '';
+
+		const runWithCreds = <T>(fn: () => Promise<T>): Promise<T> =>
+			withTrelloCredentials({ apiKey, token }, fn);
+
+		const provider: Pick<PMProvider, 'type' | 'discover'> = {
+			type: 'trello',
+			async discover<K extends DiscoveryCapability>(
+				capability: K,
+				args: DiscoveryArgs<K>,
+			): Promise<DiscoveryResult<K>> {
+				switch (capability) {
+					case 'boards': {
+						const boards = await runWithCreds(() => trelloClient.getBoards());
+						const out = boards.map((b) => ({
+							id: parseContainerId(b.id),
+							name: b.name,
+						}));
+						return out as unknown as DiscoveryResult<K>;
+					}
+					case 'labels': {
+						const a = args as { containerId: string };
+						const labels = await runWithCreds(() => trelloClient.getBoardLabels(a.containerId));
+						const out = labels.map((l) => ({
+							id: parseLabelId(l.id),
+							name: l.name,
+							color: l.color,
+						}));
+						return out as unknown as DiscoveryResult<K>;
+					}
+					case 'customFields': {
+						const a = args as { containerId: string };
+						const fields = await runWithCreds(() =>
+							trelloClient.getBoardCustomFields(a.containerId),
+						);
+						const out = fields.map((f) => ({
+							id: f.id,
+							name: f.name,
+							type: f.type,
+						}));
+						return out as unknown as DiscoveryResult<K>;
+					}
+					default:
+						throw new Error(
+							`Trello provider does not support discovery capability '${capability}'`,
+						);
+				}
+			},
+		};
+
+		return provider as PMProvider;
+	},
 };

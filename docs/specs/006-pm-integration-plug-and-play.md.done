@@ -9,6 +9,8 @@ status: done
 
 # 006: Refactor PM integration layer for plug-and-play extensibility
 
+> **Forward reference:** Spec [009](./009-pm-integration-hardening.md) extends this work with behavioral conformance — manifest-owned config schemas, branded ID types, unified `pm.discover`, full lifecycle scenario harness, single registration entrypoint, auth-header provenance. Read spec 006 for the wiring pattern; read spec 009 for the contractual hardening built on top.
+
 ## Problem & Motivation
 
 Adding a new PM provider to CASCADE requires edits in ~10 cross-cutting locations. Linear's recent landing surfaced this as a source of real, production-visible bugs: we shipped the integration, then in a single afternoon chased four separate silent failures — each traceable to a registration that was forgotten or that diverged from the canonical version:

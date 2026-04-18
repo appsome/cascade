@@ -8,6 +8,7 @@
 
 import { trelloClient } from '../../trello/client.js';
 import type { TrelloConfig } from '../config.js';
+import type { ContainerId, LabelId } from '../ids.js';
 import { extractMarkdownImages } from '../media.js';
 import type {
 	Attachment,
@@ -20,6 +21,23 @@ import type {
 	WorkItemComment,
 	WorkItemLabel,
 } from '../types.js';
+
+/**
+ * Plan 009/2 narrows a subset of the Trello adapter's public method
+ * parameters to branded IDs (`ContainerId`, `LabelId`) via TypeScript
+ * method bivariance. Callers that type their reference as
+ * `TrelloPMProvider` specifically get compile-time enforcement — passing
+ * a bare `string` where a `ContainerId` is expected is a compile error.
+ * Callers going through `PMProvider` still see the legacy `string` type
+ * (the interface contract hasn't changed).
+ *
+ * Note: `createWorkItem` keeps the interface's `CreateWorkItemConfig`
+ * parameter type (containerId: string) because TypeScript enforces
+ * invariance on object-property types even when method parameters are
+ * bivariant. Internally the adapter parses `config.containerId` via
+ * `parseContainerId` at the boundary so the branded type is used from
+ * there on.
+ */
 
 export class TrelloPMProvider implements PMProvider {
 	readonly type = 'trello' as const;
@@ -110,7 +128,7 @@ export class TrelloPMProvider implements PMProvider {
 	}
 
 	async listWorkItems(
-		containerId: string | undefined,
+		containerId: ContainerId | undefined,
 		filter?: ListWorkItemsFilter,
 	): Promise<WorkItem[]> {
 		// Self-resolve list ID from config when caller doesn't pass one. Trello
@@ -133,15 +151,15 @@ export class TrelloPMProvider implements PMProvider {
 		}));
 	}
 
-	async moveWorkItem(id: string, destination: string): Promise<void> {
+	async moveWorkItem(id: string, destination: ContainerId): Promise<void> {
 		await trelloClient.moveCardToList(id, destination);
 	}
 
-	async addLabel(id: string, labelId: string): Promise<void> {
+	async addLabel(id: string, labelId: LabelId): Promise<void> {
 		await trelloClient.addLabelToCard(id, labelId);
 	}
 
-	async removeLabel(id: string, labelId: string): Promise<void> {
+	async removeLabel(id: string, labelId: LabelId): Promise<void> {
 		await trelloClient.removeLabelFromCard(id, labelId);
 	}
 

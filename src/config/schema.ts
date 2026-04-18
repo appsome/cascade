@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { jiraConfigSchema } from '../integrations/pm/jira/config-schema.js';
+import { linearConfigSchema } from '../integrations/pm/linear/config-schema.js';
+import { trelloConfigSchema } from '../integrations/pm/trello/config-schema.js';
 import { EngineSettingsSchema } from './engineSettings.js';
 
 export const PROJECT_DEFAULTS = {
@@ -16,46 +19,11 @@ const AgentEngineConfigSchema = z.object({
 	overrides: z.record(z.string()).default({}),
 });
 
-const JiraConfigSchema = z.object({
-	projectKey: z.string().min(1),
-	baseUrl: z.string().url(),
-	statuses: z.record(z.string()), // CASCADE status names → JIRA status IDs/names
-	issueTypes: z.record(z.string()).optional(),
-	customFields: z
-		.object({
-			cost: z.string().optional(),
-		})
-		.optional(),
-	labels: z
-		.object({
-			processing: z.string().default('cascade-processing'),
-			processed: z.string().default('cascade-processed'),
-			error: z.string().default('cascade-error'),
-			readyToProcess: z.string().default('cascade-ready'),
-		})
-		.optional(),
-});
-
-const LinearConfigSchema = z.object({
-	teamId: z.string().min(1),
-	/** Optional Linear Project (initiative) ID — when set, narrows scope within the team. */
-	projectId: z.string().optional(),
-	statuses: z.record(z.string()), // CASCADE status names → Linear state IDs
-	labels: z
-		.object({
-			processing: z.string().optional(),
-			processed: z.string().optional(),
-			error: z.string().optional(),
-			readyToProcess: z.string().optional(),
-			auto: z.string().optional(),
-		})
-		.optional(),
-	customFields: z
-		.object({
-			cost: z.string().optional(),
-		})
-		.optional(),
-});
+// Plan 009/5 removed the inline Trello / JIRA / Linear config schemas.
+// Each provider's manifest now owns its schema (see
+// `src/integrations/pm/<provider>/config-schema.ts`). The project config
+// below imports those schemas directly so there's a single source of
+// truth — no more two-layer drift (#1138 / #1142 class).
 
 export const ProjectConfigSchema = z.object({
 	id: z.string().min(1),
@@ -74,22 +42,11 @@ export const ProjectConfigSchema = z.object({
 		})
 		.default({ type: 'trello' }),
 
-	trello: z
-		.object({
-			boardId: z.string().min(1),
-			lists: z.record(z.string()),
-			labels: z.record(z.string()),
-			customFields: z
-				.object({
-					cost: z.string().optional(),
-				})
-				.optional(),
-		})
-		.optional(),
+	trello: trelloConfigSchema.optional(),
 
-	jira: JiraConfigSchema.optional(),
+	jira: jiraConfigSchema.optional(),
 
-	linear: LinearConfigSchema.optional(),
+	linear: linearConfigSchema.optional(),
 
 	model: z.string().default(PROJECT_DEFAULTS.model),
 	agentModels: z.record(z.string()).optional(),

@@ -21,6 +21,7 @@ import {
 	toggleChecklistItem,
 } from '../_shared/inline-checklist.js';
 import type { LinearConfig } from '../config.js';
+import type { ContainerId, LabelId } from '../ids.js';
 import type {
 	Attachment,
 	Checklist,
@@ -147,7 +148,7 @@ export class LinearPMProvider implements PMProvider {
 	}
 
 	async listWorkItems(
-		containerId: string | undefined,
+		containerId: ContainerId | undefined,
 		filter?: ListWorkItemsFilter,
 	): Promise<WorkItem[]> {
 		// containerId is the Linear team ID — defaults to config.teamId.
@@ -178,19 +179,22 @@ export class LinearPMProvider implements PMProvider {
 		}));
 	}
 
-	async moveWorkItem(id: string, destination: string): Promise<void> {
-		// destination is a Linear state name or ID from config.statuses
+	async moveWorkItem(id: string, destination: ContainerId): Promise<void> {
+		// destination is a Linear state name OR a state ID — per the
+		// current contract, callers may pass either. Branded ContainerId
+		// on the class-level signature enforces "came through parseContainerId"
+		// at direct callers; the resolver still tries config lookup first.
 		const stateId = this.config.statuses?.[destination] ?? destination;
 		await linearClient.updateIssueState(id, stateId);
 	}
 
-	async addLabel(id: string, labelIdOrName: string): Promise<void> {
+	async addLabel(id: string, labelIdOrName: LabelId): Promise<void> {
 		const labelId = this.resolveLabelId(labelIdOrName);
 		if (!labelId) return;
 		await linearClient.addLabel(id, labelId);
 	}
 
-	async removeLabel(id: string, labelIdOrName: string): Promise<void> {
+	async removeLabel(id: string, labelIdOrName: LabelId): Promise<void> {
 		const labelId = this.resolveLabelId(labelIdOrName);
 		if (!labelId) return;
 		await linearClient.removeLabel(id, labelId);

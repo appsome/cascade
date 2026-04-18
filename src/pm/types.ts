@@ -3,7 +3,55 @@
  * future project-management integrations must implement.
  */
 
+import type { ContainerId, LabelId, StateId } from './ids.js';
+
 export type PMType = 'trello' | 'jira' | 'linear';
+
+// ── Discovery capability type machinery ───────────────────────────────────
+// Plan 009/1 introduces an optional `discover?` method on PMProvider that
+// providers use to surface teams/boards/labels/states/etc. through a single
+// generic tRPC endpoint. The capability union + per-capability input/output
+// types give the endpoint discriminated typing; providers opt in by
+// declaring `discoveryCapabilities` on their manifest AND implementing
+// `discover(capability, args)` on their adapter.
+
+/** Every discovery capability a PM provider may declare support for. */
+export type DiscoveryCapability =
+	| 'teams'
+	| 'boards'
+	| 'labels'
+	| 'states'
+	| 'projects'
+	| 'customFields'
+	| 'containers';
+
+/**
+ * Per-capability argument shapes. Top-level lookups (teams/boards/projects/
+ * containers) take an optional containerId; nested lookups
+ * (labels/states/customFields) require one.
+ */
+export type DiscoveryArgs<K extends DiscoveryCapability> = K extends 'containers'
+	? Record<string, never>
+	: K extends 'teams' | 'boards' | 'projects'
+		? { containerId?: ContainerId }
+		: K extends 'labels' | 'states' | 'customFields'
+			? { containerId: ContainerId }
+			: never;
+
+/** Per-capability result shapes. */
+export type DiscoveryResult<K extends DiscoveryCapability> = K extends 'labels'
+	? Array<{ id: LabelId; name: string; color?: string }>
+	: K extends 'states'
+		? Array<{
+				id: StateId;
+				name: string;
+				category: 'todo' | 'in_progress' | 'done' | 'canceled' | 'unknown';
+			}>
+		: K extends 'customFields'
+			? Array<{ id: string; name: string; type: string }>
+			: K extends 'teams' | 'boards' | 'containers' | 'projects'
+				? Array<{ id: ContainerId; name: string }>
+				: never;
 
 /**
  * A reference to an inline media item (image, etc.) embedded in a work item
@@ -149,4 +197,22 @@ export interface PMProvider {
 	// Utility
 	getWorkItemUrl(id: string): string;
 	getAuthenticatedUser(): Promise<{ id: string; name: string; username: string }>;
+
+	/**
+	 * Optional — generic discovery dispatch. Providers that implement this
+	 * method must also declare the corresponding capability flags on their
+	 * `PMProviderManifest.discoveryCapabilities`. The `pm.discover` tRPC
+	 * endpoint routes to this method; the wizard consumes it through the
+	 * generic provider-hooks shell instead of per-provider tRPC procedures.
+	 *
+	 * Plans 2, 3, 4 migrate Trello, JIRA, and Linear onto this method. While
+	 * the method is optional, per-provider method signatures (moveWorkItem,
+	 * createWorkItem, etc.) continue to accept plain `string` at the
+	 * interface level; adapter implementations narrow to branded types in
+	 * their migration plans.
+	 */
+	discover?<K extends DiscoveryCapability>(
+		capability: K,
+		args: DiscoveryArgs<K>,
+	): Promise<DiscoveryResult<K>>;
 }
