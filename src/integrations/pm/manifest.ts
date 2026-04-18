@@ -18,6 +18,7 @@
  * same `id` — see web/src/components/projects/pm-providers/.
  */
 
+import type { z } from 'zod';
 import type { PMIntegration } from '../../pm/integration.js';
 import type { ParsedWebhookEvent, RouterPlatformAdapter } from '../../router/platform-adapter.js';
 import type { PlatformCommentClient } from '../../router/platformClients/types.js';
@@ -59,6 +60,77 @@ export type WebhookVerifier = (
  * distinct from the PMProvider used by agents (the adapter).
  */
 export type PlatformClientFactory = (projectId: string) => PlatformCommentClient;
+
+// ── Plan 009/1 additions: behavioral contract fields ────────────────────
+//
+// Three optional fields (plus a lifecycle opt-in) let a provider declare
+// contracts the conformance harness then validates:
+//   - `configSchema` — a Zod schema for the persisted integration config.
+//     Eliminates the two-layer schema-drift class of bug that shipped
+//     `projectId` stripped twice (#1138 + #1142).
+//   - `discoveryCapabilities` — which discovery queries the adapter can
+//     serve. Consumed by the generic `pm.discover` tRPC endpoint.
+//   - `wizardSpec` — a declarative list of standard wizard steps the
+//     shared generator renders. Stops every provider from re-implementing
+//     the same credentials / container-pick / status-mapping UI.
+//   - `lifecycle` — opt-in flag + fixture for the full-lifecycle scenario
+//     the behavioral conformance harness runs against the adapter.
+
+/** The discovery capabilities a provider may declare support for. */
+export interface DiscoveryCapabilitiesMap {
+	readonly teams?: true;
+	readonly boards?: true;
+	readonly labels?: true;
+	readonly states?: true;
+	readonly projects?: true;
+	readonly customFields?: true;
+	readonly containers?: true;
+}
+
+/** Every wizard step kind the generic generator knows how to render. */
+export type StandardStepKind =
+	| 'credentials'
+	| 'container-pick'
+	| 'status-mapping'
+	| 'label-mapping'
+	| 'webhook-url-display'
+	| 'project-scope';
+
+export interface StandardStep {
+	readonly kind: StandardStepKind;
+	readonly id: string;
+	readonly config?: Readonly<Record<string, unknown>>;
+}
+
+export interface CustomStep {
+	readonly kind: 'custom';
+	readonly id: string;
+	/** Name of a provider-folder-owned component. The wizard shell resolves it through the providerWizardRegistry. */
+	readonly component: string;
+	readonly config?: Readonly<Record<string, unknown>>;
+}
+
+export interface WizardSpec {
+	readonly steps: ReadonlyArray<StandardStep | CustomStep>;
+}
+
+/** Lifecycle opt-in for the behavioral conformance harness. */
+export interface LifecycleOptIn {
+	readonly enabled: true;
+	/**
+	 * Opaque fixture path or factory reference the harness uses to
+	 * construct an in-memory mock provider client. The harness imports the
+	 * module by string to avoid a hard dep from production code on tests.
+	 * When the manifest is author-time only (test fixtures), providing a
+	 * factory function inline is also supported.
+	 */
+	readonly fixture?:
+		| string
+		| (() => Promise<{
+				configFixture: unknown;
+				containerId: string;
+		  }>);
+}
 
 export interface PMProviderManifest {
 	// ── Identity ────────────────────────────────────────────────────────
@@ -126,4 +198,72 @@ export interface PMProviderManifest {
 		name: string,
 		color?: string,
 	) => Promise<{ id: string; name: string; color: string }>;
+
+	// ── Plan 009/1 additions ─────────────────────────────────────────────
+
+	/**
+	 * Zod schema for the provider's persisted integration config.
+	 *
+	 * When declared, the conformance harness asserts round-trip identity:
+	 * a fixture config parsed → serialized → reparsed yields a deep-equal
+	 * config. This eliminates the two-layer drift that shipped `projectId`
+	 * stripped twice in Linear (#1138 + #1142).
+	 *
+	 * Plans 2/3/4 move each real provider's schema from `src/config/schema.ts`
+	 * onto its manifest here. `configMapper` routes through the registry
+	 * in plan 5.
+	 */
+	readonly configSchema?: z.ZodType<unknown>;
+
+	/**
+	 * Optional sample config used by the conformance harness round-trip
+	 * asserter. Must be parseable by `configSchema`. If absent, the harness
+	 * falls back to the schema's default parse (may error — prefer to
+	 * declare a fixture alongside the schema).
+	 */
+	readonly configFixture?: unknown;
+
+	/**
+	 * The set of discovery capabilities this provider supports. Consumed
+	 * by the generic `pm.discover` tRPC endpoint. An adapter that declares
+	 * a capability here MUST implement the corresponding `discover(k, args)`
+	 * method on the agent-facing PM adapter.
+	 */
+	readonly discoveryCapabilities?: DiscoveryCapabilitiesMap;
+
+	/**
+	 * Declarative wizard step spec consumed by the shared wizard generator.
+	 * Every step whose `kind` is a `StandardStepKind` is rendered by the
+	 * generator from a shared component; `kind: 'custom'` steps are
+	 * resolved through the provider-owned wizard folder.
+	 */
+	readonly wizardSpec?: WizardSpec;
+
+	/**
+	 * Opt-in flag + fixture for the behavioral conformance harness's
+	 * lifecycle scenario (create → list → move → checklist → comment →
+	 * delete). Legacy providers keep `lifecycle` undefined — harness skips
+	 * them. The fake PM provider and any migrated real provider set
+	 * `lifecycle.enabled: true` and provide a fixture.
+	 */
+	readonly lifecycle?: LifecycleOptIn;
+}
+
+/**
+ * Asserts a manifest's declared `configSchema` accepts its `configFixture`.
+ *
+ * When both are declared, the harness calls this at CI time — a manifest
+ * author can also invoke it at module load for immediate feedback. The
+ * function is a no-op when `configSchema` is undefined (legacy providers
+ * that haven't migrated yet).
+ */
+export function validateManifestAgainstSchema(manifest: PMProviderManifest): void {
+	if (!manifest.configSchema) return;
+	if (manifest.configFixture === undefined) {
+		// No fixture to validate against — harness's round-trip step still
+		// runs with a schema-synthesized sample, so this is non-fatal.
+		return;
+	}
+	// Throws ZodError if the fixture doesn't parse.
+	manifest.configSchema.parse(manifest.configFixture);
 }
