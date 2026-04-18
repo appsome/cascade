@@ -43,6 +43,18 @@ const JiraConfigSchema = z.object({
 		.optional(),
 });
 
+/**
+ * @deprecated — use `linearConfigSchema` from
+ * `src/integrations/pm/linear/config-schema.ts` (declared on
+ * `linearManifest.configSchema` as of plan 009/4). This inline copy
+ * stays for backward compat until plan 5 routes `configMapper`
+ * through the manifest registry and deletes this duplicate.
+ *
+ * Specifically: plan 009/4 locks down the #1138 + #1142 bug class
+ * where projectId was stripped by Zod at two different layers.
+ * linearConfigSchema explicitly declares projectId as optional and
+ * the conformance harness asserts round-trip identity.
+ */
 const LinearConfigSchema = z.object({
 	teamId: z.string().min(1),
 	/** Optional Linear Project (initiative) ID — when set, narrows scope within the team. */

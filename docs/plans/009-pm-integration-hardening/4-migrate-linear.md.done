@@ -6,7 +6,7 @@ plan_slug: migrate-linear
 level: plan
 parent_spec: docs/specs/009-pm-integration-hardening.md
 depends_on: [1-infra.md]
-status: wip
+status: done
 ---
 
 # 009/4: Migrate Linear onto the Hardened PM Contracts
@@ -218,16 +218,24 @@ Originally out of scope for the spec:
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1 (configSchema incl projectId)
-- [ ] AC #2 (discoveryCapabilities)
-- [ ] AC #3 (branded IDs)
-- [ ] AC #4 (wizardSpec adoption)
-- [ ] AC #5 (lifecycle harness)
-- [ ] AC #6 (LinearConfigSchema deprecated)
-- [ ] AC #7 (regression tests for 6 bug classes)
-- [ ] AC #8 (tests)
-- [ ] AC #9 (build)
-- [ ] AC #10 (tests)
-- [ ] AC #11 (lint)
-- [ ] AC #12 (typecheck)
-- [ ] AC #13 (no regression)
+- [x] AC #1 (configSchema incl projectId) — `src/integrations/pm/linear/config-schema.ts` with explicit `projectId: z.string().optional()`; 9 tests including the #1142 regression guard
+- [x] AC #2 (discoveryCapabilities) — teams/states/labels/projects wired; `classifyLinearStateType` maps Linear types to canonical categories; 7 tests
+- [x] AC #3 (branded IDs) — moveWorkItem destination/addLabel/removeLabel/listWorkItems narrowed via method bivariance; `parseStateId` throws `InvalidIdError` on empty input
+- [x] AC #4 (wizardSpec + generator adoption) — 6 standard steps including project-scope (spec 005); 5 tests
+- [x] AC #5 (lifecycle harness) — `lifecycle.fixtureKey: 'linear'` + `linearLifecycleFixture` registered; conformance 63/17 → 65/15
+- [x] AC #6 (LinearConfigSchema deprecated) — jsdoc + explicit #1138/#1142 reference
+- [x] AC #7 (regression tests for 6 bug classes) — `tests/unit/pm/linear/regression-2026-04.test.ts` ships 12 tests covering all six 2026-04 bug classes (#1117/#1137/#1139, #1138/#1142, #1112/#1119, #1133, #1097/#1118/#1131/#1134)
+- [x] AC #8 (tests) — 5 new test files, 38 new tests
+- [x] AC #9 (build) — npm run build passes
+- [x] AC #10 (tests) — npm test: 429 files / 8049 pass / 15 skip
+- [x] AC #11 (lint) — clean
+- [x] AC #12 (typecheck) — clean
+- [x] AC #13 (no regression) — all 135 pre-existing Linear tests still pass
+
+## Plan divergence notes
+
+1. **`createWorkItem` stays on `CreateWorkItemConfig`** — same TS object-property invariance issue as plans 2/3. Internal narrowing via `parseStateId` at the boundary when needed.
+2. **API credentials in `project_credentials`**, not the config — same as Trello/JIRA. Plan's "rejects missing apiKey, teamId" was scoped to teamId only (apiKey lives in credentials).
+3. **`labels` color: `null` → `undefined`** — Linear's `getTeamLabels` returns `color: string | null`; the discovery result type uses `color?: string`. Explicit conversion `l.color ?? undefined` at the boundary.
+4. **Lifecycle fixture reuses the fake** — same pattern as Trello/JIRA. Real Linear adapter lifecycle coverage (including inline-checklist round-trip via spec 008) lives in `tests/unit/pm/linear/adapter.test.ts` which uses vi.mock.
+5. **Regression test file is **the** payoff** — 12 tests explicitly reference every 2026-04 bug number. Future reviewers can `git grep "#1117"` etc. and land on the guard.

@@ -140,7 +140,9 @@ A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal ref
 |---|---|---|---|---|---|
 | **Trello** (plan 009/2) | ✅ `trelloConfigSchema` | ✅ boards, labels, customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'trello'` | ✅ move/addLabel/removeLabel/listWorkItems |
 | **JIRA** (plan 009/3) | ✅ `jiraConfigSchema` | ✅ projects, states, labels (empty — JIRA is free-form), customFields | ✅ 5 standard steps | ✅ `lifecycle.fixtureKey: 'jira'` | ✅ move/addLabel/removeLabel/listWorkItems |
-| **Linear** (plan 009/4) | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending | ⏳ pending |
+| **Linear** (plan 009/4) | ✅ `linearConfigSchema` (locks #1138/#1142) | ✅ teams, states, labels, projects | ✅ 6 standard steps (includes project-scope from spec 005) | ✅ `lifecycle.fixtureKey: 'linear'` | ✅ move/addLabel/removeLabel/listWorkItems (locks #1117/#1137/#1139) |
+
+All three providers now on the hardened contracts. Plan 009/4 also ships `tests/unit/pm/linear/regression-2026-04.test.ts` — 12 tests, one set per 2026-04 bug class, that fail loudly if any of the six classes regresses.
 | **Fake** (plan 009/1, test fixture) | ✅ | ✅ all | ✅ | ✅ | N/A (the fake parses branded IDs internally) |
 
 Trello is the first real provider on the hardened contracts; JIRA and Linear follow in plans 009/3 and 009/4. See `trelloManifest` at `src/integrations/pm/trello/manifest.ts` for the reference migration.
