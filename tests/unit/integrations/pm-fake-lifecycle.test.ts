@@ -38,9 +38,9 @@ describe('FakePMProvider — lifecycle', () => {
 	it('runLifecycleScenario exercises create → list → move → checklist → comment → delete', async () => {
 		const { provider, store } = createFakePMProvider();
 		const containerId = Array.from(store.containers.keys())[0];
-		expect(containerId).toBeDefined();
+		if (!containerId) throw new Error('fake provider initialised without containers');
 
-		const report = await runLifecycleScenario(provider, containerId!, {
+		const report = await runLifecycleScenario(provider, containerId, {
 			title: 'Test item',
 			description: 'Hello world',
 		});
@@ -96,10 +96,11 @@ describe('FakePMProvider — lifecycle', () => {
 
 	it('configSchema round-trip identity (save → load → save → deep-equal)', () => {
 		const m = createFakePMManifest();
-		expect(m.configSchema).toBeDefined();
+		const schema = m.configSchema;
+		if (!schema) throw new Error('fake manifest must declare configSchema');
 		const fixture = m.configFixture;
-		const parsed1 = m.configSchema!.parse(fixture);
-		const parsed2 = m.configSchema!.parse(JSON.parse(JSON.stringify(parsed1)));
+		const parsed1 = schema.parse(fixture);
+		const parsed2 = schema.parse(JSON.parse(JSON.stringify(parsed1)));
 		expect(parsed2).toEqual(parsed1);
 	});
 });

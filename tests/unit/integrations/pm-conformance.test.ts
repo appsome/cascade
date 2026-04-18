@@ -116,9 +116,10 @@ describe('PM provider conformance (every registered provider)', () => {
 		// provider on.
 
 		describe('behavioral: config round-trip', () => {
-			const canRun = !!manifest.configSchema;
+			const schema = manifest.configSchema;
+			const canRun = !!schema;
 			it.skipIf(!canRun)('a fixture config round-trips through the declared schema', () => {
-				const schema = manifest.configSchema!;
+				if (!schema) return;
 				const fixture = manifest.configFixture;
 				if (fixture === undefined) {
 					// No fixture declared — parse is sufficient to prove the
@@ -133,17 +134,13 @@ describe('PM provider conformance (every registered provider)', () => {
 		});
 
 		describe('behavioral: discovery shape', () => {
-			const canRun = !!manifest.discoveryCapabilities;
+			const caps = manifest.discoveryCapabilities;
+			const canRun = !!caps && id === 'fake';
 			it.skipIf(!canRun)(
 				'every declared capability returns an array from the adapter',
 				async () => {
-					// Prefer the fake provider when the manifest id is 'fake'
-					// (the fake's discover implementation is in-memory). For
-					// real providers, plans 2/3/4 wire their own lifecycle
-					// fixture — this block is guarded to skip them in plan 1.
-					if (id !== 'fake') return;
+					if (!caps) return;
 					const { provider } = createFakePMProvider();
-					const caps = manifest.discoveryCapabilities!;
 					const capabilities = (Object.keys(caps) as Array<keyof typeof caps>).filter(
 						(k) => caps[k],
 					);
@@ -152,9 +149,7 @@ describe('PM provider conformance (every registered provider)', () => {
 						const args =
 							capability === 'containers'
 								? ({} as never)
-								: capability === 'teams' || capability === 'boards' || capability === 'projects'
-									? ({ containerId: 'fake-container-a' } as never)
-									: ({ containerId: 'fake-container-a' } as never);
+								: ({ containerId: 'fake-container-a' } as never);
 						const result = await provider.discover?.(capability, args);
 						expect(Array.isArray(result), `${capability} must return an array`).toBe(true);
 					}
@@ -183,8 +178,10 @@ describe('PM provider conformance (every registered provider)', () => {
 		});
 
 		describe('behavioral: trigger self-hook filter', () => {
-			const canRun = typeof manifest.isSelfAuthoredHook === 'function';
+			const hook = manifest.isSelfAuthoredHook;
+			const canRun = typeof hook === 'function';
 			it.skipIf(!canRun)('isSelfAuthoredHook returns a boolean for a baseline event', async () => {
+				if (!hook) return;
 				// Minimal invariant — the hook accepts a fabricated event and
 				// returns a boolean. Real per-provider assertions of which
 				// payloads count as self-authored live in the provider's
@@ -195,7 +192,7 @@ describe('PM provider conformance (every registered provider)', () => {
 					rawBody: '{}',
 					headers: {},
 				} as unknown as Parameters<NonNullable<typeof manifest.isSelfAuthoredHook>>[0];
-				const result = await manifest.isSelfAuthoredHook!(fakeEvent, {}, 'proj-xyz');
+				const result = await hook(fakeEvent, {}, 'proj-xyz');
 				expect(typeof result).toBe('boolean');
 			});
 		});
