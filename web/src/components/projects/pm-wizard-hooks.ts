@@ -28,19 +28,34 @@ export function useTrelloDiscovery(
 	projectId: string,
 ) {
 	const boardsMutation = useMutation({
-		mutationFn: () => {
+		mutationFn: async () => {
+			// Plan 010/2: routes through generic pm.discovery.discover.
+			// In edit mode with stored credentials, pass projectId — the
+			// endpoint resolves credentials from project_credentials.
+			// Otherwise pass raw credentials from wizard state.
 			if (state.isEditing && state.hasStoredCredentials && !state.trelloApiKey) {
-				return trpcClient.integrationsDiscovery.trelloBoardsByProject.mutate({ projectId });
+				return (await trpcClient.pm.discovery.discover.mutate({
+					providerId: 'trello',
+					capability: 'boards',
+					args: {},
+					projectId,
+				})) as Array<{ id: string; name: string; url?: string }>;
 			}
 			if (!state.trelloApiKey || !state.trelloToken) {
 				throw new Error('Enter both credentials before fetching boards');
 			}
-			return trpcClient.integrationsDiscovery.trelloBoards.mutate({
-				apiKey: state.trelloApiKey,
-				token: state.trelloToken,
-			});
+			return (await trpcClient.pm.discovery.discover.mutate({
+				providerId: 'trello',
+				capability: 'boards',
+				args: {},
+				credentials: { api_key: state.trelloApiKey, token: state.trelloToken },
+			})) as Array<{ id: string; name: string; url?: string }>;
 		},
-		onSuccess: (boards) => dispatch({ type: 'SET_TRELLO_BOARDS', boards }),
+		onSuccess: (boards) =>
+			dispatch({
+				type: 'SET_TRELLO_BOARDS',
+				boards: boards.map((b) => ({ ...b, url: b.url ?? '' })),
+			}),
 	});
 
 	const boardDetailsMutation = useMutation({
@@ -116,18 +131,33 @@ export function useJiraDiscovery(
 	projectId: string,
 ) {
 	const jiraProjectsMutation = useMutation({
-		mutationFn: () => {
+		mutationFn: async () => {
+			// Plan 010/2: routes through generic pm.discovery.discover.
 			if (state.isEditing && state.hasStoredCredentials && !state.jiraEmail) {
-				return trpcClient.integrationsDiscovery.jiraProjectsByProject.mutate({ projectId });
+				const projects = (await trpcClient.pm.discovery.discover.mutate({
+					providerId: 'jira',
+					capability: 'projects',
+					args: {},
+					projectId,
+				})) as Array<{ id: string; name: string }>;
+				// Legacy shape has `key` — pm.discover returns `id` containing
+				// the JIRA key. Normalize for downstream consumers.
+				return projects.map((p) => ({ key: p.id, name: p.name }));
 			}
 			if (!state.jiraEmail || !state.jiraApiToken) {
 				throw new Error('Enter both credentials before fetching projects');
 			}
-			return trpcClient.integrationsDiscovery.jiraProjects.mutate({
-				email: state.jiraEmail,
-				apiToken: state.jiraApiToken,
-				baseUrl: state.jiraBaseUrl,
-			});
+			const projects = (await trpcClient.pm.discovery.discover.mutate({
+				providerId: 'jira',
+				capability: 'projects',
+				args: {},
+				credentials: {
+					email: state.jiraEmail,
+					api_token: state.jiraApiToken,
+					base_url: state.jiraBaseUrl,
+				},
+			})) as Array<{ id: string; name: string }>;
+			return projects.map((p) => ({ key: p.id, name: p.name }));
 		},
 		onSuccess: (projects) => dispatch({ type: 'SET_JIRA_PROJECTS', projects }),
 	});
@@ -206,16 +236,25 @@ export function useLinearDiscovery(
 	projectId: string,
 ) {
 	const linearTeamsMutation = useMutation({
-		mutationFn: () => {
+		mutationFn: async () => {
+			// Plan 010/2: routes through generic pm.discovery.discover.
 			if (state.isEditing && state.hasStoredCredentials && !state.linearApiKey) {
-				return trpcClient.integrationsDiscovery.linearTeamsByProject.mutate({ projectId });
+				return (await trpcClient.pm.discovery.discover.mutate({
+					providerId: 'linear',
+					capability: 'teams',
+					args: {},
+					projectId,
+				})) as Array<{ id: string; name: string }>;
 			}
 			if (!state.linearApiKey) {
 				throw new Error('Enter your API key before fetching teams');
 			}
-			return trpcClient.integrationsDiscovery.linearTeams.mutate({
-				apiKey: state.linearApiKey,
-			});
+			return (await trpcClient.pm.discovery.discover.mutate({
+				providerId: 'linear',
+				capability: 'teams',
+				args: {},
+				credentials: { api_key: state.linearApiKey },
+			})) as Array<{ id: string; name: string }>;
 		},
 		onSuccess: (teams) =>
 			dispatch({
@@ -250,20 +289,25 @@ export function useLinearDiscovery(
 	});
 
 	const linearProjectsMutation = useMutation({
-		mutationFn: (teamId: string) => {
+		mutationFn: async (teamId: string) => {
+			// Plan 010/2: routes through generic pm.discovery.discover.
 			if (state.isEditing && state.hasStoredCredentials && !state.linearApiKey) {
-				return trpcClient.integrationsDiscovery.linearProjectsByProject.mutate({
+				return (await trpcClient.pm.discovery.discover.mutate({
+					providerId: 'linear',
+					capability: 'projects',
+					args: { containerId: teamId },
 					projectId,
-					teamId,
-				});
+				})) as Array<{ id: string; name: string }>;
 			}
 			if (!state.linearApiKey) {
 				throw new Error('Enter your API key before fetching projects');
 			}
-			return trpcClient.integrationsDiscovery.linearProjects.mutate({
-				apiKey: state.linearApiKey,
-				teamId,
-			});
+			return (await trpcClient.pm.discovery.discover.mutate({
+				providerId: 'linear',
+				capability: 'projects',
+				args: { containerId: teamId },
+				credentials: { api_key: state.linearApiKey },
+			})) as Array<{ id: string; name: string }>;
 		},
 		onSuccess: (projects) =>
 			dispatch({
@@ -331,64 +375,70 @@ export function useVerification(
 ) {
 	const verifyMutation = useMutation({
 		mutationFn: async () => {
-			// Plan 009/5 migrated verification from provider-specific
-			// verifyTrello / verifyJira / verifyLinear procedures to the
-			// generic pm.discover endpoint. The side effect of a successful
-			// discover call is that credentials are authenticated by the
-			// provider — we use the discovered-container count as the
-			// user-facing "verified" signal (simpler than the former
-			// username display, but unambiguous).
+			// Plan 010/2: restore the pre-009/5 "Verified as @username" UX.
+			// Calls the new `currentUser` discovery capability, which every
+			// provider implements by mapping its native `getMe()` response
+			// to `{ id, name, displayName? }`. A successful call simultaneously
+			// validates the credentials and gives us the identity string to
+			// display.
 			const provider = state.provider;
 			if (provider === 'trello') {
 				if (!state.trelloApiKey || !state.trelloToken) {
 					throw new Error('Enter both credentials before verifying');
 				}
-				const boards = (await trpcClient.pm.discovery.discover.mutate({
+				const me = (await trpcClient.pm.discovery.discover.mutate({
 					providerId: 'trello',
-					capability: 'boards',
+					capability: 'currentUser',
 					args: {},
 					credentials: {
 						api_key: state.trelloApiKey,
 						token: state.trelloToken,
 					},
-				})) as Array<{ id: string; name: string }>;
-				return { provider: 'trello' as const, count: boards.length };
+				})) as { id: string; name: string; displayName?: string };
+				return { provider: 'trello' as const, me };
 			}
 			if (provider === 'linear') {
 				if (!state.linearApiKey) {
 					throw new Error('Enter your API key before verifying');
 				}
-				const teams = (await trpcClient.pm.discovery.discover.mutate({
+				const me = (await trpcClient.pm.discovery.discover.mutate({
 					providerId: 'linear',
-					capability: 'teams',
+					capability: 'currentUser',
 					args: {},
 					credentials: { api_key: state.linearApiKey },
-				})) as Array<{ id: string; name: string }>;
-				return { provider: 'linear' as const, count: teams.length };
+				})) as { id: string; name: string; displayName?: string };
+				return { provider: 'linear' as const, me };
 			}
 			if (!state.jiraEmail || !state.jiraApiToken) {
 				throw new Error('Enter both credentials before verifying');
 			}
-			const projects = (await trpcClient.pm.discovery.discover.mutate({
+			const me = (await trpcClient.pm.discovery.discover.mutate({
 				providerId: 'jira',
-				capability: 'projects',
+				capability: 'currentUser',
 				args: {},
 				credentials: {
 					email: state.jiraEmail,
 					api_token: state.jiraApiToken,
 					base_url: state.jiraBaseUrl,
 				},
-			})) as Array<{ id: string; name: string }>;
-			return { provider: 'jira' as const, count: projects.length };
+			})) as { id: string; name: string; displayName?: string };
+			return { provider: 'jira' as const, me };
 		},
-		onSuccess: ({ provider, count }) => {
+		onSuccess: ({ provider, me }) => {
 			// Ignore if provider changed while we were verifying
 			if (provider !== state.provider) return;
-			const containerLabel =
-				provider === 'trello' ? 'board' : provider === 'linear' ? 'team' : 'project';
-			const display = `Credentials verified — found ${count} ${containerLabel}${
-				count === 1 ? '' : 's'
-			}`;
+			// Per-provider display formatting mirrors the pre-009/5 UX:
+			//   Trello: "@{username} ({fullName})"   — displayName is username
+			//   JIRA:   "{displayName} ({email})"     — displayName is email
+			//   Linear: "{displayName || name}"       — displayName is the preferred handle
+			let display: string;
+			if (provider === 'trello') {
+				display = me.displayName ? `@${me.displayName} (${me.name})` : me.name;
+			} else if (provider === 'jira') {
+				display = me.displayName ? `${me.name} (${me.displayName})` : me.name;
+			} else {
+				display = me.displayName || me.name;
+			}
 			dispatch({
 				type: 'SET_VERIFICATION',
 				result: { provider, display },
@@ -480,12 +530,13 @@ export function useTrelloLabelCreation(state: WizardState, dispatch: React.Dispa
 			if (!state.trelloApiKey || !state.trelloToken || !state.trelloBoardId) {
 				throw new Error('Missing credentials or board selection');
 			}
-			return trpcClient.integrationsDiscovery.createTrelloLabel.mutate({
-				apiKey: state.trelloApiKey,
-				token: state.trelloToken,
-				boardId: state.trelloBoardId,
+			// Plan 010/1: routes through generic pm.discovery.createLabel.
+			return trpcClient.pm.discovery.createLabel.mutate({
+				providerId: 'trello',
+				containerId: state.trelloBoardId,
 				name: vars.name,
 				color: vars.color,
+				credentials: { api_key: state.trelloApiKey, token: state.trelloToken },
 			});
 		},
 		onSuccess: (label, vars) => {
@@ -499,16 +550,30 @@ export function useTrelloLabelCreation(state: WizardState, dispatch: React.Dispa
 	});
 
 	const createMissingLabelsMutation = useMutation({
-		mutationFn: (labelsToCreate: Array<{ slot: string; name: string; color?: string }>) => {
+		mutationFn: async (labelsToCreate: Array<{ slot: string; name: string; color?: string }>) => {
 			if (!state.trelloApiKey || !state.trelloToken || !state.trelloBoardId) {
 				throw new Error('Missing credentials or board selection');
 			}
-			return trpcClient.integrationsDiscovery.createTrelloLabels.mutate({
-				apiKey: state.trelloApiKey,
-				token: state.trelloToken,
-				boardId: state.trelloBoardId,
-				labels: labelsToCreate.map(({ name, color }) => ({ name, color })),
-			});
+			// Plan 010/1: iterate single-item pm.discovery.createLabel client-side.
+			// Collect successes + errors into the same shape the old batch endpoint
+			// returned so onSuccess downstream logic doesn't need to change.
+			const successes: Array<{ id: string; name: string; color: string }> = [];
+			const errors: Array<{ name: string; error: string }> = [];
+			for (const { name, color } of labelsToCreate) {
+				try {
+					const label = await trpcClient.pm.discovery.createLabel.mutate({
+						providerId: 'trello',
+						containerId: state.trelloBoardId,
+						name,
+						color,
+						credentials: { api_key: state.trelloApiKey, token: state.trelloToken },
+					});
+					successes.push(label);
+				} catch (err) {
+					errors.push({ name, error: err instanceof Error ? err.message : String(err) });
+				}
+			}
+			return { successes, errors };
 		},
 		onSuccess: (result, labelsToCreate) => {
 			// Handle successful label creations
@@ -548,16 +613,22 @@ export function useTrelloCustomFieldCreation(
 	dispatch: React.Dispatch<WizardAction>,
 ) {
 	const createCustomFieldMutation = useMutation({
-		mutationFn: () => {
+		// Plan 011/2: the shared custom-field-mapping step lets operators type
+		// a name. `mutate({ name })` — callers without a preference pass
+		// `{ name: 'Cost' }` to preserve the legacy default.
+		mutationFn: ({ name }: { name: string }) => {
 			if (!state.trelloApiKey || !state.trelloToken || !state.trelloBoardId) {
 				throw new Error('Missing credentials or board selection');
 			}
-			return trpcClient.integrationsDiscovery.createTrelloCustomField.mutate({
-				apiKey: state.trelloApiKey,
-				token: state.trelloToken,
-				boardId: state.trelloBoardId,
-				name: 'Cost',
-				type: 'number',
+			// Plan 010/1 (leftover caller): routes through pm.discovery.createCustomField.
+			return trpcClient.pm.discovery.createCustomField.mutate({
+				providerId: 'trello',
+				containerId: state.trelloBoardId,
+				name,
+				credentials: {
+					api_key: state.trelloApiKey,
+					token: state.trelloToken,
+				},
 			});
 		},
 		onSuccess: (customField) => {
@@ -589,15 +660,24 @@ export function useJiraCustomFieldCreation(
 	dispatch: React.Dispatch<WizardAction>,
 ) {
 	const createJiraCustomFieldMutation = useMutation({
-		mutationFn: () => {
+		// Plan 011/3: the shared custom-field-mapping step lets operators type
+		// a name; callers without a preference pass `{ name: 'Cost' }`.
+		mutationFn: ({ name }: { name: string }) => {
 			if (!state.jiraEmail || !state.jiraApiToken || !state.jiraBaseUrl) {
 				throw new Error('Missing JIRA credentials or base URL');
 			}
-			return trpcClient.integrationsDiscovery.createJiraCustomField.mutate({
-				email: state.jiraEmail,
-				apiToken: state.jiraApiToken,
-				baseUrl: state.jiraBaseUrl,
-				name: 'Cost',
+			// Plan 010/1: routes through generic pm.discovery.createCustomField.
+			// JIRA's project key isn't needed for the mutation (fields are global)
+			// but we pass the configured projectKey as containerId for uniform shape.
+			return trpcClient.pm.discovery.createCustomField.mutate({
+				providerId: 'jira',
+				containerId: state.jiraProjectKey || 'global',
+				name,
+				credentials: {
+					email: state.jiraEmail,
+					api_token: state.jiraApiToken,
+					base_url: state.jiraBaseUrl,
+				},
 			});
 		},
 		onSuccess: (field) => {
@@ -756,11 +836,13 @@ export function useLinearLabelCreation(state: WizardState, dispatch: React.Dispa
 			if (!state.linearApiKey || !state.linearTeamId) {
 				throw new Error('Missing credentials or team selection');
 			}
-			return trpcClient.integrationsDiscovery.createLinearLabel.mutate({
-				apiKey: state.linearApiKey,
-				teamId: state.linearTeamId,
+			// Plan 010/1: routes through generic pm.discovery.createLabel.
+			return trpcClient.pm.discovery.createLabel.mutate({
+				providerId: 'linear',
+				containerId: state.linearTeamId,
 				name: vars.name,
 				color: vars.color,
+				credentials: { api_key: state.linearApiKey },
 			});
 		},
 		onSuccess: (label, vars) => {
@@ -774,15 +856,28 @@ export function useLinearLabelCreation(state: WizardState, dispatch: React.Dispa
 	});
 
 	const createMissingLabelsMutation = useMutation({
-		mutationFn: (labelsToCreate: Array<{ slot: string; name: string; color?: string }>) => {
+		mutationFn: async (labelsToCreate: Array<{ slot: string; name: string; color?: string }>) => {
 			if (!state.linearApiKey || !state.linearTeamId) {
 				throw new Error('Missing credentials or team selection');
 			}
-			return trpcClient.integrationsDiscovery.createLinearLabels.mutate({
-				apiKey: state.linearApiKey,
-				teamId: state.linearTeamId,
-				labels: labelsToCreate.map(({ name, color }) => ({ name, color })),
-			});
+			// Plan 010/1: iterate single-item pm.discovery.createLabel client-side.
+			const successes: Array<{ id: string; name: string; color: string }> = [];
+			const errors: Array<{ name: string; error: string }> = [];
+			for (const { name, color } of labelsToCreate) {
+				try {
+					const label = await trpcClient.pm.discovery.createLabel.mutate({
+						providerId: 'linear',
+						containerId: state.linearTeamId,
+						name,
+						color,
+						credentials: { api_key: state.linearApiKey },
+					});
+					successes.push(label);
+				} catch (err) {
+					errors.push({ name, error: err instanceof Error ? err.message : String(err) });
+				}
+			}
+			return { successes, errors };
 		},
 		onSuccess: (result, labelsToCreate) => {
 			for (const label of result.successes) {

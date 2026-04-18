@@ -37,19 +37,57 @@ describe('integrationsDiscoveryRouter — plan 009/5 legacy cleanup', () => {
 	});
 
 	/**
-	 * Deferred — these stay until a follow-up spec adds a generic
-	 * `pm.create*` endpoint + per-manifest factory hooks. When that
-	 * ships, this describe block flips from "still defined" to
-	 * "removed" in the same commit.
+	 * Spec 010/1 flipped the mutation procedures from "deferred" to
+	 * "removed". Callers migrated to `pm.discovery.createLabel` /
+	 * `pm.discovery.createCustomField`.
 	 */
-	describe('deferred (TODO — follow-up spec)', () => {
+	describe('spec 010/1 cleanup (mutation procedures removed)', () => {
 		it.each([
 			'createTrelloLabel',
 			'createTrelloLabels',
+			'createTrelloCustomField',
 			'createJiraCustomField',
 			'createLinearLabel',
 			'createLinearLabels',
-		])('%s is still defined (pending generic pm.create endpoint)', (name) => {
+		])('%s is removed (migrated to pm.discovery.create*)', (name) => {
+			expect(
+				(integrationsDiscoveryRouter._def.procedures as Record<string, unknown>)[name],
+			).toBeUndefined();
+		});
+	});
+
+	/**
+	 * Spec 010/2 migrated the 1:1-mappable read procedures to
+	 * `pm.discovery.discover`. The composite `*Details(ByProject)` procedures
+	 * stay (deferred to a follow-up because they bundle multiple reads
+	 * including some capabilities that aren't yet exposed).
+	 */
+	describe('spec 010/2 cleanup (read procedures removed)', () => {
+		it.each([
+			'trelloBoards',
+			'trelloBoardsByProject',
+			'jiraProjects',
+			'jiraProjectsByProject',
+			'linearTeams',
+			'linearTeamsByProject',
+			'linearProjects',
+			'linearProjectsByProject',
+		])('%s is removed (migrated to pm.discovery.discover)', (name) => {
+			expect(
+				(integrationsDiscoveryRouter._def.procedures as Record<string, unknown>)[name],
+			).toBeUndefined();
+		});
+	});
+
+	describe('spec 010/2 deferred (composite *Details procedures remain)', () => {
+		it.each([
+			'trelloBoardDetails',
+			'trelloBoardDetailsByProject',
+			'jiraProjectDetails',
+			'jiraProjectDetailsByProject',
+			'linearTeamDetails',
+			'linearTeamDetailsByProject',
+		])('%s is still defined (composite reads — pending follow-up)', (name) => {
 			expect(
 				(integrationsDiscoveryRouter._def.procedures as Record<string, unknown>)[name],
 			).toBeDefined();

@@ -1,31 +1,46 @@
 /**
- * JIRA manifest wizardSpec (plan 009/3 task 4).
+ * JIRA manifest wizardSpec — updated for plan 011/3.
  *
- * Declares the standard-step sequence the generic generator renders:
- * credentials → project-pick → status-mapping → label-mapping →
- * webhook-url. JIRA-specific UI (if any) stays in the provider folder
- * as `kind: 'custom'` steps.
+ * Post plan 011/3:
+ *   credentials →
+ *   container-pick (searchable project picker) →
+ *   status-mapping →
+ *   label-mapping (free-text mode — JIRA labels are free-form) →
+ *   custom-field-mapping (cost field creation, admin-only) →
+ *   custom(IssueTypeMappingStep) — task/subtask issue-type mapping →
+ *   webhook-url-display
  */
 
-import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { jiraManifest } from '../../../../src/integrations/pm/jira/manifest.js';
-import { renderStandardStep } from '../../../../web/src/components/projects/pm-providers/generator.js';
+import type { CustomStep } from '../../../../src/integrations/pm/manifest.js';
+import {
+	renderStandardStep,
+	STANDARD_STEP_COMPONENTS,
+} from '../../../../web/src/components/projects/pm-providers/generator.js';
 
 describe('jiraManifest.wizardSpec', () => {
 	it('is declared', () => {
 		expect(jiraManifest.wizardSpec).toBeDefined();
 	});
 
-	it('includes the standard step kinds in expected order', () => {
+	it('includes the standard step kinds in expected order (plan 011/3)', () => {
 		const kinds = jiraManifest.wizardSpec?.steps.map((s) => s.kind) ?? [];
 		expect(kinds).toEqual([
 			'credentials',
 			'container-pick',
 			'status-mapping',
 			'label-mapping',
+			'custom-field-mapping',
+			'custom',
 			'webhook-url-display',
 		]);
+	});
+
+	it('includes a custom step resolving to IssueTypeMappingStep', () => {
+		const customSteps = (jiraManifest.wizardSpec?.steps ?? []).filter((s) => s.kind === 'custom');
+		expect(customSteps).toHaveLength(1);
+		expect((customSteps[0] as CustomStep).component).toBe('IssueTypeMappingStep');
 	});
 
 	it('each step has a stable id', () => {
@@ -41,15 +56,14 @@ describe('jiraManifest.wizardSpec', () => {
 	});
 });
 
-describe('JIRA wizardSpec through renderStandardStep', () => {
-	it('renders every declared step through the shared generator', () => {
+describe('JIRA wizardSpec through the shared generator', () => {
+	it('each declared standard step dispatches to the corresponding real component', () => {
 		const steps = jiraManifest.wizardSpec?.steps ?? [];
 		expect(steps.length).toBeGreaterThan(0);
 		for (const step of steps) {
+			if (step.kind === 'custom') continue;
 			const element = renderStandardStep(step, { providerId: 'jira' });
-			const html = renderToStaticMarkup(element);
-			expect(html).toContain('data-provider-id="jira"');
-			expect(html).toContain(`data-step-kind="${step.kind}"`);
+			expect(element.type).toBe(STANDARD_STEP_COMPONENTS[step.kind]);
 		}
 	});
 });

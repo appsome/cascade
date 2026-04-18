@@ -92,6 +92,28 @@ export const jiraManifest: PMProviderManifest = {
 
 	platformClientFactory: (projectId) => new JiraPlatformClient(projectId),
 
+	// ── Plan 010/1 mutation hooks ──────────────────────────────────────
+	// JIRA custom fields are global (not per-project). The hook accepts
+	// containerId for uniform shape but doesn't thread it to the client.
+	// Default type: 'com.atlassian.jira.plugin.system.customfieldtypes:float'
+	// matches CASCADE's cost-tracking use case.
+	createCustomField: async ({ credentials, name }) => {
+		const email = credentials.email ?? '';
+		const apiToken = credentials.api_token ?? '';
+		const baseUrl = credentials.base_url ?? '';
+		return withJiraCredentials({ email, apiToken, baseUrl }, async () => {
+			const result = await jiraClient.createCustomField(
+				name,
+				'com.atlassian.jira.plugin.system.customfieldtypes:float',
+			);
+			return {
+				id: result.id,
+				name: result.name,
+				type: 'com.atlassian.jira.plugin.system.customfieldtypes:float',
+			};
+		});
+	},
+
 	// ── Plan 009/3 behavioral contract fields ─────────────────────────
 	lifecycle: { enabled: true, fixtureKey: 'jira' },
 
@@ -101,6 +123,12 @@ export const jiraManifest: PMProviderManifest = {
 			{ kind: 'container-pick', id: 'jira-project' },
 			{ kind: 'status-mapping', id: 'jira-statuses' },
 			{ kind: 'label-mapping', id: 'jira-labels' },
+			{ kind: 'custom-field-mapping', id: 'jira-custom-fields' },
+			// Plan 011/3: JIRA task/subtask issue-type mapping is JIRA-specific
+			// (Trello has no equivalent, Linear uses workflow states). Rendered
+			// as a `kind: 'custom'` step resolved to `IssueTypeMappingStep` by
+			// the JIRA ProviderWizardDefinition.
+			{ kind: 'custom', id: 'jira-issue-types', component: 'IssueTypeMappingStep' },
 			{ kind: 'webhook-url-display', id: 'jira-webhook' },
 		],
 	},
@@ -133,6 +161,7 @@ export const jiraManifest: PMProviderManifest = {
 		states: true,
 		labels: true,
 		customFields: true,
+		currentUser: true,
 	},
 
 	/**
@@ -193,6 +222,22 @@ export const jiraManifest: PMProviderManifest = {
 						const out = fields
 							.filter((f) => f.custom)
 							.map((f) => ({ id: f.id, name: f.name, type: 'custom' }));
+						return out as unknown as DiscoveryResult<K>;
+					}
+					case 'currentUser': {
+						// Plan 010/2: restore verification UX. Use the JIRA
+						// account's displayName as the primary name and the
+						// email as secondary (matches the pre-009/5 display).
+						const me = (await runWithCreds(() => jiraClient.getMyself())) as {
+							accountId?: string;
+							displayName?: string;
+							emailAddress?: string;
+						};
+						const out = {
+							id: me.accountId ?? '',
+							name: me.displayName ?? '',
+							displayName: me.emailAddress,
+						};
 						return out as unknown as DiscoveryResult<K>;
 					}
 					default:

@@ -99,15 +99,39 @@ export const trelloManifest: PMProviderManifest = {
 
 	platformClientFactory: (projectId) => new TrelloPlatformClient(projectId),
 
+	// ── Plan 010/1 mutation hooks ──────────────────────────────────────
+	createLabel: async ({ credentials, containerId, name, color }) => {
+		const apiKey = credentials.api_key ?? '';
+		const token = credentials.token ?? '';
+		return withTrelloCredentials({ apiKey, token }, () =>
+			trelloClient.createBoardLabel(containerId, name, color ?? 'blue'),
+		);
+	},
+
+	createCustomField: async ({ credentials, containerId, name }) => {
+		const apiKey = credentials.api_key ?? '';
+		const token = credentials.token ?? '';
+		// Trello custom fields default to 'number' type for CASCADE's use
+		// case (cost tracking). Future: accept type in the input shape.
+		return withTrelloCredentials({ apiKey, token }, () =>
+			trelloClient.createBoardCustomField(containerId, name, 'number'),
+		);
+	},
+
 	// ── Plan 009/2 behavioral contract fields ─────────────────────────
 	lifecycle: { enabled: true, fixtureKey: 'trello' },
 
 	wizardSpec: {
 		steps: [
-			{ kind: 'credentials', id: 'trello-credentials' },
+			// Plan 011/2: Trello credentials use an OAuth popup + manual-token
+			// fallback. The `window.open` flow is intrinsically Trello-specific
+			// — kept as `kind: 'custom'` and resolved to `TrelloOAuthStep` by
+			// the Trello ProviderWizardDefinition.
+			{ kind: 'custom', id: 'trello-credentials-oauth', component: 'TrelloOAuthStep' },
 			{ kind: 'container-pick', id: 'trello-board' },
-			{ kind: 'label-mapping', id: 'trello-labels' },
 			{ kind: 'status-mapping', id: 'trello-statuses' },
+			{ kind: 'label-mapping', id: 'trello-labels' },
+			{ kind: 'custom-field-mapping', id: 'trello-custom-fields' },
 			{ kind: 'webhook-url-display', id: 'trello-webhook' },
 		],
 	},
@@ -132,6 +156,7 @@ export const trelloManifest: PMProviderManifest = {
 		boards: true,
 		labels: true,
 		customFields: true,
+		currentUser: true,
 	},
 
 	/**
@@ -164,6 +189,7 @@ export const trelloManifest: PMProviderManifest = {
 						const out = boards.map((b) => ({
 							id: parseContainerId(b.id),
 							name: b.name,
+							url: b.url,
 						}));
 						return out as unknown as DiscoveryResult<K>;
 					}
@@ -187,6 +213,17 @@ export const trelloManifest: PMProviderManifest = {
 							name: f.name,
 							type: f.type,
 						}));
+						return out as unknown as DiscoveryResult<K>;
+					}
+					case 'currentUser': {
+						// Plan 010/2: restore "Verified as @username" wizard UX.
+						// Maps trelloClient.getMe() → { id, name, displayName }.
+						const me = await runWithCreds(() => trelloClient.getMe());
+						const out = {
+							id: me.id,
+							name: me.fullName,
+							displayName: me.username,
+						};
 						return out as unknown as DiscoveryResult<K>;
 					}
 					default:

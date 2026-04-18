@@ -395,6 +395,15 @@ export function createFakePMProvider(): { provider: PMProvider; store: FakePMSto
 				case 'customFields': {
 					return [] as unknown as DiscoveryResult<K>;
 				}
+				case 'currentUser': {
+					// Plan 010/2: fake provider returns deterministic identity.
+					const out = {
+						id: 'fake-user',
+						name: 'Fake User',
+						displayName: 'fake',
+					};
+					return out as unknown as DiscoveryResult<K>;
+				}
 				default:
 					throw new Error(`Fake provider: unsupported discovery capability '${capability}'`);
 			}
@@ -461,6 +470,7 @@ export function createFakePMManifest(): PMProviderManifest {
 			projects: true,
 			customFields: true,
 			containers: true,
+			currentUser: true,
 		},
 		wizardSpec: {
 			steps: [
@@ -473,6 +483,30 @@ export function createFakePMManifest(): PMProviderManifest {
 		},
 		lifecycle: { enabled: true, fixtureKey: 'fake' },
 		createDiscoveryProvider: () => createFakePMProvider().provider,
+
+		// ── Plan 010/1 mutation hooks ──────────────────────────────────
+		//
+		// The fake doesn't share a persistent store across calls (each
+		// caller creates a fresh instance) — so "created" labels and
+		// custom fields here are synthesized inline. The returned shape
+		// matches the interface contract; tests assert on shape, not
+		// store retention.
+		createLabel: async ({ name, color }) => {
+			_idCounter += 1;
+			return {
+				id: `fake-label-${_idCounter}`,
+				name,
+				color: color ?? 'gray',
+			};
+		},
+		createCustomField: async ({ name }) => {
+			_idCounter += 1;
+			return {
+				id: `fake-cf-${_idCounter}`,
+				name,
+				type: 'text',
+			};
+		},
 	};
 }
 

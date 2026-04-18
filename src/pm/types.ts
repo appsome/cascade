@@ -23,14 +23,15 @@ export type DiscoveryCapability =
 	| 'states'
 	| 'projects'
 	| 'customFields'
-	| 'containers';
+	| 'containers'
+	| 'currentUser';
 
 /**
  * Per-capability argument shapes. Top-level lookups (teams/boards/projects/
- * containers) take an optional containerId; nested lookups
- * (labels/states/customFields) require one.
+ * containers/currentUser) take an optional or no containerId; nested
+ * lookups (labels/states/customFields) require one.
  */
-export type DiscoveryArgs<K extends DiscoveryCapability> = K extends 'containers'
+export type DiscoveryArgs<K extends DiscoveryCapability> = K extends 'containers' | 'currentUser'
 	? Record<string, never>
 	: K extends 'teams' | 'boards' | 'projects'
 		? { containerId?: ContainerId }
@@ -50,8 +51,14 @@ export type DiscoveryResult<K extends DiscoveryCapability> = K extends 'labels'
 		: K extends 'customFields'
 			? Array<{ id: string; name: string; type: string }>
 			: K extends 'teams' | 'boards' | 'containers' | 'projects'
-				? Array<{ id: ContainerId; name: string }>
-				: never;
+				? // `url` is optional — Trello boards carry a web URL; JIRA/Linear
+					// projects/teams may not. Consumers that display a board URL
+					// (e.g. the wizard's SearchableSelect `detail` slot) read it
+					// when present.
+					Array<{ id: ContainerId; name: string; url?: string }>
+				: K extends 'currentUser'
+					? { id: string; name: string; displayName?: string }
+					: never;
 
 /**
  * A reference to an inline media item (image, etc.) embedded in a work item
