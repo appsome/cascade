@@ -1,0 +1,210 @@
+---
+id: 009
+slug: pm-integration-hardening
+plan: 5
+plan_slug: cleanup
+level: plan
+parent_spec: docs/specs/009-pm-integration-hardening.md
+depends_on: [2-migrate-trello.md, 3-migrate-jira.md, 4-migrate-linear.md]
+status: pending
+---
+
+# 009/5: Cleanup — Delete Legacy Surfaces, Enforce New Contracts, Finalize Docs
+
+> Part 5 of 5 in the 009-pm-integration-hardening plan. See [parent spec](../../specs/009-pm-integration-hardening.md).
+
+## Summary
+
+All three providers are now migrated onto the hardened contracts. This plan deletes the legacy surfaces they depended on, flips the single-entrypoint invariant from "convention" to "enforced", and finalizes the documentation.
+
+**Components delivered:**
+- Delete legacy per-provider tRPC procedures from `src/api/routers/integrationsDiscovery.ts` (`verifyTrello`, `createTrelloLabel`, `createTrelloLabels`, `createTrelloCustomField`, `verifyJira`, `createJiraCustomField`, `verifyLinear`, `createLinearLabel`, `createLinearLabels`). Callers updated to `pm.discover`.
+- Delete `TrelloConfigSchema`, `JiraConfigSchema`, `LinearConfigSchema` from `src/config/schema.ts`. Route `configMapper` through the registry (`manifest.configSchema.parse(row)`).
+- Add a conformance assertion that a new PM provider PR touches only its provider folder, its wizard folder, and the single-entrypoint file — no edits to shared router/worker/CLI/dashboard/configMapper/central schema files are needed for a functional new provider.
+- Enforce that the single entrypoint is the only registration path: `tests/unit/integrations/single-entrypoint.test.ts` greps the repo for direct imports of `src/integrations/pm/<provider>/index.js` outside the entrypoint file and fails.
+- Delete any per-provider duplicates of standard wizard steps that are now generated from `wizardSpec`.
+- Final rewrite of `src/integrations/README.md` around the hardened contracts (manifest-owned schema, branded IDs, unified discovery, single entrypoint, behavioral conformance, fake provider).
+- Update root `CLAUDE.md` PM-integration summary.
+- Add a forward-reference pointer from `docs/specs/006-pm-integration-plug-and-play.md` to spec 009.
+
+**Deferred:**
+- Nothing — this plan closes the spec.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #1** (actionable conformance failures for new provider) — **full** — final assertion covers "new provider PR touches only its folder + entrypoint".
+- **Spec AC #5** (single registration entrypoint enforced) — **full** — single-entrypoint grep assertion added; legacy fallback imports deleted.
+- **Spec AC #6** (wizard standard steps, no duplicates) — **full** — per-provider duplicates deleted.
+- **Spec AC #7** (unified discovery endpoint) — **full** — legacy per-provider tRPC procedures deleted.
+- **Spec AC #10** (new provider PR doesn't touch shared files) — **full** — assertion added.
+
+(ACs #2, #3, #4, #8, #9 were fully delivered via partial coverage across plans 1–4.)
+
+---
+
+## Depends On
+
+- Plan 2 (migrate-trello)
+- Plan 3 (migrate-jira)
+- Plan 4 (migrate-linear)
+
+All three must be merged before this plan can land without breaking anything.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Delete legacy per-provider tRPC discovery procedures
+
+**Tests first** (`tests/unit/api/pm-discovery-legacy-removed.test.ts`):
+- `integrationsDiscovery.verifyTrello` is undefined.
+- `integrationsDiscovery.verifyJira` is undefined.
+- `integrationsDiscovery.verifyLinear` is undefined.
+- All `createXxxLabel` / `createXxxCustomField` procedures for Trello/JIRA/Linear are undefined.
+- `pm.discover` handles every capability previously served by the legacy procedures (sanity check — already asserted in plan 1).
+
+**Implementation** (`src/api/routers/integrationsDiscovery.ts`):
+- Remove: `verifyTrello`, `createTrelloLabel`, `createTrelloLabels`, `createTrelloCustomField`, `verifyJira`, `createJiraCustomField`, `verifyLinear`, `createLinearLabel`, `createLinearLabels`.
+- Keep: GitHub- and Sentry-related procedures (`verifyGithubToken`, `verifySentry`) — out of scope for this spec.
+- Update any dashboard callers that still reference the deleted procedures to use `pm.discover` instead.
+
+### 2. Delete central Zod schemas for migrated providers
+
+**Tests first** (`tests/unit/config/schema-cleanup.test.ts`):
+- `src/config/schema.ts` no longer exports `TrelloConfigSchema`, `JiraConfigSchema`, `LinearConfigSchema`.
+- `configMapper.ts` parses PM provider configs through `manifest.configSchema` resolved from the registry.
+- A `projectId`-on-Linear round-trip regression test (mirroring #1138 / #1142) still passes.
+
+**Implementation**:
+- `src/config/schema.ts` — delete the three schemas.
+- `src/db/repositories/configMapper.ts` — generic PM-config path: look up the provider manifest via `getPMProvider(providerId)`, parse the row through `manifest.configSchema`, return the typed config. Specific per-provider mapper functions (if any) are removed.
+- Update any call sites that imported the deleted schemas.
+
+### 3. Enforce single registration entrypoint
+
+**Tests first** (`tests/unit/integrations/single-entrypoint.test.ts`):
+- Grep: any import of `src/integrations/pm/<provider>/index` outside `src/integrations/entrypoint.ts` and its own `src/integrations/pm/index.ts` barrel fails with a specific message.
+- Grep: any side-effect import of `src/integrations/pm/index.js` outside `src/integrations/entrypoint.ts` fails (all runtime surfaces must go through `entrypoint.ts`).
+
+**Implementation**:
+- Audit: confirm no remaining direct provider-barrel imports in runtime code paths. `src/integrations/pm/index.ts` can still exist as an internal re-export consumed by `entrypoint.ts`.
+
+### 4. "New provider PR doesn't touch shared files" assertion
+
+**Tests first** (`tests/unit/integrations/new-provider-surface.test.ts`):
+- The "shared surface" list is encoded in the test: router files, worker-entry, CLI bootstrap, dashboard, configMapper, central schema, cross-category registry. For each file, the test reads its current content and records a hash. A snapshot guard.
+- Any PR that modifies one of these files when adding a new provider will cause the snapshot to diverge. Commentary in the test explicitly references spec 009 AC #10 and tells the contributor how to restructure.
+
+**Implementation**:
+- Test-only change; encodes the invariant.
+- Note: this is a convention-enforcement test, not a perfect guarantee. Contributors can still modify shared files when they must (e.g., adding a new standard step kind). The test fails loud and forces a conscious justification.
+
+### 5. Delete per-provider duplicates of standard wizard steps
+
+**Tests first** — N/A (deletions; covered by each provider's existing wizard-generator test from plans 2/3/4).
+
+**Implementation**:
+- `web/src/components/projects/pm-providers/trello/` — remove any remaining per-provider copies of credentials / container-pick / label-mapping / status-mapping / webhook-url-display step components.
+- Same for `jira/` and `linear/` folders.
+- Each provider folder now contains only: `index.ts`, `wizard.ts`, `adapters.tsx`, and any genuinely provider-specific step components.
+
+### 6. Final doc rewrite
+
+**Tests first** — N/A.
+
+**Implementation**:
+- `src/integrations/README.md` — full rewrite around the hardened contracts. Updated "Adding a new PM provider" section, updated "Shared helpers" list, updated conformance-harness scope list, documentation of the fake provider fixture as the canonical starting point.
+- `CLAUDE.md` (project root) — update the PM-integration summary paragraph to reflect the hardened state.
+- `tests/README.md` — confirm fake-provider + lifecycle-harness sections are accurate post-migrations.
+- `docs/specs/006-pm-integration-plug-and-play.md` — add a single-line forward-reference at the top pointing to spec 009 as the hardening pass.
+- `CHANGELOG.md` — entry: "feat(pm): hardened PM integration contracts complete — legacy per-provider tRPC endpoints and central schemas removed; single registration entrypoint enforced; `src/integrations/README.md` rewritten".
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/api/pm-discovery-legacy-removed.test.ts` — 5 assertions.
+- [ ] `tests/unit/config/schema-cleanup.test.ts` — 3 assertions.
+- [ ] `tests/unit/integrations/single-entrypoint.test.ts` — 2 grep assertions.
+- [ ] `tests/unit/integrations/new-provider-surface.test.ts` — snapshot guard.
+
+### Integration tests
+- Existing integration suite must still pass. No new integration tests in this plan.
+
+### Acceptance tests
+- [ ] All three providers (Trello, JIRA, Linear) continue to pass the full behavioral conformance harness after deletions.
+- [ ] `npm run lint`, `npm test`, `npm run typecheck`, `npm run build` all green.
+- [ ] `cascade-tools pm list` works for all three providers.
+- [ ] Dashboard wizard works for all three providers.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `src/api/routers/integrationsDiscovery.ts` no longer contains `verifyTrello`, `verifyJira`, `verifyLinear`, or any PM provider `create*Label` / `create*CustomField` procedures.
+2. `src/config/schema.ts` no longer contains `TrelloConfigSchema`, `JiraConfigSchema`, `LinearConfigSchema`; `configMapper` parses PM configs through `manifest.configSchema`.
+3. `tests/unit/integrations/single-entrypoint.test.ts` asserts that no file outside `src/integrations/entrypoint.ts` imports provider barrels directly.
+4. `tests/unit/integrations/new-provider-surface.test.ts` snapshot-guards the shared surface list.
+5. Per-provider duplicates of standard wizard steps are deleted; provider folders contain only provider-specific UI.
+6. `src/integrations/README.md` is rewritten around the hardened contracts.
+7. Root `CLAUDE.md` PM-integration summary reflects the hardened state.
+8. `docs/specs/006-...md` has a forward-reference to spec 009.
+9. `tests/README.md` describes the final fake-provider + lifecycle-harness contract.
+10. All new/modified code has tests.
+11. `npm run build` passes.
+12. `npm test` passes (all three providers run the full behavioral conformance).
+13. `npm run lint` passes.
+14. `npm run typecheck` passes.
+15. No user-visible regression.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Full rewrite: "Adding a new PM provider" section, shared-helpers list, conformance-harness scope, fake provider as canonical starting point. |
+| `CLAUDE.md` (project root) | Update PM-integration summary paragraph to reference manifest-owned schemas, branded IDs, unified discovery, single entrypoint, behavioral conformance. |
+| `tests/README.md` | Confirm fake-provider and lifecycle-harness sections describe the final hardened state. |
+| `docs/specs/006-pm-integration-plug-and-play.md` | Add forward-reference pointer to spec 009 at the top. |
+| `CHANGELOG.md` | "feat(pm): hardening complete — legacy per-provider tRPC/schema deleted; single-entrypoint enforced; docs rewritten". |
+
+---
+
+## Out of Scope (this plan)
+
+Nothing — this plan closes the spec.
+
+Originally out of scope for the spec (repeated for clarity):
+- SCM (GitHub) / alerting (Sentry) integration changes.
+- Adding a new PM provider.
+- Changing the agent-facing PM interface.
+- Credential storage / encryption / resolution.
+- Replacing Zod / tRPC / Biome.
+- Runtime-wrapped HTTP client.
+- Shipping the fake provider as a user-facing demo.
+- Inline-checklist engine changes beyond composing cleanly with hardened contracts.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1 (legacy tRPC deleted)
+- [ ] AC #2 (central schemas deleted; configMapper generic)
+- [ ] AC #3 (single-entrypoint enforced)
+- [ ] AC #4 (new-provider-surface snapshot guard)
+- [ ] AC #5 (wizard step duplicates deleted)
+- [ ] AC #6 (README rewrite)
+- [ ] AC #7 (CLAUDE.md update)
+- [ ] AC #8 (spec 006 forward-ref)
+- [ ] AC #9 (tests README confirmed)
+- [ ] AC #10 (tests)
+- [ ] AC #11 (build)
+- [ ] AC #12 (tests)
+- [ ] AC #13 (lint)
+- [ ] AC #14 (typecheck)
+- [ ] AC #15 (no regression)

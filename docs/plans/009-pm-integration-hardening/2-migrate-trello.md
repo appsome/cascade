@@ -1,0 +1,212 @@
+---
+id: 009
+slug: pm-integration-hardening
+plan: 2
+plan_slug: migrate-trello
+level: plan
+parent_spec: docs/specs/009-pm-integration-hardening.md
+depends_on: [1-infra.md]
+status: pending
+---
+
+# 009/2: Migrate Trello onto the Hardened PM Contracts
+
+> Part 2 of 5 in the 009-pm-integration-hardening plan. See [parent spec](../../specs/009-pm-integration-hardening.md).
+
+## Summary
+
+Migrate the Trello PM provider onto the hardening primitives introduced in plan 1. Trello goes first because:
+
+- It has the simplest discovery surface (boards → lists → labels) and the most complete wizard today, which makes it the safest proving ground.
+- Any shape mismatch between the hardened contract and real-world Trello behavior surfaces here, where it's cheap to fix before JIRA and Linear adopt.
+
+**Components delivered:**
+- Trello manifest declares `configSchema` (Zod) and `discoveryCapabilities` (`boards`, `labels`) and `wizardSpec` (standard steps: credentials, container-pick, label-mapping, webhook-url-display).
+- Trello adapter implements `discover('boards')` and `discover('labels')` through the existing Trello client.
+- Trello adapter accepts branded `ContainerId` / `LabelId` types at public surfaces (`listWorkItems`, `createWorkItem`, `moveWorkItem`, `updateWorkItem`).
+- Trello wizard consumes standard steps from `renderStandardStep`; only genuinely Trello-specific UI remains in the provider folder.
+- Behavioral conformance harness runs the full lifecycle against the live Trello adapter using an in-memory fixture (no real Trello API calls).
+- `TrelloConfigSchema` in `src/config/schema.ts` is marked `@deprecated` with a pointer to the manifest's schema; plan 5 deletes it once the config mapper reads through the registry.
+
+**Deferred to later plans in this spec:**
+- JIRA migration (plan 3).
+- Linear migration (plan 4).
+- Deletion of legacy Trello-specific tRPC procedures (`verifyTrello`, `createTrelloLabel`, `createTrelloLabels`, `createTrelloCustomField`) — plan 5.
+- Deletion of `TrelloConfigSchema` from `src/config/schema.ts` — plan 5.
+- Final doc rewrite — plan 5.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- **Spec AC #2** (all 3 providers migrated) — **partial (1/3)** — Trello is migrated with parity; JIRA and Linear follow in plans 3 and 4.
+- **Spec AC #3** (state/label name→ID compile error) — **partial** — Trello's public adapter surfaces now accept only branded IDs.
+- **Spec AC #4** (no divergent auth header) — **partial** — Trello's auth path verified to go through `_shared/auth-headers.ts` (Trello uses API key + token query-string, not bearer; lint rule's scope is adjusted accordingly in plan 1).
+- **Spec AC #6** (wizard from manifest) — **partial** — Trello wizard renders standard steps through the generator.
+- **Spec AC #7** (unified discovery) — **partial** — Trello's `boards` and `labels` discovery now flows through `pm.discover`; legacy `verifyTrello` endpoint is still present but deprecated.
+- **Spec AC #8** (lifecycle harness vs every provider) — **partial** — Trello passes the full lifecycle scenario.
+- **Spec AC #9** (config round-trip) — **partial** — Trello's manifest declares a `configSchema` and passes round-trip.
+
+---
+
+## Depends On
+
+- Plan 1 (infra) — provides `StateId`/`LabelId`/`ContainerId`, extended `PMProviderManifest` fields, `renderStandardStep`, `pm.discover` endpoint, behavioral conformance harness, fake provider fixture, single registration entrypoint.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Trello manifest: declare `configSchema`
+
+**Tests first** (`tests/unit/pm/trello/manifest-config-schema.test.ts`):
+- Round-trip: `trelloManifest.configSchema.parse(fixture)` → re-serialize → re-parse → deep-equal.
+- Rejects missing `apiKey`, `apiToken`, `boardId`.
+- Accepts optional `statusMapping`, `labelMapping` fields.
+- Matches the shape of today's `TrelloConfigSchema` in `src/config/schema.ts` (diff-test against imported copy).
+
+**Implementation** (`src/integrations/pm/trello/manifest.ts`):
+- Import a Zod schema from a new file `src/integrations/pm/trello/config-schema.ts` that mirrors the current `TrelloConfigSchema` exactly.
+- Set `configSchema: trelloConfigSchema` on the manifest.
+
+### 2. Trello manifest: declare `discoveryCapabilities`
+
+**Tests first** (`tests/unit/pm/trello/manifest-discovery.test.ts`):
+- `manifest.discoveryCapabilities` contains `boards` and `labels` set to `true`.
+- `adapter.discover('boards', { credentialHash })` returns an array of `{ id: ContainerId, name: string }` objects.
+- `adapter.discover('labels', { containerId })` returns an array of `{ id: LabelId, name: string, color?: string }` objects.
+
+**Implementation**:
+- `src/integrations/pm/trello/manifest.ts` — add `discoveryCapabilities: { boards: true, labels: true }`.
+- `src/integrations/pm/trello/adapter.ts` — implement `discover(capability, args)` switch over `boards` / `labels`, delegating to the existing Trello client.
+
+### 3. Trello adapter: adopt branded IDs at public surfaces
+
+**Tests first** (`tests/unit/pm/trello/adapter-branded-ids.test.ts`):
+- Type-level: `adapter.moveWorkItem(id, 'raw')` is a compile error; `adapter.moveWorkItem(id, parseContainerId('raw'))` compiles.
+- Runtime: calling with a branded ID behaves identically to the current string-based path (regression).
+
+**Implementation** (`src/integrations/pm/trello/adapter.ts`):
+- Update method signatures for `listWorkItems`, `createWorkItem`, `moveWorkItem`, `updateWorkItem`, `getLabelsForContainer`, `setStatusMapping` to accept branded types.
+- Internally, `unwrap()` at the boundary before sending to the Trello client.
+
+### 4. Trello manifest: declare `wizardSpec`
+
+**Tests first** (`tests/unit/pm/trello/manifest-wizard-spec.test.ts`):
+- `manifest.wizardSpec.steps` includes the standard kinds `credentials`, `container-pick`, `label-mapping`, `webhook-url-display` in the expected order.
+- Any Trello-specific custom steps are listed as `kind: 'custom'` with their component ID.
+
+**Implementation**:
+- `src/integrations/pm/trello/manifest.ts` — set `wizardSpec: { steps: [...] }`.
+
+### 5. Trello wizard: consume `renderStandardStep`
+
+**Tests first** (`tests/unit/web/trello-wizard-generator.test.tsx`):
+- Rendering the Trello wizard uses `renderStandardStep` for credentials, container-pick, label-mapping, webhook-url-display.
+- Any Trello-specific step (e.g., "enable card archiving on move") continues to come from the Trello provider folder.
+- Snapshot: rendered DOM is equivalent to the current per-provider wizard (no visual regression).
+
+**Implementation**:
+- `web/src/components/projects/pm-providers/trello/wizard.ts` — replace per-provider standard step imports with a derivation from `manifest.wizardSpec` via `renderStandardStep`.
+- Delete or inline per-provider copies of standard steps that are now generated.
+
+### 6. Opt Trello into behavioral conformance harness
+
+**Tests first** — no new test file; the conformance harness (from plan 1) now runs all behavioral asserts against Trello because `configSchema`, `discoveryCapabilities`, `wizardSpec`, and `lifecycle.enabled: true` are declared.
+
+**Implementation** (`src/integrations/pm/trello/manifest.ts`):
+- Set `lifecycle: { enabled: true, fixture: trelloLifecycleFixture }`.
+- Add `tests/helpers/trelloLifecycleFixture.ts` that returns an in-memory mock Trello client driving the adapter through the lifecycle without hitting the network.
+
+### 7. Central schema deprecation
+
+**Tests first** — N/A (documentation/deprecation).
+
+**Implementation** (`src/config/schema.ts`):
+- Mark `TrelloConfigSchema` `@deprecated — use trelloManifest.configSchema`. Do NOT delete yet (plan 5 does).
+- `src/db/repositories/configMapper.ts` — keep existing Trello path unchanged for now; plan 5 routes through the manifest.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/pm/trello/manifest-config-schema.test.ts` — 4 tests.
+- [ ] `tests/unit/pm/trello/manifest-discovery.test.ts` — 3 tests.
+- [ ] `tests/unit/pm/trello/adapter-branded-ids.test.ts` — 4 tests.
+- [ ] `tests/unit/pm/trello/manifest-wizard-spec.test.ts` — 2 tests.
+- [ ] `tests/unit/web/trello-wizard-generator.test.tsx` — 3 tests.
+- [ ] `tests/unit/integrations/pm-conformance.test.ts` — extended to run all behavioral asserts against Trello (no new file; existing harness exercises the manifest).
+
+### Integration tests
+- None — all Trello tests run against an in-memory mock.
+
+### Acceptance tests
+- [ ] Full PM lifecycle (create → list → move → comment → delete) via the fake-provider test path passes against Trello using the mock client.
+- [ ] `cascade-tools pm list --project <trello-project>` output is unchanged.
+- [ ] Dashboard wizard renders Trello setup identically (manual spot-check or snapshot test).
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `trelloManifest.configSchema` is declared and passes round-trip conformance.
+2. `trelloManifest.discoveryCapabilities` declares `boards` and `labels`; `adapter.discover('boards')` and `adapter.discover('labels')` return the expected shapes.
+3. Trello adapter's public surfaces accept branded `ContainerId` / `LabelId` types; passing a bare string is a compile error.
+4. `trelloManifest.wizardSpec` is declared; the Trello wizard renders standard steps via `renderStandardStep` with no visual regression.
+5. Behavioral conformance harness runs the full lifecycle scenario against Trello and passes.
+6. `TrelloConfigSchema` in `src/config/schema.ts` is marked `@deprecated` and still exported for backward compatibility.
+7. No Trello-specific auth header assembly exists outside `src/integrations/pm/_shared/auth-headers.ts` (Trello-specific exception for query-string auth is documented inline).
+8. All new/modified code has corresponding tests.
+9. `npm run build` passes.
+10. `npm test` passes.
+11. `npm run lint` passes.
+12. `npm run typecheck` passes.
+13. No user-visible regression in the Trello setup wizard, CLI, or agent runs.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Add "Trello has been migrated to the hardened contracts" note under the per-provider section; full rewrite deferred to plan 5. |
+| `CHANGELOG.md` | Entry: "feat(pm): migrate Trello onto hardened PM contracts (manifest-owned schema, branded IDs, unified discovery, wizard from manifest, behavioral harness)". |
+
+---
+
+## Out of Scope (this plan)
+
+Deferred to later plans in this spec:
+- JIRA migration (plan 3).
+- Linear migration (plan 4).
+- Deletion of legacy Trello tRPC procedures (`verifyTrello`, `createTrelloLabel`, etc.) (plan 5).
+- Deletion of `TrelloConfigSchema` from `src/config/schema.ts` (plan 5).
+- Routing `configMapper` through the manifest registry (plan 5).
+- Final `src/integrations/README.md` rewrite, root `CLAUDE.md` update, spec 006 forward-reference (plan 5).
+
+Originally out of scope for the spec (repeated for clarity):
+- SCM / alerting integration changes.
+- Adding a new PM provider.
+- Agent-facing PM interface changes.
+- Credential storage/encryption changes.
+- Replacing Zod/tRPC/Biome.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1 (Trello configSchema)
+- [ ] AC #2 (Trello discoveryCapabilities)
+- [ ] AC #3 (Trello branded IDs)
+- [ ] AC #4 (Trello wizardSpec + generator adoption)
+- [ ] AC #5 (Trello lifecycle harness)
+- [ ] AC #6 (TrelloConfigSchema deprecated)
+- [ ] AC #7 (no divergent Trello auth headers)
+- [ ] AC #8 (tests)
+- [ ] AC #9 (build)
+- [ ] AC #10 (tests)
+- [ ] AC #11 (lint)
+- [ ] AC #12 (typecheck)
+- [ ] AC #13 (no regression)
