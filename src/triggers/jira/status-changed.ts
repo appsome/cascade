@@ -11,6 +11,20 @@ import { logger } from '../../utils/logging.js';
 import { checkTriggerEnabled } from '../shared/trigger-check.js';
 import { type JiraWebhookPayload, STATUS_TO_AGENT } from './types.js';
 
+/**
+ * Resolve the new status name from a JIRA webhook payload.
+ * Returns `undefined` when the status cannot be determined.
+ */
+function resolveNewStatus(payload: JiraWebhookPayload): string | undefined {
+	if (payload.webhookEvent === 'jira:issue_created') {
+		// For creation events, read status directly from issue fields
+		return payload.issue?.fields?.status?.name;
+	}
+	// For update events, status comes from the changelog
+	const statusChange = payload.changelog?.items?.find((item) => item.field === 'status');
+	return statusChange?.toString;
+}
+
 export class JiraStatusChangedTrigger implements TriggerHandler {
 	name = 'jira-status-changed';
 	description = 'Triggers agent when a JIRA issue transitions to a configured status';
@@ -19,6 +33,12 @@ export class JiraStatusChangedTrigger implements TriggerHandler {
 		if (ctx.source !== 'jira') return false;
 
 		const payload = ctx.payload as JiraWebhookPayload;
+
+		// Issue created directly in a status
+		if (payload.webhookEvent === 'jira:issue_created') {
+			return true;
+		}
+
 		if (!payload.webhookEvent?.startsWith('jira:issue_updated')) return false;
 
 		// Must have a status change in changelog
@@ -29,13 +49,12 @@ export class JiraStatusChangedTrigger implements TriggerHandler {
 	async handle(ctx: TriggerContext): Promise<TriggerResult | null> {
 		const payload = ctx.payload as JiraWebhookPayload;
 		const issueKey = payload.issue?.key;
-		const statusChange = payload.changelog?.items?.find((item) => item.field === 'status');
 
-		if (!issueKey || !statusChange) {
+		if (!issueKey) {
 			return null;
 		}
 
-		const newStatus = statusChange.toString;
+		const newStatus = resolveNewStatus(payload);
 		if (!newStatus) {
 			return null;
 		}
@@ -73,7 +92,6 @@ export class JiraStatusChangedTrigger implements TriggerHandler {
 
 		logger.info('JIRA issue transitioned to agent-triggering status', {
 			issueKey,
-			fromStatus: statusChange.fromString,
 			toStatus: newStatus,
 			agentType,
 		});

@@ -40,6 +40,8 @@ function buildCtx(
 		issueKey?: string;
 		statusChangeItems?: Array<{ field?: string; fromString?: string; toString?: string }>;
 		noJiraConfig?: boolean;
+		/** Status name in issue.fields.status.name (for creation events) */
+		issueStatusName?: string;
 	} = {},
 ): TriggerContext {
 	const project = overrides.noJiraConfig ? { ...mockProject, jira: undefined } : mockProject;
@@ -51,8 +53,24 @@ function buildCtx(
 			webhookEvent: overrides.webhookEvent ?? 'jira:issue_updated',
 			issue:
 				overrides.issueKey !== undefined
-					? { key: overrides.issueKey, fields: { summary: 'Test Issue' } }
-					: { key: 'PROJ-42', fields: { summary: 'Test Issue' } },
+					? {
+							key: overrides.issueKey,
+							fields: {
+								summary: 'Test Issue',
+								...(overrides.issueStatusName !== undefined
+									? { status: { name: overrides.issueStatusName } }
+									: {}),
+							},
+						}
+					: {
+							key: 'PROJ-42',
+							fields: {
+								summary: 'Test Issue',
+								...(overrides.issueStatusName !== undefined
+									? { status: { name: overrides.issueStatusName } }
+									: {}),
+							},
+						},
 			changelog: {
 				items: overrides.statusChangeItems ?? [
 					{ field: 'status', fromString: 'Backlog', toString: 'Splitting' },
@@ -80,8 +98,12 @@ describe('JiraStatusChangedTrigger', () => {
 			expect(trigger.matches(buildCtx({ source: 'trello' }))).toBe(false);
 		});
 
-		it('does not match non-issue_updated webhook events', () => {
-			expect(trigger.matches(buildCtx({ webhookEvent: 'jira:issue_created' }))).toBe(false);
+		it('does not match unrelated webhook events', () => {
+			expect(trigger.matches(buildCtx({ webhookEvent: 'jira:issue_deleted' }))).toBe(false);
+		});
+
+		it('matches jira:issue_created events (issue created directly in a status)', () => {
+			expect(trigger.matches(buildCtx({ webhookEvent: 'jira:issue_created' }))).toBe(true);
 		});
 
 		it('does not match when no status change in changelog', () => {
@@ -208,6 +230,59 @@ describe('JiraStatusChangedTrigger', () => {
 			const result = await trigger.handle(ctx);
 
 			expect(result).toBeNull();
+		});
+
+		describe('creation events (jira:issue_created)', () => {
+			it('returns implementation agent when created in "To Do" status', async () => {
+				const ctx = buildCtx({
+					webhookEvent: 'jira:issue_created',
+					issueStatusName: 'To Do',
+				});
+
+				const result = await trigger.handle(ctx);
+
+				expect(result).not.toBeNull();
+				expect(result?.agentType).toBe('implementation');
+				expect(result?.workItemId).toBe('PROJ-42');
+				expect(result?.workItemUrl).toBe('https://myorg.atlassian.net/browse/PROJ-42');
+				expect(result?.workItemTitle).toBe('Test Issue');
+				expect(result?.agentInput.triggerEvent).toBe('pm:status-changed');
+			});
+
+			it('returns splitting agent when created in "Splitting" status', async () => {
+				const ctx = buildCtx({
+					webhookEvent: 'jira:issue_created',
+					issueStatusName: 'Splitting',
+				});
+
+				const result = await trigger.handle(ctx);
+
+				expect(result?.agentType).toBe('splitting');
+			});
+
+			it('returns null when created in unmapped status', async () => {
+				const ctx = buildCtx({
+					webhookEvent: 'jira:issue_created',
+					issueStatusName: 'Done',
+				});
+
+				const result = await trigger.handle(ctx);
+
+				expect(result).toBeNull();
+			});
+
+			it('returns null when issue has no status field on creation', async () => {
+				const ctx = buildCtx({ webhookEvent: 'jira:issue_created' });
+				// No issueStatusName provided → fields.status is undefined
+				(ctx.payload as Record<string, unknown>).issue = {
+					key: 'PROJ-42',
+					fields: { summary: 'Test Issue' },
+				};
+
+				const result = await trigger.handle(ctx);
+
+				expect(result).toBeNull();
+			});
 		});
 
 		describe('per-agent statusChanged toggle (via checkTriggerEnabled)', () => {

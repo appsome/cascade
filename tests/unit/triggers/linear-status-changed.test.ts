@@ -110,8 +110,12 @@ describe('LinearStatusChangedTrigger', () => {
 			expect(trigger.matches(buildCtx({ source: 'jira' }))).toBe(false);
 		});
 
-		it('does not match non-update actions', () => {
-			expect(trigger.matches(buildCtx({ action: 'create' }))).toBe(false);
+		it('does not match remove actions', () => {
+			expect(trigger.matches(buildCtx({ action: 'remove' }))).toBe(false);
+		});
+
+		it('matches create/Issue events (issue created directly in a state)', () => {
+			expect(trigger.matches(buildCtx({ action: 'create', noUpdatedFrom: true }))).toBe(true);
 		});
 
 		it('does not match non-Issue types', () => {
@@ -251,6 +255,38 @@ describe('LinearStatusChangedTrigger', () => {
 			const result = await trigger.handle(ctx);
 
 			expect(result?.workItemId).toBe('fallback-id');
+		});
+
+		describe('create events (issue created directly in a state)', () => {
+			it('returns implementation agent when created in "todo" state', async () => {
+				const result = await trigger.handle(
+					buildCtx({ action: 'create', newStateId: 'state-todo', noUpdatedFrom: true }),
+				);
+
+				expect(result).not.toBeNull();
+				expect(result?.agentType).toBe('implementation');
+				expect(result?.workItemId).toBe('TEAM-123');
+				expect(result?.workItemTitle).toBe('Fix the bug');
+				expect(result?.workItemUrl).toBe('https://linear.app/org/issue/TEAM-123');
+				expect(result?.agentInput.triggerEvent).toBe('pm:status-changed');
+			});
+
+			it('returns planning agent when created in "planning" state', async () => {
+				const result = await trigger.handle(
+					buildCtx({ action: 'create', newStateId: 'state-planning', noUpdatedFrom: true }),
+				);
+
+				expect(result).not.toBeNull();
+				expect(result?.agentType).toBe('planning');
+			});
+
+			it('returns null when created in unmapped state', async () => {
+				const result = await trigger.handle(
+					buildCtx({ action: 'create', newStateId: 'state-done', noUpdatedFrom: true }),
+				);
+
+				expect(result).toBeNull();
+			});
 		});
 	});
 });
