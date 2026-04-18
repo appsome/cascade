@@ -84,6 +84,11 @@ describe('CredentialScopedCommand', () => {
 		delete process.env.CASCADE_LINEAR_TEAM_ID;
 		delete process.env.CASCADE_LINEAR_PROJECT_ID;
 		delete process.env.CASCADE_LINEAR_STATUSES;
+		// Clear JIRA vars so resolvePmType() falls back to 'trello' when not
+		// explicitly testing JIRA behaviour (env may be set on CI/dev machines).
+		delete process.env.JIRA_EMAIL;
+		delete process.env.JIRA_API_TOKEN;
+		delete process.env.JIRA_BASE_URL;
 		vi.mocked(withLinearCredentials).mockClear();
 	});
 
