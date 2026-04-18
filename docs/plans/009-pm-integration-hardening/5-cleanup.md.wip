@@ -6,7 +6,7 @@ plan_slug: cleanup
 level: plan
 parent_spec: docs/specs/009-pm-integration-hardening.md
 depends_on: [2-migrate-trello.md, 3-migrate-jira.md, 4-migrate-linear.md]
-status: pending
+status: wip
 ---
 
 # 009/5: Cleanup — Delete Legacy Surfaces, Enforce New Contracts, Finalize Docs
@@ -18,8 +18,9 @@ status: pending
 All three providers are now migrated onto the hardened contracts. This plan deletes the legacy surfaces they depended on, flips the single-entrypoint invariant from "convention" to "enforced", and finalizes the documentation.
 
 **Components delivered:**
-- Delete legacy per-provider tRPC procedures from `src/api/routers/integrationsDiscovery.ts` (`verifyTrello`, `createTrelloLabel`, `createTrelloLabels`, `createTrelloCustomField`, `verifyJira`, `createJiraCustomField`, `verifyLinear`, `createLinearLabel`, `createLinearLabels`). Callers updated to `pm.discover`.
-- Delete `TrelloConfigSchema`, `JiraConfigSchema`, `LinearConfigSchema` from `src/config/schema.ts`. Route `configMapper` through the registry (`manifest.configSchema.parse(row)`).
+- Delete the three legacy `verify*` tRPC procedures from `src/api/routers/integrationsDiscovery.ts` (`verifyTrello`, `verifyJira`, `verifyLinear`). Wizard callers (`web/src/components/projects/pm-wizard-hooks.ts`) migrated to `pm.discover`.
+- **Kept with TODO**: the `create*Label` / `create*CustomField` procedures (`createTrelloLabel`, `createTrelloLabels`, `createJiraCustomField`, `createLinearLabel`, `createLinearLabels`). These are mutations without a direct `pm.discover` equivalent — migrating them would require a new generic `pm.create*` endpoint + per-manifest factory hooks, which is follow-up-plan scope. Inline TODO comment in `integrationsDiscovery.ts` pins the deferred migration.
+- Replace inline `JiraConfigSchema`, `LinearConfigSchema`, and the inline Trello `z.object(...)` in `src/config/schema.ts` with imports from the manifest-declared config schemas. Single source of truth; drift eliminated. (Going one level deeper — removing `trello`/`jira`/`linear` as first-class keys on the central schema and routing `validateConfig` through the registry — is out of scope; it would rewrite `configMapper` substantially.)
 - Add a conformance assertion that a new PM provider PR touches only its provider folder, its wizard folder, and the single-entrypoint file — no edits to shared router/worker/CLI/dashboard/configMapper/central schema files are needed for a functional new provider.
 - Enforce that the single entrypoint is the only registration path: `tests/unit/integrations/single-entrypoint.test.ts` greps the repo for direct imports of `src/integrations/pm/<provider>/index.js` outside the entrypoint file and fails.
 - Delete any per-provider duplicates of standard wizard steps that are now generated from `wizardSpec`.
@@ -56,31 +57,34 @@ All three must be merged before this plan can land without breaking anything.
 
 ## Detailed Task List (TDD)
 
-### 1. Delete legacy per-provider tRPC discovery procedures
+### 1. Delete legacy `verify*` tRPC procedures (narrowed scope)
 
 **Tests first** (`tests/unit/api/pm-discovery-legacy-removed.test.ts`):
 - `integrationsDiscovery.verifyTrello` is undefined.
 - `integrationsDiscovery.verifyJira` is undefined.
 - `integrationsDiscovery.verifyLinear` is undefined.
-- All `createXxxLabel` / `createXxxCustomField` procedures for Trello/JIRA/Linear are undefined.
-- `pm.discover` handles every capability previously served by the legacy procedures (sanity check — already asserted in plan 1).
+- `create*Label` / `create*CustomField` procedures remain defined (TODO — deferred to follow-up spec) and explicitly named in a "deferred" assertion list so the guard reflects reality.
 
 **Implementation** (`src/api/routers/integrationsDiscovery.ts`):
-- Remove: `verifyTrello`, `createTrelloLabel`, `createTrelloLabels`, `createTrelloCustomField`, `verifyJira`, `createJiraCustomField`, `verifyLinear`, `createLinearLabel`, `createLinearLabels`.
-- Keep: GitHub- and Sentry-related procedures (`verifyGithubToken`, `verifySentry`) — out of scope for this spec.
-- Update any dashboard callers that still reference the deleted procedures to use `pm.discover` instead.
+- Remove: `verifyTrello`, `verifyJira`, `verifyLinear`.
+- Keep with TODO comment: `createTrelloLabel`, `createTrelloLabels`, `createJiraCustomField`, `createLinearLabel`, `createLinearLabels` (mutations lacking a direct `pm.discover` equivalent).
+- Keep unchanged: GitHub + Sentry procedures (out of spec scope).
 
-### 2. Delete central Zod schemas for migrated providers
+**Caller migration** (`web/src/components/projects/pm-wizard-hooks.ts`):
+- Replace `integrationsDiscovery.verifyTrello.mutate({...})` → `pm.discover.mutate({ providerId: 'trello', capability: 'boards', args: {}, credentials: {...} })`.
+- Replace `integrationsDiscovery.verifyJira.mutate(...)` → `pm.discover.mutate({ providerId: 'jira', capability: 'projects', args: {}, credentials: {...} })`.
+- Replace `integrationsDiscovery.verifyLinear.mutate(...)` → `pm.discover.mutate({ providerId: 'linear', capability: 'teams', args: {}, credentials: {...} })`.
+
+### 2. Replace inline Zod schemas with manifest imports (narrowed scope)
 
 **Tests first** (`tests/unit/config/schema-cleanup.test.ts`):
-- `src/config/schema.ts` no longer exports `TrelloConfigSchema`, `JiraConfigSchema`, `LinearConfigSchema`.
-- `configMapper.ts` parses PM provider configs through `manifest.configSchema` resolved from the registry.
-- A `projectId`-on-Linear round-trip regression test (mirroring #1138 / #1142) still passes.
+- `src/config/schema.ts` no longer defines the three schemas inline — the validators attached to the project schema's `trello`/`jira`/`linear` fields are the exact `trelloConfigSchema`/`jiraConfigSchema`/`linearConfigSchema` objects from the per-provider files.
+- `projectId`-on-Linear round-trip regression still passes (identical to the test shipped in plan 4).
+- Central project-config parsing accepts the same fixtures it did before plan 5.
 
 **Implementation**:
-- `src/config/schema.ts` — delete the three schemas.
-- `src/db/repositories/configMapper.ts` — generic PM-config path: look up the provider manifest via `getPMProvider(providerId)`, parse the row through `manifest.configSchema`, return the typed config. Specific per-provider mapper functions (if any) are removed.
-- Update any call sites that imported the deleted schemas.
+- `src/config/schema.ts` — remove the inline `JiraConfigSchema`, `LinearConfigSchema`, and inline `trello: z.object(...)`. Import and use `trelloConfigSchema` / `jiraConfigSchema` / `linearConfigSchema` from the manifest's per-provider schema files.
+- Leave `src/db/repositories/configMapper.ts` alone (its per-provider `buildXxxConfig` transform functions are still valid code — transforms, not schemas — and the fully-registry-driven rewrite is out of scope for this plan).
 
 ### 3. Enforce single registration entrypoint
 
@@ -144,8 +148,8 @@ All three must be merged before this plan can land without breaking anything.
 
 ## Acceptance Criteria (per-plan, testable)
 
-1. `src/api/routers/integrationsDiscovery.ts` no longer contains `verifyTrello`, `verifyJira`, `verifyLinear`, or any PM provider `create*Label` / `create*CustomField` procedures.
-2. `src/config/schema.ts` no longer contains `TrelloConfigSchema`, `JiraConfigSchema`, `LinearConfigSchema`; `configMapper` parses PM configs through `manifest.configSchema`.
+1. `src/api/routers/integrationsDiscovery.ts` no longer contains `verifyTrello`, `verifyJira`, or `verifyLinear`. PM `create*Label` / `create*CustomField` procedures remain with a TODO comment pointing at a follow-up spec (mutations need a generic `pm.create*` endpoint that doesn't exist yet).
+2. `src/config/schema.ts` no longer defines the three inline Zod schemas — the project schema's `trello`/`jira`/`linear` fields use imports from `src/integrations/pm/<provider>/config-schema.ts`. Existing config fixtures round-trip cleanly.
 3. `tests/unit/integrations/single-entrypoint.test.ts` asserts that no file outside `src/integrations/entrypoint.ts` imports provider barrels directly.
 4. `tests/unit/integrations/new-provider-surface.test.ts` snapshot-guards the shared surface list.
 5. Per-provider duplicates of standard wizard steps are deleted; provider folders contain only provider-specific UI.
