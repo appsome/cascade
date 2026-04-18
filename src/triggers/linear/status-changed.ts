@@ -24,10 +24,17 @@ export class LinearStatusChangedTrigger implements TriggerHandler {
 		if (ctx.source !== 'linear') return false;
 
 		const payload = ctx.payload as LinearWebhookTriggerPayload;
-		if (payload.action !== 'update' || payload.type !== 'Issue') return false;
+		if (payload.type !== 'Issue') return false;
 
-		// Must have a state change indicated by updatedFrom.stateId
-		return typeof payload.updatedFrom?.stateId === 'string';
+		// Issue created directly in a state (no updatedFrom on create events)
+		if (payload.action === 'create') return true;
+
+		// Issue updated with a state change indicated by updatedFrom.stateId
+		if (payload.action === 'update') {
+			return typeof payload.updatedFrom?.stateId === 'string';
+		}
+
+		return false;
 	}
 
 	async handle(ctx: TriggerContext): Promise<TriggerResult | null> {
