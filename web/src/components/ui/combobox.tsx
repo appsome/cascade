@@ -12,6 +12,12 @@ export interface ComboboxOption {
 	detail?: string;
 	/** Optional group for organizing options */
 	group?: string;
+	/**
+	 * Optional color swatch shown as an 8x8 rounded dot before the label.
+	 * Any CSS color (hex, rgb(), named) works. Used by the PM-wizard label
+	 * pickers so operators can tell `cascade-*` labels apart at a glance.
+	 */
+	swatch?: string;
 }
 
 interface ComboboxProps {
@@ -85,8 +91,17 @@ export function Combobox({
 					disabled={disabled}
 					className={cn('w-full justify-between font-normal', className)}
 				>
-					<span className="truncate text-left">
-						{displayValue || <span className="text-muted-foreground">{emptyLabel}</span>}
+					<span className="flex min-w-0 flex-1 items-center gap-2 text-left">
+						{selectedOption?.swatch && (
+							<span
+								aria-hidden="true"
+								className="inline-block h-3 w-3 shrink-0 rounded-full border border-black/10 dark:border-white/10"
+								style={{ backgroundColor: selectedOption.swatch }}
+							/>
+						)}
+						<span className="truncate">
+							{displayValue || <span className="text-muted-foreground">{emptyLabel}</span>}
+						</span>
 					</span>
 					<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
 				</Button>
@@ -137,6 +152,13 @@ export function Combobox({
 													value === option.value ? 'opacity-100' : 'opacity-0',
 												)}
 											/>
+											{option.swatch && (
+												<span
+													aria-hidden="true"
+													className="mr-2 inline-block h-3 w-3 shrink-0 rounded-full border border-black/10 dark:border-white/10"
+													style={{ backgroundColor: option.swatch }}
+												/>
+											)}
 											<span className="flex-1 truncate">{option.label}</span>
 											{option.detail && (
 												<span className="ml-2 shrink-0 text-xs text-muted-foreground">

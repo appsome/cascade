@@ -11,49 +11,29 @@ import './pm-providers/jira/index.js';
 import './pm-providers/linear/index.js';
 import { ManifestProviderWizardSection } from './pm-providers/manifest-section.js';
 import { getProviderWizard } from './pm-providers/registry.js';
-import { SaveStep, WebhookStep } from './pm-wizard-common-steps.js';
-import {
-	useLinearWebhookInfo,
-	useSaveMutation,
-	useVerification,
-	useWebhookManagement,
-} from './pm-wizard-hooks.js';
-// JIRA legacy step imports removed — all JIRA wizard rendering flows
-// through the manifest path (see ./pm-providers/jira/). The
-// `pm-wizard-jira-steps` module is still imported transitively by the
-// adapters in `./pm-providers/jira/adapters.tsx`.
-// Linear legacy step imports removed — all Linear wizard rendering flows
-// through the manifest path (see ./pm-providers/linear/).
+import { SaveStep } from './pm-wizard-common-steps.js';
+import { useSaveMutation, useVerification } from './pm-wizard-hooks.js';
+// Plan 011/5: the three legacy `pm-wizard-{trello,jira,linear}-steps.tsx`
+// files were deleted; all three providers now render exclusively through
+// the manifest path (see `./pm-providers/<provider>/wizard.ts`).
+// Plan 012/4: `WebhookStep` + `LinearWebhookInfoPanel` + supporting hooks
+// deleted; every provider owns its webhook UX via the manifest path.
 import {
 	areCredentialsReady,
 	buildEditState,
 	createInitialState,
-	deriveActiveWebhooks,
 	isStep1Complete,
-	isStep2Complete,
-	isStep3Complete,
-	isStep4Complete,
 	wizardReducer,
 } from './pm-wizard-state.js';
-// Trello legacy step imports removed — all Trello wizard rendering flows
-// through the manifest path (see ./pm-providers/trello/). The
-// `pm-wizard-trello-steps` module is still imported transitively by the
-// adapters in `./pm-providers/trello/adapters.tsx`, so its behavior is
-// unchanged — only the per-provider branching in this file is gone.
 import { WizardStep } from './wizard-shared.js';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-const STEP_TITLES = [
-	'Provider',
-	'Credentials & Verification',
-	'Board / Project Selection',
-	'Field Mapping',
-	'Webhooks',
-	'Save',
-] as const;
+// Plan 011/4: step titles now come from each provider's wizard definition
+// (manifestDef.steps[i].title). Only step 1 (provider picker) and the
+// legacy Webhook + Save slots have fixed titles; rendered inline.
 
 const PROVIDER_LABELS: Record<'trello' | 'jira' | 'linear', string> = {
 	trello: 'Trello',
@@ -83,7 +63,6 @@ export function PMWizard({
 	initialProvider: string;
 	initialConfig?: Record<string, unknown>;
 }) {
-	const webhooksQuery = useQuery(trpc.webhooks.list.queryOptions({ projectId }));
 	const credentialsQuery = useQuery(trpc.projects.credentials.list.queryOptions({ projectId }));
 
 	const [state, dispatch] = useReducer(wizardReducer, undefined, createInitialState);
@@ -124,7 +103,9 @@ export function PMWizard({
 		const configuredKeys = new Set(credentialsQuery.data.map((c) => c.envVarKey));
 		const editState = buildEditState(initialProvider, initialConfig, configuredKeys);
 		dispatch({ type: 'INIT_EDIT', state: editState });
-		setOpenSteps(new Set([1, 2, 3, 4, 5, 6]));
+		// Plan 011/4: open all steps up to a comfortable ceiling; actual
+		// step count is provider-dependent (Trello 7, JIRA 8, Linear 7).
+		setOpenSteps(new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]));
 	}, [initialConfig, initialProvider, credentialsQuery.data]);
 
 	// ---- Custom hooks ----
@@ -135,20 +116,12 @@ export function PMWizard({
 	// through to the legacy per-provider branches.
 	const manifestDef = getProviderWizard(state.provider);
 
-	const { verifyMutation } = useVerification(state, dispatch, advanceToStep);
+	const { verifyMutation } = useVerification(state, dispatch, advanceToStep, projectId);
 	// Every PM provider (Trello 006/2, JIRA 006/3, Linear 006/4) composes its
-	// discovery / label / custom-field hooks inside its own useProviderHooks.
-	// The parent wizard no longer calls any provider-specific React hook.
-	const webhookManagement = useWebhookManagement(projectId, state);
-	const { webhookUrl: linearWebhookUrl } = useLinearWebhookInfo();
+	// discovery / label / custom-field / webhook hooks inside its own
+	// useProviderHooks. The parent wizard no longer calls any provider-
+	// specific React hook.
 	const { saveMutation } = useSaveMutation(projectId, state);
-
-	const linearWebhookSecretCredential = credentialsQuery.data?.find(
-		(c) => c.envVarKey === 'LINEAR_WEBHOOK_SECRET',
-	);
-
-	// Label creation + discovery handlers now live inside each provider's
-	// useProviderHooks (Trello 006/2, JIRA 006/3, Linear 006/4).
 
 	// ---- Step status ----
 
@@ -163,8 +136,15 @@ export function PMWizard({
 		return 'pending';
 	}
 
-	// ---- Active webhooks for this provider ----
-	const activeWebhooks = deriveActiveWebhooks(state.provider, webhooksQuery.data);
+	// ---- Manifest step layout (plans 011/4 + 012/1-4) ----
+	// Iterate over `manifestDef.steps`. Every PM provider owns every
+	// wizard step via the manifest path — credentials, container-pick,
+	// mappings, webhook, everything. Parent wizard only owns the provider
+	// picker (step 1) and the final Save step.
+	const renderedManifestSteps = manifestDef
+		? manifestDef.steps.map((step, index) => ({ step, index }))
+		: [];
+	const saveStepNumber = renderedManifestSteps.length + 2; // +1 for provider picker, +1 for 1-indexed
 
 	// ---- Render ----
 
@@ -173,7 +153,7 @@ export function PMWizard({
 			{/* Step 1: Provider */}
 			<WizardStep
 				stepNumber={1}
-				title={STEP_TITLES[0]}
+				title="Provider"
 				status={getStatus(1, isStep1Complete(state))}
 				isOpen={openSteps.has(1)}
 				onToggle={() => toggleStep(1)}
@@ -204,122 +184,86 @@ export function PMWizard({
 				</div>
 			</WizardStep>
 
-			{/* Step 2: Credentials & Verification */}
-			<WizardStep
-				stepNumber={2}
-				title={STEP_TITLES[1]}
-				status={getStatus(2, isStep2Complete(state))}
-				isOpen={openSteps.has(2)}
-				onToggle={() => toggleStep(2)}
-			>
-				{manifestDef && (
-					<ManifestProviderWizardSection
-						def={manifestDef}
-						state={state}
-						dispatch={dispatch}
-						projectId={projectId}
-						advanceToStep={advanceToStep}
-						stepIndex={0}
-					/>
-				)}
-
-				<div className="flex items-center gap-3 pt-2">
-					{(!state.isEditing || !state.hasStoredCredentials || credsReady) && (
-						<button
-							type="button"
-							onClick={() => verifyMutation.mutate()}
-							disabled={!credsReady || verifyMutation.isPending}
-							className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+			{/*
+			 * Plan 011/4 + 012/4: dynamic manifest-step rendering. Each
+			 * provider's `wizardSpec.steps` drives its own slot count. Every
+			 * step — including webhook-url-display — renders via the manifest
+			 * path. Parent wizard owns only the provider picker (step 1) and
+			 * the final Save step.
+			 */}
+			{manifestDef &&
+				renderedManifestSteps.map((entry, idx) => {
+					const stepNumber = idx + 2; // 1 is Provider picker
+					const isCredentials = entry.step.id === manifestDef.steps[0]?.id;
+					return (
+						<WizardStep
+							key={entry.step.id}
+							stepNumber={stepNumber}
+							title={entry.step.title}
+							status={getStatus(stepNumber, entry.step.isComplete(state))}
+							isOpen={openSteps.has(stepNumber)}
+							onToggle={() => toggleStep(stepNumber)}
 						>
-							{verifyMutation.isPending ? (
-								<Loader2 className="h-4 w-4 animate-spin" />
-							) : (
-								<Globe className="h-4 w-4" />
+							<ManifestProviderWizardSection
+								def={manifestDef}
+								state={state}
+								dispatch={dispatch}
+								projectId={projectId}
+								advanceToStep={advanceToStep}
+								stepIndex={entry.index}
+							/>
+
+							{/* Verify Connection button belongs on the first manifest
+							    step (credentials). Always render — edit mode with stored
+							    credentials uses the `projectId` path on the backend, so
+							    users can verify without re-typing the key. */}
+							{isCredentials && (
+								<div className="flex items-center gap-3 pt-2">
+									<button
+										type="button"
+										onClick={() => verifyMutation.mutate()}
+										disabled={
+											!(credsReady || (state.isEditing && state.hasStoredCredentials)) ||
+											verifyMutation.isPending
+										}
+										className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+									>
+										{verifyMutation.isPending ? (
+											<Loader2 className="h-4 w-4 animate-spin" />
+										) : (
+											<Globe className="h-4 w-4" />
+										)}
+										Verify Connection
+									</button>
+									{!credsReady && state.isEditing && state.hasStoredCredentials && (
+										<span className="text-xs text-muted-foreground">Using stored credentials</span>
+									)}
+									{state.verificationResult && (
+										<div className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400">
+											<CheckCircle className="h-4 w-4" />
+											Connected as{' '}
+											<span className="font-medium">{state.verificationResult.display}</span>
+										</div>
+									)}
+									{state.verifyError && (
+										<div className="flex items-center gap-1.5 text-sm text-destructive">
+											<XCircle className="h-4 w-4" />
+											{state.verifyError}
+										</div>
+									)}
+								</div>
 							)}
-							Verify Connection
-						</button>
-					)}
-					{state.verificationResult && (
-						<div className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400">
-							<CheckCircle className="h-4 w-4" />
-							Connected as <span className="font-medium">{state.verificationResult.display}</span>
-						</div>
-					)}
-					{state.verifyError && (
-						<div className="flex items-center gap-1.5 text-sm text-destructive">
-							<XCircle className="h-4 w-4" />
-							{state.verifyError}
-						</div>
-					)}
-				</div>
-			</WizardStep>
+						</WizardStep>
+					);
+				})}
 
-			{/* Step 3: Board / Project Selection */}
+			{/* Save slot. */}
 			<WizardStep
-				stepNumber={3}
-				title={STEP_TITLES[2]}
-				status={getStatus(3, isStep3Complete(state))}
-				isOpen={openSteps.has(3)}
-				onToggle={() => toggleStep(3)}
-			>
-				{manifestDef && (
-					<ManifestProviderWizardSection
-						def={manifestDef}
-						state={state}
-						dispatch={dispatch}
-						projectId={projectId}
-						advanceToStep={advanceToStep}
-						stepIndex={1}
-					/>
-				)}
-			</WizardStep>
-
-			{/* Step 4: Field Mapping */}
-			<WizardStep
-				stepNumber={4}
-				title={STEP_TITLES[3]}
-				status={getStatus(4, isStep4Complete(state))}
-				isOpen={openSteps.has(4)}
-				onToggle={() => toggleStep(4)}
-			>
-				{manifestDef && (
-					<ManifestProviderWizardSection
-						def={manifestDef}
-						state={state}
-						dispatch={dispatch}
-						projectId={projectId}
-						advanceToStep={advanceToStep}
-						stepIndex={2}
-					/>
-				)}
-			</WizardStep>
-
-			{/* Step 5: Webhooks */}
-			<WizardStep
-				stepNumber={5}
-				title={STEP_TITLES[4]}
-				status={getStatus(5, true)}
-				isOpen={openSteps.has(5)}
-				onToggle={() => toggleStep(5)}
-			>
-				<WebhookStep
-					state={state}
-					webhooksQuery={webhooksQuery}
-					activeWebhooks={activeWebhooks}
-					linearWebhookUrl={linearWebhookUrl}
-					projectId={projectId}
-					linearWebhookSecretCredential={linearWebhookSecretCredential}
-					{...webhookManagement}
-				/>
-			</WizardStep>
-
-			{/* Step 6: Save */}
-			<WizardStep
-				stepNumber={6}
-				title={STEP_TITLES[5]}
-				status={getStatus(6, saveMutation.isSuccess)}
-				isOpen={openSteps.has(6)}
-				onToggle={() => toggleStep(6)}
+				stepNumber={saveStepNumber}
+				title="Save"
+				status={getStatus(saveStepNumber, saveMutation.isSuccess)}
+				isOpen={openSteps.has(saveStepNumber)}
+				onToggle={() => toggleStep(saveStepNumber)}
 			>
 				<SaveStep state={state} saveMutation={saveMutation} />
 			</WizardStep>

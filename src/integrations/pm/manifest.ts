@@ -85,6 +85,8 @@ export interface DiscoveryCapabilitiesMap {
 	readonly projects?: true;
 	readonly customFields?: true;
 	readonly containers?: true;
+	/** Plan 010/2: restores "Verified as @username" wizard UX via generic dispatch. */
+	readonly currentUser?: true;
 }
 
 /** Every wizard step kind the generic generator knows how to render. */
@@ -94,7 +96,8 @@ export type StandardStepKind =
 	| 'status-mapping'
 	| 'label-mapping'
 	| 'webhook-url-display'
-	| 'project-scope';
+	| 'project-scope'
+	| 'custom-field-mapping';
 
 export interface StandardStep {
 	readonly kind: StandardStepKind;
@@ -188,11 +191,34 @@ export interface PMProviderManifest {
 	 * others omit it and the generic `pm.discovery.createLabel` tRPC endpoint
 	 * returns a 404 for that provider.
 	 */
-	readonly createLabel?: (
-		containerId: string,
-		name: string,
-		color?: string,
-	) => Promise<{ id: string; name: string; color: string }>;
+	readonly createLabel?: (opts: {
+		credentials: Record<string, string>;
+		containerId: string;
+		name: string;
+		color?: string;
+	}) => Promise<{ id: string; name: string; color: string }>;
+
+	/**
+	 * Create a single custom field on the provider (e.g. Trello board,
+	 * JIRA tenant). Plan 010/1 adds this hook as a sibling of `createLabel`.
+	 * Manifests that support wizard-driven custom-field creation implement it;
+	 * others omit it and `pm.discovery.createCustomField` returns
+	 * NOT_IMPLEMENTED for that provider.
+	 *
+	 * Uses the same options-bag shape as `createLabel`. `credentials` is the
+	 * shape declared by the manifest's `credentialRoles`; the hook is
+	 * responsible for establishing its own credential scope (typically via
+	 * the provider's `withXxxCredentials` AsyncLocalStorage helper).
+	 *
+	 * `containerId` is the provider-native scope (Trello board, JIRA project
+	 * key, Linear team). JIRA custom fields are global — the hook accepts
+	 * `containerId` for uniform shape but may ignore it internally.
+	 */
+	readonly createCustomField?: (opts: {
+		credentials: Record<string, string>;
+		containerId: string;
+		name: string;
+	}) => Promise<{ id: string; name: string; type: string }>;
 
 	// ── Plan 009/1 additions ─────────────────────────────────────────────
 

@@ -97,6 +97,17 @@ export const linearManifest: PMProviderManifest = {
 
 	platformClientFactory: (projectId) => new LinearPlatformClient(projectId),
 
+	// ── Plan 010/1 mutation hooks ──────────────────────────────────────
+	// Linear exposes label creation through its GraphQL mutation
+	// `issueLabelCreate`. Linear custom fields aren't exposed through the
+	// CASCADE Linear client, so `createCustomField` stays unimplemented.
+	createLabel: async ({ credentials, containerId, name, color }) => {
+		const apiKey = credentials.api_key ?? '';
+		return withLinearCredentials({ apiKey }, () =>
+			linearClient.createLabel(containerId, name, color),
+		);
+	},
+
 	// ── Plan 009/4 behavioral contract fields ─────────────────────────
 	lifecycle: { enabled: true, fixtureKey: 'linear' },
 
@@ -139,6 +150,7 @@ export const linearManifest: PMProviderManifest = {
 		states: true,
 		labels: true,
 		projects: true,
+		currentUser: true,
 	},
 
 	/**
@@ -208,6 +220,16 @@ export const linearManifest: PMProviderManifest = {
 							id: parseContainerId(p.id),
 							name: p.name,
 						}));
+						return out as unknown as DiscoveryResult<K>;
+					}
+					case 'currentUser': {
+						// Plan 010/2: restore verification UX.
+						const me = await runWithCreds(() => linearClient.getMe());
+						const out = {
+							id: me.id,
+							name: me.name,
+							displayName: me.displayName,
+						};
 						return out as unknown as DiscoveryResult<K>;
 					}
 					default:

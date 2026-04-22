@@ -2,10 +2,13 @@
 
 CASCADE's PM providers (Trello, JIRA, Linear, and any future Asana/GitLab/ClickUp) are built on a **provider manifest** pattern. One file describes the provider end-to-end; one registry iterates manifests; a behavioral conformance harness guarantees each manifest satisfies its declared contracts.
 
-This document is the canonical guide for adding a new PM provider. Two specs shape it:
+This document is the canonical guide for adding a new PM provider. Five specs shape it:
 
 - **Spec [006](../../docs/specs/006-pm-integration-plug-and-play.md.done)** — introduced the manifest pattern + wiring-level conformance (2026-04-15/16).
-- **Spec [009](../../docs/specs/009-pm-integration-hardening.md)** — hardened the contracts: branded ID types, manifest-owned config schemas (eliminating the #1138/#1142 drift class), unified `pm.discover` endpoint, behavioral conformance harness with in-memory lifecycle scenario, single registration entrypoint, and auth-header provenance enforcement.
+- **Spec [009](../../docs/specs/009-pm-integration-hardening.md.done)** — hardened the contracts: branded ID types, manifest-owned config schemas (eliminating the #1138/#1142 drift class), unified `pm.discover` endpoint, behavioral conformance harness with in-memory lifecycle scenario, single registration entrypoint, and auth-header provenance enforcement.
+- **Spec [010](../../docs/specs/010-pm-integration-hardening-followups.md.done)** — follow-up cleanup: generic `pm.discovery.createLabel` / `createCustomField` mutation endpoints + manifest hooks, `currentUser` discovery capability, real shared React components for every `StandardStepKind`.
+- **Spec [011](../../docs/specs/011-pm-wizard-shared-migration.md.done)** — migrated all three production providers (Trello, JIRA, Linear) onto the shared step components; added a 7th `StandardStepKind: custom-field-mapping`; widened `container-pick` / `project-scope` / `webhook-url-display` with optional props; deleted the three legacy `pm-wizard-{trello,jira,linear}-steps.tsx` files.
+- **Spec [012](../../docs/specs/012-pm-webhook-manifest-migration.md.done)** — migrated each provider's webhook UX (programmatic create for Trello/JIRA, signing-secret + manual-setup for Linear) into its own manifest webhook step adapter. Deleted the legacy `WebhookStep` + `LinearWebhookInfoPanel` + supporting hooks. Every PM wizard step now renders via the manifest path without exception.
 
 ---
 
@@ -53,7 +56,8 @@ See [`src/integrations/pm/manifest.ts`](./pm/manifest.ts) for the authoritative 
 | `triggerHandlers` | Array of `TriggerHandler` instances for webhook events. |
 | `platformClientFactory` | `(projectId) => PlatformCommentClient`. Used by the router to post ack comments; must pull auth headers from `_shared/auth-headers.ts`. |
 | `isSelfAuthoredHook?` | Optional — returns `true` when the event was authored by CASCADE itself (for loop prevention). |
-| `createLabel?` | Optional — enables the wizard's "Create label" button for this provider. |
+| `createLabel?` | Optional — enables the wizard's "Create label" button. Called via the generic `pm.discovery.createLabel` tRPC endpoint; signature is `({credentials, containerId, name, color?}) => {id, name, color}`. |
+| `createCustomField?` | Optional — enables wizard-driven custom-field creation. Called via `pm.discovery.createCustomField`; signature is `({credentials, containerId, name}) => {id, name, type}`. JIRA fields are global (the hook ignores containerId). |
 
 ### Plan 009 hardened-contract fields (all optional; providers opt in)
 
@@ -61,7 +65,7 @@ See [`src/integrations/pm/manifest.ts`](./pm/manifest.ts) for the authoritative 
 |---|---|
 | `configSchema?: z.ZodType` | Declarative Zod schema for the persisted integration config. The conformance harness asserts round-trip identity — the #1138/#1142 bug class (`projectId` stripped by Zod twice) becomes a CI failure instead of a production outage. |
 | `configFixture?` | Sample config used by the harness's round-trip asserter. Must parse against `configSchema`. |
-| `discoveryCapabilities?` | `{ teams?, boards?, labels?, states?, projects?, containers?, customFields? }`. Each flag means "`adapter.discover(capability, args)` returns a list of that shape". The generic `pm.discover` tRPC endpoint dispatches through this registry. |
+| `discoveryCapabilities?` | `{ teams?, boards?, labels?, states?, projects?, containers?, customFields?, currentUser? }`. Each flag means "`adapter.discover(capability, args)` returns a list of that shape" (or a single `{id, name, displayName?}` object for `currentUser`). The generic `pm.discover` tRPC endpoint dispatches through this registry. |
 | `createDiscoveryProvider?` | `(opts) => PMProvider`. Factory producing a discovery-scoped adapter outside a project context (wizard setup, before the config is saved). Receives raw credentials from the wizard. |
 | `wizardSpec?` | `{ steps: Array<StandardStep \| CustomStep> }`. Declarative step list the shared wizard generator renders. Standard kinds: `credentials`, `container-pick`, `status-mapping`, `label-mapping`, `webhook-url-display`, `project-scope`. |
 | `lifecycle?` | `{ enabled: true, fixtureKey: string }`. Opts into the behavioral conformance harness's full lifecycle scenario. `fixtureKey` is looked up in the test-local `LIFECYCLE_FIXTURES` registry — the manifest doesn't import from `tests/helpers/`. |
@@ -159,6 +163,34 @@ A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal ref
 
 All three real providers are now on the hardened contracts. Plan 009/4 also ships `tests/unit/pm/linear/regression-2026-04.test.ts` — 12 tests, one set per 2026-04 bug class, that fail loudly if any of the six classes regresses. See `linearManifest` at `src/integrations/pm/linear/manifest.ts` for the reference migration (Linear's surface area is the richest).
 
+### Post-spec-010 additions (2026-04-18)
+
+| Area | Change |
+|---|---|
+| Mutations | Generic `pm.discovery.createLabel` / `pm.discovery.createCustomField` tRPC endpoints dispatch through the manifest's optional `createLabel` / `createCustomField` hooks. Five previous caller sites (Trello/JIRA label + custom-field wizards + Linear label wizard) now consume the generic endpoints. |
+| Discovery | `currentUser` capability added to `DiscoveryCapability`. All three real providers declare it (Trello via `/members/me`, JIRA via `/rest/api/3/myself`, Linear via `viewer`). The wizard's verify-button flow reads it through the unified `pm.discovery.discover` endpoint instead of per-provider procedures. |
+| Wizard UI | Six real shared step components live at `web/src/components/projects/pm-providers/steps/*.tsx`, one per `StandardStepKind`. A new provider with purely-standard steps renders its wizard through `renderStandardStep` + `STANDARD_STEP_COMPONENTS` with zero per-provider step code. |
+| Shared surface guard | `tests/unit/integrations/new-provider-surface.test.ts` now also pins the six step-component files — new providers should consume them, not fork them. |
+
+### Post-spec-011 additions (2026-04-18)
+
+| Area | Change |
+|---|---|
+| Wizard migration | All three production providers (Trello, JIRA, Linear) now render every standard wizard step through the shared components. The three legacy `pm-wizard-{trello,jira,linear}-steps.tsx` files are **deleted**. Zero per-provider step UI outside of explicit `kind: 'custom'` steps (Trello OAuth, JIRA issue-type). |
+| Parent wizard | `pm-wizard.tsx` now iterates over `manifestDef.steps` dynamically — the old spec-006-era "3 hardcoded stepIndex slots" layout is gone. Each manifest step gets its own WizardStep slot. The legacy `WebhookStep` remains for now (programmatic webhook registration for Trello/JIRA + Linear signing-secret UX); migration of that into the manifest path is follow-up scope. |
+| 7th StandardStepKind | `custom-field-mapping` shared component (with optional `onCreateCustomField` + `fieldDefaults` props) wires `manifest.createCustomField`. Trello and JIRA use it; Linear doesn't have a custom-field concept. |
+| Shared-component widenings (additive) | `container-pick` and `project-scope` support optional `searchable: boolean` (renders via cmdk `Combobox`). `webhook-url-display` supports optional inline signing-secret input (`secretFieldRole` / `secretValue` / `onSecretChange`). `label-mapping` supports optional `labelDefaults?` to pre-populate the Create input + thread color. `custom-field-mapping` supports optional `fieldDefaults?`. |
+| Shared surface guard | Step-component file pin extended to seven entries. |
+
+### Post-spec-012 additions (2026-04-18+)
+
+| Area | Change |
+|---|---|
+| Webhook-UX migration complete | Every PM wizard step, without exception, renders via the manifest path. Trello, JIRA, and Linear each own their webhook step via a per-provider adapter (`pm-providers/<provider>/webhook-step.tsx`) — Fragment composition around the shared `WebhookUrlDisplayStep`. Trello + JIRA compose with programmatic "Create Webhook" button + active-webhooks list + delete + curl fallback (via existing `webhooks.create/list/delete({trelloOnly|jiraOnly:true})` tRPC endpoints). Linear composes with info banner + `ProjectSecretField` (`LINEAR_WEBHOOK_SECRET`) + 5-step manual setup instructions. |
+| Legacy deletions | `WebhookStep` + `LinearWebhookInfoPanel` + `useWebhookManagement` + `useLinearWebhookInfo` all deleted. `pm-wizard-common-steps.tsx` now only exports `SaveStep`. Legacy test file `pm-wizard-webhooks-step.test.ts` deleted — assertions moved into per-provider adapter tests. |
+| Parent-wizard filter | The `-webhook` id-skip filter (stopgap from plan 011/4) is gone. `renderedManifestSteps = manifestDef.steps.map(...)` — no filter. |
+| New-provider guarantee | Adding a PM provider requires zero edits to `pm-wizard.tsx`, `pm-wizard-common-steps.tsx`, or `pm-wizard-hooks.ts`. Webhook UX composition lives in the provider folder. |
+
 ---
 
 ## Adding a new PM provider (step by step)
@@ -175,7 +207,7 @@ Spec 009 AC #10: **a new PM provider PR should not need to edit shared router / 
 
 2. **Wire the manifest** via a single import in `src/integrations/pm/index.ts` (`import './<provider>/index.js';`). No other edit to any shared file is needed for registration — the `single-entrypoint` test guards this.
 
-3. **Frontend folder** at `web/src/components/projects/pm-providers/<provider>/`: `adapters.tsx`, `wizard.ts` (`ProviderWizardDefinition`), `index.ts`. Add one line to `pm-wizard.tsx` to register. For shared wizard steps declared on `manifest.wizardSpec`, the generator in `pm-providers/generator.tsx` handles rendering — real shared step components are follow-up scope; today the generator renders typed placeholders.
+3. **Frontend folder** at `web/src/components/projects/pm-providers/<provider>/`: `wizard.ts` (`ProviderWizardDefinition` with `useProviderHooks` if the provider needs discovery / label creation / custom-field creation / webhook registration), `index.ts`. Add one line to `pm-wizard.tsx` to register. For shared wizard steps declared on `manifest.wizardSpec`, the generator in `pm-providers/generator.tsx` dispatches directly to the real shared step components at `pm-providers/steps/*.tsx` — there are **seven** kinds: `credentials`, `container-pick`, `status-mapping`, `label-mapping`, `webhook-url-display`, `project-scope`, `custom-field-mapping`. A provider with purely standard steps writes **zero** per-provider step components; Trello, JIRA, and Linear all use the shared components for every standard kind. Provide `providerHooks` (returned from `useProviderHooks`) to forward discovery data + mutation callbacks into the shared components; the generator spreads `ctx.providerHooks` as props. Unknown step `kind` values still warn-and-render a placeholder. **Provider-specific UI** ships either as (a) `kind: 'custom'` steps declared on the manifest and resolved to provider-folder components (Trello OAuth popup, JIRA issue-type mapping), or (b) Fragment compositions around a shared step when the base UX is standard but needs augmentation (Trello/JIRA webhook steps compose `WebhookUrlDisplayStep` + programmatic Create UX; Linear composes `WebhookUrlDisplayStep` + `ProjectSecretField` + setup instructions — see `pm-providers/{trello,jira,linear}/webhook-step.tsx` for the reference composition pattern).
 
 4. **Lifecycle fixture** at `tests/helpers/<provider>LifecycleFixture.ts`. Add the fixture key to `LIFECYCLE_FIXTURES` in `tests/unit/integrations/pm-conformance.test.ts`. Trivial providers can reuse `createFakePMProvider()` (see Trello/JIRA/Linear fixtures).
 

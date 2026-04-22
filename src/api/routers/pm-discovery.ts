@@ -13,28 +13,102 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { getIntegrationCredentialOrNull } from '../../config/provider.js';
+import { getIntegrationByProjectAndCategory } from '../../db/repositories/integrationsRepository.js';
 import { getPMProvider, listPMProviders } from '../../integrations/pm/registry.js';
+import { DISCOVERY_CAPABILITIES } from '../../pm/types.js';
 import { protectedProcedure, router } from '../trpc.js';
+import { verifyProjectOrgAccess } from './_shared/projectAccess.js';
+
+/**
+ * Shared credential resolver for pm.discovery.* endpoints. Accepts either
+ * `credentials` directly or a `projectId` — if `projectId` is set, the
+ * caller must have org access to the project, and we resolve each declared
+ * credential role from the project_credentials table.
+ *
+ * Returns a `Record<string, string>` shaped by the manifest's
+ * `credentialRoles` — the shape downstream hooks / `createDiscoveryProvider`
+ * factories consume.
+ */
+async function resolvePMCredentials(opts: {
+	providerId: string;
+	effectiveOrgId: string | null;
+	credentials?: Record<string, string>;
+	projectId?: string;
+}): Promise<Record<string, string>> {
+	if (opts.projectId) {
+		if (!opts.effectiveOrgId) {
+			throw new TRPCError({ code: 'UNAUTHORIZED' });
+		}
+		await verifyProjectOrgAccess(opts.projectId, opts.effectiveOrgId);
+		const integration = await getIntegrationByProjectAndCategory(opts.projectId, 'pm');
+		if (!integration) {
+			throw new TRPCError({
+				code: 'NOT_FOUND',
+				message: 'No PM integration configured for this project yet',
+			});
+		}
+		if (integration.provider !== opts.providerId) {
+			throw new TRPCError({
+				code: 'NOT_FOUND',
+				message: `Project is configured with a different PM provider (${integration.provider})`,
+			});
+		}
+		const manifest = getPMProvider(opts.providerId);
+		if (!manifest) {
+			throw new TRPCError({
+				code: 'NOT_FOUND',
+				message: `Unknown PM provider '${opts.providerId}'`,
+			});
+		}
+		const resolved: Record<string, string> = {};
+		for (const role of manifest.credentialRoles) {
+			const value = await getIntegrationCredentialOrNull(
+				opts.projectId,
+				'pm',
+				opts.providerId,
+				role.role,
+			);
+			if (value) resolved[role.role] = value;
+		}
+		return resolved;
+	}
+	return opts.credentials ?? {};
+}
 
 const providerIdInput = z.object({
 	providerId: z.string().min(1),
 });
 
-const DISCOVERY_CAPABILITIES = [
-	'teams',
-	'boards',
-	'labels',
-	'states',
-	'projects',
-	'customFields',
-	'containers',
-] as const;
+// DISCOVERY_CAPABILITIES lives in `src/pm/types.ts` — single source of
+// truth; the `DiscoveryCapability` type union derives from it. The Zod
+// enum here is exactly `z.enum(DISCOVERY_CAPABILITIES)` so there is no
+// opportunity for the two to drift (as happened in spec 010/2 when
+// `currentUser` landed in the type but not the enum).
 
 const discoverInput = z.object({
 	providerId: z.string().min(1),
 	capability: z.enum(DISCOVERY_CAPABILITIES),
 	args: z.record(z.string(), z.unknown()).default({}),
 	credentials: z.record(z.string(), z.string()).optional(),
+	projectId: z.string().optional(),
+});
+
+const createLabelInput = z.object({
+	providerId: z.string().min(1),
+	containerId: z.string().min(1),
+	name: z.string().min(1),
+	color: z.string().optional(),
+	credentials: z.record(z.string(), z.string()).optional(),
+	projectId: z.string().optional(),
+});
+
+const createCustomFieldInput = z.object({
+	providerId: z.string().min(1),
+	containerId: z.string().min(1),
+	name: z.string().min(1),
+	credentials: z.record(z.string(), z.string()).optional(),
+	projectId: z.string().optional(),
 });
 
 export const pmDiscoveryRouter = router({
@@ -71,7 +145,7 @@ export const pmDiscoveryRouter = router({
 	 * procedures during the migration window (plans 2/3/4); plan 5 deletes
 	 * the legacy procedures once every provider has migrated.
 	 */
-	discover: protectedProcedure.input(discoverInput).mutation(async ({ input }) => {
+	discover: protectedProcedure.input(discoverInput).mutation(async ({ ctx, input }) => {
 		const manifest = getPMProvider(input.providerId);
 		if (!manifest) {
 			throw new TRPCError({
@@ -100,7 +174,16 @@ export const pmDiscoveryRouter = router({
 			});
 		}
 
-		const provider = manifest.createDiscoveryProvider({ credentials: input.credentials });
+		// Plan 010/2: resolve credentials from projectId when provided,
+		// supporting the legacy `*ByProject` read-procedure use case.
+		const credentials = await resolvePMCredentials({
+			providerId: input.providerId,
+			effectiveOrgId: ctx.effectiveOrgId,
+			credentials: input.credentials,
+			projectId: input.projectId,
+		});
+
+		const provider = manifest.createDiscoveryProvider({ credentials });
 		if (!provider.discover) {
 			throw new TRPCError({
 				code: 'NOT_IMPLEMENTED',
@@ -113,4 +196,83 @@ export const pmDiscoveryRouter = router({
 		// typing is enforced at the adapter's method signature in plans 2/3/4.
 		return provider.discover(input.capability, input.args as never);
 	}),
+
+	/**
+	 * Generic label-creation dispatch (plan 010/1). Resolves the manifest,
+	 * checks the `createLabel` hook is declared, calls it with credentials
+	 * + containerId + name + color. Each provider's hook internally
+	 * establishes credential scope via its own `withXxxCredentials` helper.
+	 *
+	 * Replaces the legacy per-provider `createTrelloLabel` /
+	 * `createLinearLabel` procedures.
+	 */
+	createLabel: protectedProcedure.input(createLabelInput).mutation(async ({ ctx, input }) => {
+		const manifest = getPMProvider(input.providerId);
+		if (!manifest) {
+			throw new TRPCError({
+				code: 'NOT_FOUND',
+				message: `Unknown PM provider '${input.providerId}'. Registered providers: ${listPMProviders()
+					.map((m) => m.id)
+					.join(', ')}`,
+			});
+		}
+		if (!manifest.createLabel) {
+			throw new TRPCError({
+				code: 'NOT_IMPLEMENTED',
+				message:
+					`Provider '${input.providerId}' does not declare createLabel. ` +
+					`Declare it on manifest in ${input.providerId}/manifest.ts to serve label creation.`,
+			});
+		}
+		const credentials = await resolvePMCredentials({
+			providerId: input.providerId,
+			effectiveOrgId: ctx.effectiveOrgId,
+			credentials: input.credentials,
+			projectId: input.projectId,
+		});
+		return manifest.createLabel({
+			credentials,
+			containerId: input.containerId,
+			name: input.name,
+			color: input.color,
+		});
+	}),
+
+	/**
+	 * Generic custom-field-creation dispatch (plan 010/1). Replaces the
+	 * legacy per-provider `createTrelloCustomField` / `createJiraCustomField`
+	 * procedures.
+	 */
+	createCustomField: protectedProcedure
+		.input(createCustomFieldInput)
+		.mutation(async ({ ctx, input }) => {
+			const manifest = getPMProvider(input.providerId);
+			if (!manifest) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Unknown PM provider '${input.providerId}'. Registered providers: ${listPMProviders()
+						.map((m) => m.id)
+						.join(', ')}`,
+				});
+			}
+			if (!manifest.createCustomField) {
+				throw new TRPCError({
+					code: 'NOT_IMPLEMENTED',
+					message:
+						`Provider '${input.providerId}' does not declare createCustomField. ` +
+						`Declare it on manifest in ${input.providerId}/manifest.ts to serve custom-field creation.`,
+				});
+			}
+			const credentials = await resolvePMCredentials({
+				providerId: input.providerId,
+				effectiveOrgId: ctx.effectiveOrgId,
+				credentials: input.credentials,
+				projectId: input.projectId,
+			});
+			return manifest.createCustomField({
+				credentials,
+				containerId: input.containerId,
+				name: input.name,
+			});
+		}),
 });
