@@ -225,6 +225,20 @@ describe('extractWorkItemId', () => {
 		expect(extractWorkItemId(job)).toBe('gh-wi-1');
 	});
 
+	it('returns triggerResult.workItemId for linear jobs when present', () => {
+		const job = {
+			type: 'linear',
+			workItemId: 'linear-issue-uuid',
+			triggerResult: { workItemId: 'TEAM-123' },
+		} as unknown as CascadeJob;
+		expect(extractWorkItemId(job)).toBe('TEAM-123');
+	});
+
+	it('falls back to top-level workItemId for linear jobs without triggerResult work item', () => {
+		const job = { type: 'linear', workItemId: 'linear-issue-uuid' } as unknown as CascadeJob;
+		expect(extractWorkItemId(job)).toBe('linear-issue-uuid');
+	});
+
 	it('returns workItemId from dashboard jobs', () => {
 		const job = { type: 'manual-run', workItemId: 'wi-dash' } as unknown as CascadeJob;
 		expect(extractWorkItemId(job)).toBe('wi-dash');

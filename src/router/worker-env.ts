@@ -170,6 +170,7 @@ export function extractWorkItemId(data: CascadeJob): string | undefined {
 	if (jobData.type === 'trello' && jobData.workItemId) return jobData.workItemId;
 	if (jobData.type === 'jira' && jobData.issueKey) return jobData.issueKey;
 	if (jobData.type === 'github') return jobData.triggerResult?.workItemId;
+	if (jobData.type === 'linear') return jobData.triggerResult?.workItemId ?? jobData.workItemId;
 	// Dashboard jobs (manual-run, retry-run, debug-analysis)
 	if (jobData.workItemId) return jobData.workItemId;
 	return undefined;
