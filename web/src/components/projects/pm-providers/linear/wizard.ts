@@ -21,6 +21,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { type ReactElement, useState } from 'react';
+import { API_URL } from '@/lib/api.js';
 import { trpc } from '@/lib/trpc.js';
 import { useLinearDiscovery, useLinearLabelCreation } from '../../pm-wizard-hooks.js';
 import { buildLinearIntegrationConfig } from '../../pm-wizard-state.js';
@@ -293,7 +294,10 @@ export const linearProviderWizard: ProviderWizardDefinition = {
 			labels.createMissingLabelsMutation.mutate(resolved);
 		};
 
-		const webhookUrl = projectId ? `${window.location.origin}/webhooks/${projectId}/linear` : '';
+		const routerOrigin =
+			API_URL ||
+			(typeof window !== 'undefined' ? window.location.origin.replace(':5173', ':3000') : '');
+		const webhookUrl = routerOrigin ? `${routerOrigin}/linear/webhook` : '';
 
 		const details = state.linearTeamDetails;
 
