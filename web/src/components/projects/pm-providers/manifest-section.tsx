@@ -1,11 +1,11 @@
 /**
  * Shell component for manifest-driven wizard rendering.
  *
- * Rendered by `pm-wizard.tsx` only when the active provider has a
- * registered `ProviderWizardDefinition`. Because the shell itself is
- * conditionally rendered, `def.useProviderHooks?.(ctx)` is called
- * unconditionally from inside — preserving React's rules-of-hooks
- * (the shell is either mounted or not; it never toggles hooks mid-life).
+ * Rendered by ManifestStepsSection in `pm-wizard.tsx`, which calls
+ * `def.useProviderHooks?.()` exactly once and passes the result as a
+ * prop. This component never calls useProviderHooks directly — doing so
+ * would create N independent hook instances (one per step), each firing
+ * Effect 2 on mount and producing an N× request storm.
  *
  * Each step's React component receives `{ state, dispatch, providerHooks }`
  * per `ProviderWizardStepProps`. Provider-specific adapters destructure
@@ -20,8 +20,8 @@ export interface ManifestProviderWizardSectionProps {
 	readonly def: ProviderWizardDefinition;
 	readonly state: WizardState;
 	readonly dispatch: React.Dispatch<WizardAction>;
-	readonly projectId: string | undefined;
-	readonly advanceToStep: (step: number) => void;
+	/** Resolved once by ManifestStepsSection and shared across all step instances. */
+	readonly providerHooks: Record<string, unknown>;
 	/**
 	 * Which step index to render. Returned as an element ready to drop into
 	 * the caller's `<WizardStep>` wrapper. Returns null for an out-of-range
@@ -34,13 +34,9 @@ export function ManifestProviderWizardSection({
 	def,
 	state,
 	dispatch,
-	projectId,
-	advanceToStep,
+	providerHooks,
 	stepIndex,
 }: ManifestProviderWizardSectionProps): ReactElement | null {
-	// Unconditional hook call: the shell is only mounted when `def` exists,
-	// so the hook is always called on every render of the shell.
-	const providerHooks = def.useProviderHooks?.({ state, dispatch, projectId, advanceToStep }) ?? {};
 	const step = def.steps[stepIndex];
 	if (!step) return null;
 	return createElement(step.Component, { state, dispatch, providerHooks });

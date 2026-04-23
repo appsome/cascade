@@ -11,6 +11,7 @@ import './pm-providers/jira/index.js';
 import './pm-providers/linear/index.js';
 import { ManifestProviderWizardSection } from './pm-providers/manifest-section.js';
 import { getProviderWizard } from './pm-providers/registry.js';
+import type { ProviderWizardDefinition } from './pm-providers/types.js';
 import { SaveStep } from './pm-wizard-common-steps.js';
 import { useSaveMutation, useVerification } from './pm-wizard-hooks.js';
 // Plan 011/5: the three legacy `pm-wizard-{trello,jira,linear}-steps.tsx`
@@ -23,6 +24,8 @@ import {
 	buildEditState,
 	createInitialState,
 	isStep1Complete,
+	type WizardAction,
+	type WizardState,
 	wizardReducer,
 } from './pm-wizard-state.js';
 import { WizardStep } from './wizard-shared.js';
@@ -47,6 +50,122 @@ function confirmProviderSwitch(
 ): boolean {
 	return window.confirm(
 		`Switch PM provider from ${PROVIDER_LABELS[from]} to ${PROVIDER_LABELS[to]}?\n\nYou'll need to re-enter credentials and re-map fields for ${PROVIDER_LABELS[to]}. The old provider's credentials will be deleted when you save.`,
+	);
+}
+
+// ============================================================================
+// ManifestStepsSection — single-instance hook wrapper
+// ============================================================================
+
+interface ManifestStepsSectionProps {
+	readonly manifestDef: ProviderWizardDefinition;
+	readonly state: WizardState;
+	readonly dispatch: React.Dispatch<WizardAction>;
+	readonly projectId: string;
+	readonly advanceToStep: (step: number) => void;
+	readonly getStatus: (
+		stepNum: number,
+		complete: boolean,
+	) => 'pending' | 'complete' | 'error' | 'active';
+	readonly openSteps: Set<number>;
+	readonly toggleStep: (step: number) => void;
+	readonly credsReady: boolean;
+	readonly verifyPending: boolean;
+	readonly onVerify: () => void;
+	readonly verificationResult: { display: string } | null | undefined;
+	readonly verifyError: string | null | undefined;
+	readonly hasStoredCredentials: boolean;
+	readonly isEditing: boolean;
+}
+
+/**
+ * Renders all manifest-driven wizard steps for a single provider.
+ *
+ * Exists so useProviderHooks is called exactly once regardless of how many
+ * steps the provider declares. Calling it inside ManifestProviderWizardSection
+ * (which is instantiated once per step) created N independent hook instances
+ * and an N× discovery request storm on mount.
+ */
+function ManifestStepsSection({
+	manifestDef,
+	state,
+	dispatch,
+	projectId,
+	advanceToStep,
+	getStatus,
+	openSteps,
+	toggleStep,
+	credsReady,
+	verifyPending,
+	onVerify,
+	verificationResult,
+	verifyError,
+	hasStoredCredentials,
+	isEditing,
+}: ManifestStepsSectionProps) {
+	// Called exactly once — the whole point of this wrapper component.
+	const providerHooks =
+		manifestDef.useProviderHooks?.({ state, dispatch, projectId, advanceToStep }) ?? {};
+
+	return (
+		<>
+			{manifestDef.steps.map((step, index) => {
+				const stepNumber = index + 2; // step 1 is Provider picker
+				const isCredentials = index === 0;
+				return (
+					<WizardStep
+						key={step.id}
+						stepNumber={stepNumber}
+						title={step.title}
+						status={getStatus(stepNumber, step.isComplete(state))}
+						isOpen={openSteps.has(stepNumber)}
+						onToggle={() => toggleStep(stepNumber)}
+					>
+						<ManifestProviderWizardSection
+							def={manifestDef}
+							state={state}
+							dispatch={dispatch}
+							providerHooks={providerHooks}
+							stepIndex={index}
+						/>
+
+						{/* Verify Connection belongs on the first manifest step (credentials). */}
+						{isCredentials && (
+							<div className="flex items-center gap-3 pt-2">
+								<button
+									type="button"
+									onClick={onVerify}
+									disabled={!(credsReady || (isEditing && hasStoredCredentials)) || verifyPending}
+									className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+								>
+									{verifyPending ? (
+										<Loader2 className="h-4 w-4 animate-spin" />
+									) : (
+										<Globe className="h-4 w-4" />
+									)}
+									Verify Connection
+								</button>
+								{!credsReady && isEditing && hasStoredCredentials && (
+									<span className="text-xs text-muted-foreground">Using stored credentials</span>
+								)}
+								{verificationResult && (
+									<div className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400">
+										<CheckCircle className="h-4 w-4" />
+										Connected as <span className="font-medium">{verificationResult.display}</span>
+									</div>
+								)}
+								{verifyError && (
+									<div className="flex items-center gap-1.5 text-sm text-destructive">
+										<XCircle className="h-4 w-4" />
+										{verifyError}
+									</div>
+								)}
+							</div>
+						)}
+					</WizardStep>
+				);
+			})}
+		</>
 	);
 }
 
@@ -137,14 +256,8 @@ export function PMWizard({
 	}
 
 	// ---- Manifest step layout (plans 011/4 + 012/1-4) ----
-	// Iterate over `manifestDef.steps`. Every PM provider owns every
-	// wizard step via the manifest path — credentials, container-pick,
-	// mappings, webhook, everything. Parent wizard only owns the provider
-	// picker (step 1) and the final Save step.
-	const renderedManifestSteps = manifestDef
-		? manifestDef.steps.map((step, index) => ({ step, index }))
-		: [];
-	const saveStepNumber = renderedManifestSteps.length + 2; // +1 for provider picker, +1 for 1-indexed
+	// saveStepNumber: provider picker is 1, manifest steps are 2…(N+1), save is N+2.
+	const saveStepNumber = (manifestDef?.steps.length ?? 0) + 2;
 
 	// ---- Render ----
 
@@ -189,73 +302,29 @@ export function PMWizard({
 			 * provider's `wizardSpec.steps` drives its own slot count. Every
 			 * step — including webhook-url-display — renders via the manifest
 			 * path. Parent wizard owns only the provider picker (step 1) and
-			 * the final Save step.
+			 * the final Save step. ManifestStepsSection calls useProviderHooks
+			 * exactly once regardless of step count (storm fix).
 			 */}
-			{manifestDef &&
-				renderedManifestSteps.map((entry, idx) => {
-					const stepNumber = idx + 2; // 1 is Provider picker
-					const isCredentials = entry.step.id === manifestDef.steps[0]?.id;
-					return (
-						<WizardStep
-							key={entry.step.id}
-							stepNumber={stepNumber}
-							title={entry.step.title}
-							status={getStatus(stepNumber, entry.step.isComplete(state))}
-							isOpen={openSteps.has(stepNumber)}
-							onToggle={() => toggleStep(stepNumber)}
-						>
-							<ManifestProviderWizardSection
-								def={manifestDef}
-								state={state}
-								dispatch={dispatch}
-								projectId={projectId}
-								advanceToStep={advanceToStep}
-								stepIndex={entry.index}
-							/>
-
-							{/* Verify Connection button belongs on the first manifest
-							    step (credentials). Always render — edit mode with stored
-							    credentials uses the `projectId` path on the backend, so
-							    users can verify without re-typing the key. */}
-							{isCredentials && (
-								<div className="flex items-center gap-3 pt-2">
-									<button
-										type="button"
-										onClick={() => verifyMutation.mutate()}
-										disabled={
-											!(credsReady || (state.isEditing && state.hasStoredCredentials)) ||
-											verifyMutation.isPending
-										}
-										className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-									>
-										{verifyMutation.isPending ? (
-											<Loader2 className="h-4 w-4 animate-spin" />
-										) : (
-											<Globe className="h-4 w-4" />
-										)}
-										Verify Connection
-									</button>
-									{!credsReady && state.isEditing && state.hasStoredCredentials && (
-										<span className="text-xs text-muted-foreground">Using stored credentials</span>
-									)}
-									{state.verificationResult && (
-										<div className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400">
-											<CheckCircle className="h-4 w-4" />
-											Connected as{' '}
-											<span className="font-medium">{state.verificationResult.display}</span>
-										</div>
-									)}
-									{state.verifyError && (
-										<div className="flex items-center gap-1.5 text-sm text-destructive">
-											<XCircle className="h-4 w-4" />
-											{state.verifyError}
-										</div>
-									)}
-								</div>
-							)}
-						</WizardStep>
-					);
-				})}
+			{manifestDef && (
+				<ManifestStepsSection
+					key={manifestDef.id}
+					manifestDef={manifestDef}
+					state={state}
+					dispatch={dispatch}
+					projectId={projectId}
+					advanceToStep={advanceToStep}
+					getStatus={getStatus}
+					openSteps={openSteps}
+					toggleStep={toggleStep}
+					credsReady={credsReady}
+					verifyPending={verifyMutation.isPending}
+					onVerify={() => verifyMutation.mutate()}
+					verificationResult={state.verificationResult}
+					verifyError={state.verifyError}
+					hasStoredCredentials={state.hasStoredCredentials}
+					isEditing={state.isEditing}
+				/>
+			)}
 
 			{/* Save slot. */}
 			<WizardStep

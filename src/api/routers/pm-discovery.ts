@@ -194,7 +194,19 @@ export const pmDiscoveryRouter = router({
 		// Call through with the raw args — the adapter is responsible for
 		// any runtime narrowing (e.g. parseContainerId). Capability + args
 		// typing is enforced at the adapter's method signature in plans 2/3/4.
-		return provider.discover(input.capability, input.args as never);
+		try {
+			return await provider.discover(input.capability, input.args as never);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes('HTTP error 401') || msg.includes('AUTHENTICATION_ERROR')) {
+				throw new TRPCError({
+					code: 'UNAUTHORIZED',
+					message: 'Invalid or expired credentials. Please check your API key.',
+					cause: err,
+				});
+			}
+			throw err;
+		}
 	}),
 
 	/**
