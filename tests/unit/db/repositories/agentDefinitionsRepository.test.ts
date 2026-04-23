@@ -4,10 +4,19 @@ import { mockDbClientModule } from '../../../helpers/sharedMocks.js';
 
 vi.mock('../../../../src/db/client.js', () => mockDbClientModule);
 
+const { mockLoggerWarn } = vi.hoisted(() => ({
+	mockLoggerWarn: vi.fn(),
+}));
+
+vi.mock('../../../../src/utils/logging.js', () => ({
+	logger: { warn: mockLoggerWarn },
+}));
+
 import type { AgentDefinition } from '../../../../src/agents/definitions/schema.js';
 import {
 	deleteAgentDefinition,
 	getAgentDefinition,
+	getAgentDefinitionMetadata,
 	listAgentDefinitions,
 	upsertAgentDefinition,
 } from '../../../../src/db/repositories/agentDefinitionsRepository.js';
@@ -43,6 +52,7 @@ describe('agentDefinitionsRepository', () => {
 
 	beforeEach(() => {
 		mockDb = createMockDbWithGetDb({ withUpsert: true });
+		mockLoggerWarn.mockClear();
 	});
 
 	describe('getAgentDefinition', () => {
@@ -102,6 +112,53 @@ describe('agentDefinitionsRepository', () => {
 
 			const result = await listAgentDefinitions();
 			expect(result[0].isBuiltin).toBe(false);
+		});
+
+		it('skips invalid definitions and keeps valid rows', async () => {
+			mockDb.chain.from.mockResolvedValueOnce([
+				{ agentType: 'implementation', definition: mockDefinition, isBuiltin: true },
+				{ agentType: 'email-joke', definition: { invalid: 'data' }, isBuiltin: true },
+				{ agentType: 'review', definition: mockDefinition, isBuiltin: false },
+			]);
+
+			const result = await listAgentDefinitions();
+
+			expect(result.map((row) => row.agentType)).toEqual(['implementation', 'review']);
+			expect(mockLoggerWarn).toHaveBeenCalledWith(
+				'Skipping invalid agent definition from DB',
+				expect.objectContaining({
+					agentType: 'email-joke',
+					issues: expect.any(Array),
+				}),
+			);
+		});
+	});
+
+	describe('getAgentDefinitionMetadata', () => {
+		it('returns metadata without parsing the definition body', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([
+				{ agentType: 'email-joke', isBuiltin: true, definition: { invalid: 'data' } },
+			]);
+
+			const result = await getAgentDefinitionMetadata('email-joke');
+
+			expect(result).toEqual({ agentType: 'email-joke', isBuiltin: true });
+		});
+
+		it('returns null when not found', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([]);
+
+			const result = await getAgentDefinitionMetadata('missing');
+
+			expect(result).toBeNull();
+		});
+
+		it('defaults isBuiltin to false when null', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([{ agentType: 'custom', isBuiltin: null }]);
+
+			const result = await getAgentDefinitionMetadata('custom');
+
+			expect(result).toEqual({ agentType: 'custom', isBuiltin: false });
 		});
 	});
 

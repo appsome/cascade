@@ -17,7 +17,7 @@ import {
 import { getRawTemplate, validateTemplate } from '../../agents/prompts/index.js';
 import {
 	deleteAgentDefinition,
-	getAgentDefinition,
+	getAgentDefinitionMetadata,
 	listAgentDefinitions,
 	upsertAgentDefinition,
 } from '../../db/repositories/agentDefinitionsRepository.js';
@@ -145,9 +145,8 @@ export const agentDefinitionsRouter = router({
 			}),
 		)
 		.mutation(async ({ input }) => {
-			// Validate agentType doesn't already exist in DB
-			// getAgentDefinition returns null for not-found, throws for DB errors
-			const existing = await getAgentDefinition(input.agentType);
+			// Validate agentType doesn't already exist in DB without parsing the stored body.
+			const existing = await getAgentDefinitionMetadata(input.agentType);
 			if (existing !== null) {
 				throw new TRPCError({
 					code: 'CONFLICT',
@@ -192,9 +191,8 @@ export const agentDefinitionsRouter = router({
 	delete: superAdminProcedure
 		.input(z.object({ agentType: z.string().min(1) }))
 		.mutation(async ({ input }) => {
-			// Verify the definition exists in DB
-			// getAgentDefinition returns null for not-found, throws for DB errors
-			const dbRow = await getAgentDefinition(input.agentType);
+			// Verify the definition exists in DB without parsing the stored body.
+			const dbRow = await getAgentDefinitionMetadata(input.agentType);
 			if (dbRow === null) {
 				throw new TRPCError({
 					code: 'NOT_FOUND',
