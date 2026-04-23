@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { AgentDefinition } from '../../agents/definitions/schema.js';
 import { AgentDefinitionSchema } from '../../agents/definitions/schema.js';
+import { logger } from '../../utils/logging.js';
 import { getDb } from '../client.js';
 import { agentDefinitions } from '../schema/index.js';
 
@@ -23,11 +24,42 @@ export async function listAgentDefinitions(): Promise<
 > {
 	const db = getDb();
 	const rows = await db.select().from(agentDefinitions);
-	return rows.map((row) => ({
-		agentType: row.agentType,
-		definition: AgentDefinitionSchema.parse(row.definition),
-		isBuiltin: row.isBuiltin ?? false,
-	}));
+	const validRows: Array<{ agentType: string; definition: AgentDefinition; isBuiltin: boolean }> =
+		[];
+
+	for (const row of rows) {
+		const result = AgentDefinitionSchema.safeParse(row.definition);
+		if (!result.success) {
+			logger.warn('Skipping invalid agent definition from DB', {
+				agentType: row.agentType,
+				issues: result.error.issues.map((issue) => ({
+					path: issue.path.length > 0 ? issue.path.join('.') : '<root>',
+					message: issue.message,
+				})),
+			});
+			continue;
+		}
+
+		validRows.push({
+			agentType: row.agentType,
+			definition: result.data,
+			isBuiltin: row.isBuiltin ?? false,
+		});
+	}
+
+	return validRows;
+}
+
+export async function getAgentDefinitionMetadata(
+	agentType: string,
+): Promise<{ agentType: string; isBuiltin: boolean } | null> {
+	const db = getDb();
+	const [row] = await db
+		.select({ agentType: agentDefinitions.agentType, isBuiltin: agentDefinitions.isBuiltin })
+		.from(agentDefinitions)
+		.where(eq(agentDefinitions.agentType, agentType));
+	if (!row) return null;
+	return { agentType: row.agentType, isBuiltin: row.isBuiltin ?? false };
 }
 
 export async function upsertAgentDefinition(

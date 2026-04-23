@@ -15,7 +15,7 @@ const {
 	mockResolveAgentDefinition,
 	mockResolveKnownAgentTypes,
 	mockListAgentDefinitions,
-	mockGetAgentDefinition,
+	mockGetAgentDefinitionMetadata,
 	mockUpsertAgentDefinition,
 	mockDeleteAgentDefinition,
 	mockGetRawTemplate,
@@ -29,7 +29,7 @@ const {
 	mockResolveAgentDefinition: vi.fn<(agentType: string) => Promise<AgentDefinition>>(),
 	mockResolveKnownAgentTypes: vi.fn<() => Promise<string[]>>(),
 	mockListAgentDefinitions: vi.fn(),
-	mockGetAgentDefinition: vi.fn(),
+	mockGetAgentDefinitionMetadata: vi.fn(),
 	mockUpsertAgentDefinition: vi.fn(),
 	mockDeleteAgentDefinition: vi.fn(),
 	mockGetRawTemplate: vi.fn<(agentType: string) => string>(),
@@ -48,7 +48,7 @@ vi.mock('../../../../src/agents/definitions/loader.js', () => ({
 
 vi.mock('../../../../src/db/repositories/agentDefinitionsRepository.js', () => ({
 	listAgentDefinitions: mockListAgentDefinitions,
-	getAgentDefinition: mockGetAgentDefinition,
+	getAgentDefinitionMetadata: mockGetAgentDefinitionMetadata,
 	upsertAgentDefinition: mockUpsertAgentDefinition,
 	deleteAgentDefinition: mockDeleteAgentDefinition,
 }));
@@ -246,7 +246,7 @@ describe('agentDefinitionsRouter', () => {
 	// =====================================================================
 	describe('create', () => {
 		it('creates a new definition (superadmin)', async () => {
-			mockGetAgentDefinition.mockResolvedValue(null);
+			mockGetAgentDefinitionMetadata.mockResolvedValue(null);
 			mockUpsertAgentDefinition.mockResolvedValue(undefined);
 			const def = createMockDefinition();
 
@@ -259,7 +259,7 @@ describe('agentDefinitionsRouter', () => {
 		});
 
 		it('marks YAML-backed type as builtin on create', async () => {
-			mockGetAgentDefinition.mockResolvedValue(null);
+			mockGetAgentDefinitionMetadata.mockResolvedValue(null);
 			mockUpsertAgentDefinition.mockResolvedValue(undefined);
 			const def = createMockDefinition();
 
@@ -270,7 +270,7 @@ describe('agentDefinitionsRouter', () => {
 		});
 
 		it('throws CONFLICT when agent type already exists', async () => {
-			mockGetAgentDefinition.mockResolvedValue(createMockDefinition());
+			mockGetAgentDefinitionMetadata.mockResolvedValue({ agentType: 'existing', isBuiltin: false });
 			const def = createMockDefinition();
 
 			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
@@ -348,8 +348,10 @@ describe('agentDefinitionsRouter', () => {
 	// =====================================================================
 	describe('delete', () => {
 		it('deletes a non-builtin definition (superadmin)', async () => {
-			mockGetAgentDefinition.mockResolvedValue(createMockDefinition());
-			mockGetBuiltinAgentTypes.mockReturnValue(['implementation', 'review']); // custom-agent is NOT in this list
+			mockGetAgentDefinitionMetadata.mockResolvedValue({
+				agentType: 'custom-agent',
+				isBuiltin: false,
+			});
 			mockDeleteAgentDefinition.mockResolvedValue(undefined);
 
 			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
@@ -360,8 +362,22 @@ describe('agentDefinitionsRouter', () => {
 			expect(mockInvalidateDefinitionCache).toHaveBeenCalled();
 		});
 
+		it('deletes an invalid DB-only definition without parsing it', async () => {
+			mockGetAgentDefinitionMetadata.mockResolvedValue({
+				agentType: 'email-joke',
+				isBuiltin: true,
+			});
+			mockDeleteAgentDefinition.mockResolvedValue(undefined);
+
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
+			const result = await caller.delete({ agentType: 'email-joke' });
+
+			expect(result).toEqual({ agentType: 'email-joke' });
+			expect(mockDeleteAgentDefinition).toHaveBeenCalledWith('email-joke');
+		});
+
 		it('throws NOT_FOUND when definition not in DB', async () => {
-			mockGetAgentDefinition.mockResolvedValue(null);
+			mockGetAgentDefinitionMetadata.mockResolvedValue(null);
 
 			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
 			await expect(caller.delete({ agentType: 'missing' })).rejects.toMatchObject({
@@ -370,7 +386,10 @@ describe('agentDefinitionsRouter', () => {
 		});
 
 		it('throws FORBIDDEN when trying to delete a builtin (YAML-backed) type', async () => {
-			mockGetAgentDefinition.mockResolvedValue(createMockDefinition());
+			mockGetAgentDefinitionMetadata.mockResolvedValue({
+				agentType: 'implementation',
+				isBuiltin: true,
+			});
 
 			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
 			await expect(caller.delete({ agentType: 'implementation' })).rejects.toMatchObject({
