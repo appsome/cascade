@@ -7,7 +7,19 @@
  * focuses on the Linear-specific wizard wiring.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const REPO_ROOT = resolve(__dirname, '..', '..', '..');
+const LINEAR_WIZARD_PATH = resolve(
+	REPO_ROOT,
+	'web/src/components/projects/pm-providers/linear/wizard.ts',
+);
+
 import { linearManifest } from '../../../src/integrations/pm/linear/manifest.js';
 import {
 	renderStandardStep,
@@ -75,5 +87,30 @@ describe('linearProviderWizard (post plan 011/4)', () => {
 		for (const step of linearProviderWizard.steps) {
 			expect(step.Component).toBeTypeOf('function');
 		}
+	});
+});
+
+describe('linearProviderWizard — webhook URL construction guard', () => {
+	// Linear's API forbids programmatic webhook registration so the user copies
+	// the URL manually into linear.app. The URL must point at the router server
+	// (API_URL / VITE_API_URL), not the dashboard origin, and must use the
+	// correct path /linear/webhook — not the project-scoped /webhooks/{id}/linear
+	// pattern that was briefly wrong.
+
+	it('uses API_URL (router origin) not window.location.origin for webhookUrl', () => {
+		const source = readFileSync(LINEAR_WIZARD_PATH, 'utf8');
+		// Must import API_URL
+		expect(source, 'API_URL must be imported').toContain("import { API_URL } from '@/lib/api.js'");
+		// Must use it to build the base
+		expect(source, 'routerOrigin must be derived from API_URL').toContain('API_URL ||');
+	});
+
+	it('uses /linear/webhook path not /webhooks/{projectId}/linear', () => {
+		const source = readFileSync(LINEAR_WIZARD_PATH, 'utf8');
+		expect(source, '/linear/webhook must be the path').toContain('/linear/webhook');
+		expect(
+			source,
+			'/webhooks/{projectId}/linear must not appear — wrong path and wrong origin',
+		).not.toContain('/webhooks/');
 	});
 });
