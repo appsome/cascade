@@ -28,6 +28,26 @@ function stubFetch(responseData: unknown): { calls: CapturedRequest[] } {
 	return { calls };
 }
 
+// Stubs fetch to return different raw GraphQL response envelopes per call.
+// Unlike stubFetch, responses are returned verbatim (no { data: ... } wrapping)
+// so callers can mix { data: ... } success responses with { errors: [...] } error responses.
+function stubFetchSequence(responses: unknown[]): { calls: CapturedRequest[] } {
+	const calls: CapturedRequest[] = [];
+	let i = 0;
+	const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+		const body = JSON.parse(init?.body as string) as CapturedRequest['body'];
+		calls.push({ url: String(url), body });
+		const response = responses[i++] ?? responses[responses.length - 1];
+		return new Response(JSON.stringify(response), {
+			status: 200,
+			headers: { 'Content-Type': 'application/json' },
+		});
+	});
+	// biome-ignore lint/suspicious/noExplicitAny: test stub
+	globalThis.fetch = fetchMock as any;
+	return { calls };
+}
+
 const ISSUE_NODE = {
 	id: 'i1',
 	identifier: 'TEAM-1',
@@ -192,5 +212,77 @@ describe('linearClient.getTeamProjects', () => {
 		const { calls } = stubFetch({ team: { projects: { nodes: [] } } });
 		await withLinearCredentials({ apiKey: 'k' }, () => linearClient.getTeamProjects('T1', 50));
 		expect(calls[0].body.variables).toEqual({ id: 'T1', first: 50 });
+	});
+});
+
+describe('linearClient.createLabel — duplicate idempotency', () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	it('returns the new label when Linear accepts the create', async () => {
+		stubFetch({
+			issueLabelCreate: {
+				success: true,
+				issueLabel: { id: 'L1', name: 'cascade-ready', color: '#0284C7' },
+			},
+		});
+		const label = await withLinearCredentials({ apiKey: 'k' }, () =>
+			linearClient.createLabel('T1', 'cascade-ready', '#0284C7'),
+		);
+		expect(label).toEqual({ id: 'L1', name: 'cascade-ready', color: '#0284C7' });
+	});
+
+	it('falls back to existing label when Linear returns duplicate label name error', async () => {
+		const { calls } = stubFetchSequence([
+			// first call: create → duplicate error (top-level GraphQL errors)
+			{ errors: [{ message: 'duplicate label name' }] },
+			// second call: getTeamLabels → success
+			{
+				data: {
+					team: {
+						labels: {
+							nodes: [
+								{ id: 'L99', name: 'cascade-ready', color: '#0284C7' },
+								{ id: 'L100', name: 'cascade-error', color: '#DC2626' },
+							],
+						},
+					},
+				},
+			},
+		]);
+		const label = await withLinearCredentials({ apiKey: 'k' }, () =>
+			linearClient.createLabel('T1', 'cascade-ready', '#0284C7'),
+		);
+		expect(label).toEqual({ id: 'L99', name: 'cascade-ready', color: '#0284C7' });
+		expect(calls).toHaveLength(2);
+	});
+
+	it('throws when duplicate error occurs but label is not found in team labels', async () => {
+		stubFetchSequence([
+			{ errors: [{ message: 'duplicate label name' }] },
+			{
+				data: {
+					team: {
+						labels: { nodes: [{ id: 'L100', name: 'other-label', color: '#000' }] },
+					},
+				},
+			},
+		]);
+		await expect(
+			withLinearCredentials({ apiKey: 'k' }, () =>
+				linearClient.createLabel('T1', 'cascade-ready', '#0284C7'),
+			),
+		).rejects.toThrow('cascade-ready');
+	});
+
+	it('re-throws non-duplicate Linear errors without falling back', async () => {
+		stubFetchSequence([{ errors: [{ message: 'team not found' }] }]);
+		await expect(
+			withLinearCredentials({ apiKey: 'k' }, () => linearClient.createLabel('T1', 'cascade-ready')),
+		).rejects.toThrow('team not found');
 	});
 });
