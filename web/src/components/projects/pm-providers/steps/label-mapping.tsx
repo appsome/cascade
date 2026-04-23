@@ -243,9 +243,7 @@ export function LabelMappingStep({
  */
 function renderBulkBanner(
 	missingSlots: ReadonlyArray<{ slot: string; name: string; color?: string }>,
-	onCreate:
-		| ((slots: ReadonlyArray<{ slot: string; name: string; color?: string }>) => void)
-		| undefined,
+	onCreate: (slots: ReadonlyArray<{ slot: string; name: string; color?: string }>) => void,
 	busy: boolean,
 ): ReactNode {
 	const count = missingSlots.length;
@@ -279,7 +277,7 @@ function renderBulkBanner(
 				size: 'sm',
 				'data-action': 'create-missing-labels',
 				disabled: busy,
-				onClick: () => onCreate?.(missingSlots),
+				onClick: () => onCreate(missingSlots),
 			} as React.ComponentProps<typeof Button> & DataProps,
 			busy ? 'Creating…' : 'Create all',
 		),
@@ -299,6 +297,8 @@ interface CreateLabelFormProps {
  * directly and traverse the returned tree without a React renderer.
  */
 function CreateLabelForm({ slotKey, defaultName, defaultColor, onCreate }: CreateLabelFormProps) {
+	// Intentionally seeded once from defaultName — the user may edit the field
+	// freely, and resetting it mid-edit when team details load would be jarring.
 	const [newLabelName, setNewLabelName] = useState(defaultName ?? '');
 	return createElement(
 		'div',
