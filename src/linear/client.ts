@@ -483,24 +483,53 @@ export const linearClient = {
 		logger.debug('Creating Linear issue label', { teamId, name, color });
 		const input: { teamId: string; name: string; color?: string } = { teamId, name };
 		if (color) input.color = color;
-		const data = await linearGraphQL<{
-			issueLabelCreate: {
-				success: boolean;
-				issueLabel: { id: string; name: string; color: string } | null;
-			};
-		}>(
-			`mutation CreateIssueLabel($input: IssueLabelCreateInput!) {
-				issueLabelCreate(input: $input) {
-					success
-					issueLabel {
-						id
-						name
-						color
+
+		let data:
+			| {
+					issueLabelCreate: {
+						success: boolean;
+						issueLabel: { id: string; name: string; color: string } | null;
+					};
+			  }
+			| undefined;
+
+		try {
+			data = await linearGraphQL<{
+				issueLabelCreate: {
+					success: boolean;
+					issueLabel: { id: string; name: string; color: string } | null;
+				};
+			}>(
+				`mutation CreateIssueLabel($input: IssueLabelCreateInput!) {
+					issueLabelCreate(input: $input) {
+						success
+						issueLabel {
+							id
+							name
+							color
+						}
 					}
+				}`,
+				{ input },
+			);
+		} catch (err) {
+			// Linear rejects the mutation when a label with the same name already
+			// exists in the team. Treat this as an idempotent create: fetch the
+			// team's labels and return the existing one by name.
+			const msg = err instanceof Error ? err.message : String(err);
+			if (msg.includes('duplicate label name')) {
+				const existing = await linearClient.getTeamLabels(teamId);
+				const found = existing.find((l) => l.name.toLowerCase() === name.toLowerCase());
+				if (!found) {
+					throw new Error(
+						`Linear duplicate label name but label "${name}" not found in team ${teamId}`,
+					);
 				}
-			}`,
-			{ input },
-		);
+				return { id: found.id, name: found.name, color: found.color ?? '' };
+			}
+			throw err;
+		}
+
 		if (!data.issueLabelCreate.success || !data.issueLabelCreate.issueLabel) {
 			throw new Error('Linear issueLabelCreate returned success=false');
 		}
