@@ -235,6 +235,85 @@ describe('pmDiscoveryRouter', () => {
 		});
 	});
 
+	describe('discover — 401 error mapping', () => {
+		// Linear returns HTTP 401 for a bad API key; the server must translate
+		// that to UNAUTHORIZED (not INTERNAL_SERVER_ERROR) so the wizard can
+		// show "invalid credentials" instead of a generic 500.
+
+		async function registerThrowingProvider(errorMsg: string) {
+			_resetPMProviderRegistryForTesting();
+			const { createFakePMManifest, createFakePMProvider } = await import(
+				'../../helpers/fakePMProvider.js'
+			);
+			const base = createFakePMManifest();
+			registerPMProvider({
+				...base,
+				id: 'fake-throwing',
+				discoveryCapabilities: { currentUser: true },
+				createDiscoveryProvider: () => {
+					const { provider } = createFakePMProvider();
+					return {
+						...provider,
+						discover: async () => {
+							throw new Error(errorMsg);
+						},
+					};
+				},
+			});
+		}
+
+		it('maps provider HTTP 401 error to UNAUTHORIZED tRPC code', async () => {
+			await registerThrowingProvider('Linear API HTTP error 401: Unauthorized');
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			await expect(
+				caller.discover({
+					providerId: 'fake-throwing',
+					capability: 'currentUser',
+					args: {},
+				}),
+			).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+		});
+
+		it('UNAUTHORIZED message mentions credentials/API key', async () => {
+			await registerThrowingProvider('Linear API HTTP error 401: Unauthorized');
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			await expect(
+				caller.discover({
+					providerId: 'fake-throwing',
+					capability: 'currentUser',
+					args: {},
+				}),
+			).rejects.toSatisfy((err: unknown) => {
+				expect((err as { message: string }).message).toMatch(/credential|API key/i);
+				return true;
+			});
+		});
+
+		it('maps AUTHENTICATION_ERROR string to UNAUTHORIZED', async () => {
+			await registerThrowingProvider('AUTHENTICATION_ERROR: token expired');
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			await expect(
+				caller.discover({
+					providerId: 'fake-throwing',
+					capability: 'currentUser',
+					args: {},
+				}),
+			).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+		});
+
+		it('re-throws non-auth provider errors as INTERNAL_SERVER_ERROR', async () => {
+			await registerThrowingProvider('Linear API HTTP error 500: Internal Server Error');
+			const caller = pmDiscoveryRouter.createCaller({ effectiveOrgId: 'org-1' });
+			await expect(
+				caller.discover({
+					providerId: 'fake-throwing',
+					capability: 'currentUser',
+					args: {},
+				}),
+			).rejects.toMatchObject({ code: 'INTERNAL_SERVER_ERROR' });
+		});
+	});
+
 	describe('createCustomField (plan 010/1 task 2)', () => {
 		beforeEach(async () => {
 			_resetPMProviderRegistryForTesting();

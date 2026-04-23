@@ -66,11 +66,10 @@ export interface ProviderWizardDefinition {
 	/** True when all required steps report complete. */
 	readonly isSetupComplete: (state: WizardState) => boolean;
 	/**
-	 * Optional React-hook that composes provider-specific discovery / label /
-	 * custom-field mutations. Called by the generic wizard shell component
-	 * (`ManifestProviderWizardSection`) unconditionally from inside the shell
-	 * itself — so the React rules-of-hooks invariant holds even though the
-	 * shell is rendered conditionally at the pm-wizard root.
+	 * Optional React hook that composes provider-specific discovery / label /
+	 * custom-field mutations. The generic wizard calls this once from the
+	 * provider-keyed manifest-step wrapper and shares the result with every
+	 * step, so providers do not create one hook instance per step.
 	 *
 	 * The return value is passed to every step's `Component` via the
 	 * `providerHooks` prop. Each step component adapts the shape it needs.
