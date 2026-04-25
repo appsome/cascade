@@ -151,6 +151,17 @@ function setupMockContainer(exitCode = 0) {
 		id: 'container-snap-abc123',
 		start: vi.fn().mockResolvedValue(undefined),
 		wait: vi.fn().mockReturnValue(waitPromise),
+		// inspect() is called by the post-exit pipeline to read State.OOMKilled +
+		// State.Error before AutoRemove reaps the container. Stub a minimal,
+		// non-OOM, normally-exited shape — individual tests can override.
+		inspect: vi.fn().mockResolvedValue({
+			State: {
+				OOMKilled: false,
+				Error: '',
+				StartedAt: '2026-04-25T08:00:00.000Z',
+				FinishedAt: '2026-04-25T08:00:30.000Z',
+			},
+		}),
 		logs: vi.fn().mockResolvedValue(Buffer.from('')),
 		stop: vi.fn().mockResolvedValue(undefined),
 		commit: vi.fn().mockResolvedValue(undefined),

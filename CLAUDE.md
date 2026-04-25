@@ -121,6 +121,8 @@ Some triggers take params (e.g. `review` + `scm:check-suite-success` accepts `{"
 
 **Post-completion review dispatch** — when an implementation agent succeeds with a PR, the execution pipeline checks CI status and fires the review agent deterministically (before the container exits). This guarantees review dispatch within seconds of implementation completion, regardless of GitHub webhook timing. Uses the same `claimReviewDispatch` dedup key as the `check-suite-success` trigger, so the two paths cannot double-enqueue.
 
+**Worker exit diagnostics** — when a worker container exits non-zero, the router calls `container.inspect()` *before* AutoRemove reaps it and stamps the run record's `error` field with a structured, grep-stable string: `Worker crashed with exit code N · OOMKilled=<true|false> · reason="<State.Error>"`. The `OOMKilled=true` marker is the definitive cgroup-OOM signal (per Docker's own `State.OOMKilled`); a 137 exit *without* `OOMKilled=true` means the kill came from inside the container or from a non-cgroup signal — *not* memory. The `[WorkerManager] Resolved spawn settings` log emitted at every spawn includes both `projectWatchdogTimeoutMs` and `globalWorkerTimeoutMs` so post-mortems can confirm whether the per-project override actually won. See `src/router/active-workers.ts:formatCrashReason` for the format and `tests/unit/router/container-manager-diagnostics.test.ts` for regression pins.
+
 ## Review agent — context shape (debugging)
 
 Review agent receives a **compact per-file diff context**, not full file contents. Each changed file is a `### <file> (<status>, +N -M)` section with a unified diff hunk. Budget: `REVIEW_DIFF_CONTEXT_TOKEN_LIMIT` = 200k tokens, per-file cap 10%.

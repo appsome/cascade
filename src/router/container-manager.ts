@@ -138,6 +138,123 @@ async function removeContainer(containerId: string): Promise<void> {
 	}
 }
 
+/**
+ * Inspect a just-exited container and pull the diagnostic facts that explain
+ * its exit. `OOMKilled` and `State.Error` are only available before AutoRemove
+ * (or our manual `removeContainer`) reaps the container, so this MUST run
+ * before either path. Returns nullable fields when inspection fails — never
+ * throws.
+ *
+ * @internal Exported for unit testing only — call `onWorkerExit` from app code.
+ */
+export async function inspectExitedContainer(
+	container: ReturnType<typeof docker.getContainer>,
+	jobId: string,
+): Promise<{ oomKilled?: boolean; exitReason?: string; durationMs?: number }> {
+	// Wrap in try/catch — `inspect()` can fail post-exit if the daemon socket
+	// drops, the container is reaped between `wait()` and here, or the API
+	// times out. Diagnostics are best-effort; falling back to undefined is
+	// safer than failing the whole post-exit pipeline.
+	let inspectResult: Awaited<ReturnType<typeof container.inspect>> | null = null;
+	try {
+		inspectResult = await container.inspect();
+	} catch (err) {
+		logger.warn('[WorkerManager] container.inspect() after wait failed:', {
+			jobId,
+			error: String(err),
+		});
+	}
+	const state = inspectResult?.State;
+	const oomKilled = state?.OOMKilled;
+	// Empty `State.Error` (the common case for clean exits) → undefined so the
+	// run-record reason string omits the `reason="…"` segment entirely.
+	const exitReason = state?.Error?.length ? state.Error : undefined;
+	const startedAtIso = state?.StartedAt;
+	const finishedAtIso = state?.FinishedAt;
+	// Docker can report sentinel timestamps (e.g. `0001-01-01T00:00:00Z` for a
+	// container that never fully started) that parse to NaN — drop those so
+	// downstream logs/Sentry don't ship `durationMs: NaN`.
+	const rawDurationMs =
+		startedAtIso && finishedAtIso
+			? new Date(finishedAtIso).getTime() - new Date(startedAtIso).getTime()
+			: undefined;
+	const durationMs =
+		rawDurationMs !== undefined && Number.isFinite(rawDurationMs) && rawDurationMs >= 0
+			? rawDurationMs
+			: undefined;
+	return { oomKilled, exitReason, durationMs };
+}
+
+/**
+ * Tail-log the worker's stdout/stderr for at-a-glance debugging. Full
+ * per-worker logs are also indexed in Loki via promtail's per-container label
+ * (`{container="/cascade-worker-${jobId}"}`); this 50-line tail is a
+ * convenience and is not load-bearing.
+ */
+async function logWorkerTail(container: ReturnType<typeof docker.getContainer>): Promise<void> {
+	try {
+		const logs = await container.logs({ stdout: true, stderr: true, follow: false });
+		const logText = logs.toString('utf-8');
+		if (!logText.trim()) return;
+		const lines = logText.trim().split('\n');
+		const tail = lines.slice(-50).join('\n');
+		logger.info(
+			`[WorkerManager] Worker logs (last ${Math.min(lines.length, 50)} of ${lines.length} lines):\n${tail}`,
+		);
+	} catch {
+		// Container may already be removed — expected with AutoRemove
+	}
+}
+
+/**
+ * Post-exit handler for a worker container: pulls Docker diagnostics, tail-logs
+ * stdout, decides snapshot commit vs. skip, and runs cleanup. Extracted from
+ * the `wait()` callback to keep its cyclomatic complexity within the lint budget.
+ */
+async function onWorkerExit(opts: {
+	container: ReturnType<typeof docker.getContainer>;
+	result: { StatusCode: number };
+	jobId: string;
+	jobType: string;
+	snapshotEnabled: boolean;
+	projectId: string | null;
+	workItemId: string | undefined;
+}): Promise<void> {
+	const { container, result, jobId, jobType, snapshotEnabled, projectId, workItemId } = opts;
+
+	const { oomKilled, exitReason, durationMs } = await inspectExitedContainer(container, jobId);
+	await logWorkerTail(container);
+
+	if (result.StatusCode !== 0) {
+		captureException(new Error(`Worker exited with status ${result.StatusCode}`), {
+			tags: { source: 'worker_exit', jobType },
+			extra: { jobId, statusCode: result.StatusCode, oomKilled, exitReason, durationMs },
+		});
+	}
+	logger.info('[WorkerManager] Worker exited:', {
+		jobId,
+		statusCode: result.StatusCode,
+		oomKilled: oomKilled ?? null,
+		exitReason: exitReason ?? null,
+		durationMs: durationMs ?? null,
+	});
+
+	if (snapshotEnabled) {
+		if (result.StatusCode === 0 && projectId && workItemId) {
+			await commitContainerToSnapshot(container.id, projectId, workItemId);
+		} else if (result.StatusCode !== 0) {
+			logger.info('[WorkerManager] Skipping snapshot commit after non-zero exit:', {
+				jobId,
+				statusCode: result.StatusCode,
+			});
+		}
+		// Always remove manually since AutoRemove is disabled for snapshot runs.
+		await removeContainer(container.id);
+	}
+
+	cleanupWorker(jobId, result.StatusCode, { oomKilled, exitReason });
+}
+
 interface SpawnSettings {
 	snapshotEnabled: boolean;
 	workerImage: string;
@@ -148,8 +265,10 @@ interface SpawnSettings {
 /**
  * Resolve per-project spawn settings (snapshot flag, image, timeout).
  * Centralises all loadProjectConfig() calls so spawnWorker stays simple.
+ *
+ * @internal Exported for unit testing only — call `spawnWorker` from app code.
  */
-async function resolveSpawnSettings(
+export async function resolveSpawnSettings(
 	projectId: string | null,
 	workItemId: string | undefined,
 	jobId: string,
@@ -195,6 +314,21 @@ async function resolveSpawnSettings(
 	if (projectCfg?.watchdogTimeoutMs) {
 		containerTimeoutMs = projectCfg.watchdogTimeoutMs + ROUTER_KILL_BUFFER_MS;
 	}
+
+	// Trace-log the actual values that will govern this worker's lifetime so a
+	// post-mortem can confirm whether the project's watchdogTimeoutMs override
+	// took effect or the global default leaked through.
+	logger.info('[WorkerManager] Resolved spawn settings:', {
+		jobId,
+		projectId,
+		workItemId,
+		workerImage,
+		snapshotEnabled,
+		containerTimeoutMs,
+		containerTimeoutMinutes: Math.round(containerTimeoutMs / 60_000),
+		projectWatchdogTimeoutMs: projectCfg?.watchdogTimeoutMs ?? null,
+		globalWorkerTimeoutMs: routerConfig.workerTimeoutMs,
+	});
 
 	return { snapshotEnabled, workerImage, containerTimeoutMs, snapshotTtlMs };
 }
@@ -299,54 +433,15 @@ async function createAndMonitorContainer(
 	container
 		.wait()
 		.then(async (result) => {
-			// Collect worker logs before removal
-			try {
-				const logs = await container.logs({
-					stdout: true,
-					stderr: true,
-					follow: false,
-				});
-				const logText = logs.toString('utf-8');
-				if (logText.trim()) {
-					const lines = logText.trim().split('\n');
-					const tail = lines.slice(-50).join('\n');
-					logger.info(
-						`[WorkerManager] Worker logs (last ${Math.min(lines.length, 50)} of ${lines.length} lines):\n${tail}`,
-					);
-				}
-			} catch {
-				// Container may already be removed — expected with AutoRemove
-			}
-
-			if (result.StatusCode !== 0) {
-				captureException(new Error(`Worker exited with status ${result.StatusCode}`), {
-					tags: { source: 'worker_exit', jobType: job.data.type },
-					extra: { jobId, statusCode: result.StatusCode },
-				});
-			}
-			logger.info('[WorkerManager] Worker exited:', {
+			await onWorkerExit({
+				container,
+				result,
 				jobId,
-				statusCode: result.StatusCode,
+				jobType: job.data.type,
+				snapshotEnabled,
+				projectId,
+				workItemId,
 			});
-
-			// For snapshot-enabled runs, commit on clean exit and then remove the container.
-			// Failed or timed-out runs must NOT create a snapshot.
-			// Always remove — even when projectId/workItemId are absent — to avoid
-			// orphaning containers that ran with AutoRemove=false.
-			if (snapshotEnabled) {
-				if (result.StatusCode === 0 && projectId && workItemId) {
-					await commitContainerToSnapshot(container.id, projectId, workItemId);
-				} else if (result.StatusCode !== 0) {
-					logger.info('[WorkerManager] Skipping snapshot commit after non-zero exit:', {
-						jobId,
-						statusCode: result.StatusCode,
-					});
-				}
-				// Always remove the container manually since AutoRemove is disabled
-				await removeContainer(container.id);
-			}
-
-			cleanupWorker(jobId, result.StatusCode);
 		})
 		.catch((err) => {
 			logger.error('[WorkerManager] Error waiting for container:', err);
