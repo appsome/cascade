@@ -29,6 +29,7 @@ import { LinearRouterAdapter } from './adapters/linear.js';
 import { SentryRouterAdapter } from './adapters/sentry.js';
 import { TrelloRouterAdapter } from './adapters/trello.js';
 import { startCancelListener, stopCancelListener } from './cancel-listener.js';
+import { ROUTER_INSTANCE_ID } from './instance-id.js';
 import { getQueueStats } from './queue.js';
 import { processRouterWebhook } from './webhook-processor.js';
 import {
@@ -242,7 +243,7 @@ async function startRouter(): Promise<void> {
 	await startCancelListener();
 
 	startWorkerProcessor();
-	logger.info('Starting router', { port });
+	logger.info('Starting router', { port, instanceId: ROUTER_INSTANCE_ID });
 	serve({ fetch: app.fetch, port });
 }
 

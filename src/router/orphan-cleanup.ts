@@ -1,8 +1,15 @@
 /**
  * Orphaned container cleanup for CASCADE worker processes.
  *
- * Self-contained periodic task that scans for containers with cascade.managed=true
- * that are not tracked in the activeWorkers map and are older than workerTimeoutMs.
+ * Self-contained periodic task that scans for containers with
+ * `cascade.managed=true` AND `cascade.router.instance=<this instance>`
+ * that are not tracked in the activeWorkers map and are older than
+ * workerTimeoutMs.
+ *
+ * The `cascade.router.instance` clause is the safety belt that stops
+ * sibling cascade-router instances on the same host (prod ↔ dev,
+ * multi-replica deployments) from killing each other's healthy
+ * workers — see `instance-id.ts` for the resolver.
  */
 
 import Docker from 'dockerode';
@@ -11,6 +18,7 @@ import { captureException } from '../sentry.js';
 import { logger } from '../utils/logging.js';
 import { getTrackedContainerIds } from './active-workers.js';
 import { routerConfig } from './config.js';
+import { ROUTER_INSTANCE_ID } from './instance-id.js';
 
 const docker = new Docker();
 
@@ -44,7 +52,9 @@ export function startOrphanCleanup(): void {
 		});
 	}, ORPHAN_SCAN_INTERVAL_MS);
 
-	logger.info('[WorkerManager] Started orphan cleanup scan (every 5 minutes)');
+	logger.info('[WorkerManager] Started orphan cleanup scan (every 5 minutes)', {
+		instanceId: ROUTER_INSTANCE_ID,
+	});
 }
 
 /**
@@ -72,7 +82,13 @@ export async function scanAndCleanupOrphans(): Promise<void> {
 		const containers = await docker.listContainers({
 			all: false, // Only running containers
 			filters: {
-				label: ['cascade.managed=true'],
+				// Two-clause filter: `cascade.managed=true` keeps the cross-
+				// instance debugging affordance (`docker ps -a --filter
+				// label=cascade.managed=true` finds every cascade worker
+				// regardless of who spawned it), and the per-instance label
+				// is the safety belt that stops sibling routers from
+				// claiming each other's containers as orphans.
+				label: ['cascade.managed=true', `cascade.router.instance=${ROUTER_INSTANCE_ID}`],
 			},
 		});
 
@@ -115,6 +131,7 @@ export async function scanAndCleanupOrphans(): Promise<void> {
 				logger.warn('[WorkerManager] Stopped and removed orphaned container:', {
 					containerId: containerId.slice(0, 12),
 					ageMinutes,
+					instanceId: ROUTER_INSTANCE_ID,
 				});
 
 				// Update DB run status (fire-and-forget). Containers created before this
