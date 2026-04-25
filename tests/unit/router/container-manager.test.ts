@@ -339,6 +339,29 @@ describe('spawnWorker', () => {
 		resolveWait();
 	});
 
+	it('includes cascade.router.instance label so sibling routers do not orphan-kill this container', async () => {
+		const { resolveWait } = setupMockContainer();
+
+		await spawnWorker(
+			makeJob({
+				id: 'job-instance',
+				data: { type: 'trello', projectId: 'proj-1' } as CascadeJob,
+			}) as never,
+		);
+
+		const createCall = mockDockerCreateContainer.mock.calls[0]?.[0] as {
+			Labels: Record<string, string>;
+		};
+		const instanceLabel = createCall.Labels['cascade.router.instance'];
+		// The exact value depends on os.hostname() / the env override; pin
+		// "non-empty string" — it's the mere presence + uniqueness that
+		// makes orphan-cleanup's per-instance filter work.
+		expect(instanceLabel).toBeTruthy();
+		expect(typeof instanceLabel).toBe('string');
+
+		resolveWait();
+	});
+
 	it('uses project watchdogTimeoutMs + 2min buffer when available', async () => {
 		mockLoadProjectConfig.mockResolvedValue({
 			projects: [],

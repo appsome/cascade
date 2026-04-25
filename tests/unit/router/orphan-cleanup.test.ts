@@ -125,6 +125,31 @@ describe('orphan-cleanup', () => {
 			);
 		});
 
+		it('scopes the scan to THIS instance via cascade.router.instance label', async () => {
+			// Critical safety property: when two cascade-router instances run on
+			// the same host (prod + dev, k8s replicas, two local sandboxes),
+			// each must only see its OWN spawned containers. Without this the
+			// dev instance silently `docker stop`s the prod instance's workers
+			// at the 30-min `workerTimeoutMs` mark — surfacing downstream as
+			// `exit 137 · OOMKilled=false` runs that masquerade as OOM.
+			mockDockerListContainers.mockResolvedValue([]);
+
+			await scanAndCleanupOrphans();
+
+			const firstCallArg = mockDockerListContainers.mock.calls[0]?.[0] as {
+				filters: { label: string[] };
+			};
+			const labelFilters = firstCallArg.filters.label;
+			expect(labelFilters).toContain('cascade.managed=true');
+			// The instance label must be present and non-empty. Pinning the
+			// exact value would tie the test to whatever hostname the test
+			// environment happens to expose; pinning the prefix is what
+			// matters for the safety property.
+			const instanceLabel = labelFilters.find((l) => l.startsWith('cascade.router.instance='));
+			expect(instanceLabel).toBeDefined();
+			expect(instanceLabel?.split('=')[1]).toBeTruthy();
+		});
+
 		it('skips tracked containers', async () => {
 			const trackedContainerId = 'container-abc123def456';
 			mockTrackedIds.add(trackedContainerId);
