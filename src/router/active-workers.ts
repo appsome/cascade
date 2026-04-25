@@ -25,6 +25,32 @@ export interface ActiveWorker {
 	agentType?: string;
 }
 
+/**
+ * Diagnostic facts about a worker exit, surfaced into the run record's `error`
+ * field so post-mortem investigations can answer "was this OOM?", "was it
+ * killed by Docker?" without ssh + syslog access. Sourced from
+ * `dockerode container.inspect()` after `wait()`.
+ */
+export interface ExitDetails {
+	/** `State.OOMKilled` from Docker — definitive cgroup-OOM signal. */
+	oomKilled?: boolean;
+	/** `State.Error` from Docker — non-empty when the runtime aborted the container. */
+	exitReason?: string;
+}
+
+/**
+ * Format a worker-crash reason string with whatever diagnostic facts we have.
+ * Stable, grep-friendly format: `Worker crashed with exit code N · OOMKilled=… · reason="…"`.
+ * Empty / undefined fields are omitted.
+ */
+export function formatCrashReason(exitCode: number, details?: ExitDetails): string {
+	const parts: string[] = [`Worker crashed with exit code ${exitCode}`];
+	if (details?.oomKilled === true) parts.push('OOMKilled=true');
+	else if (details?.oomKilled === false) parts.push('OOMKilled=false');
+	if (details?.exitReason) parts.push(`reason="${details.exitReason}"`);
+	return parts.join(' · ');
+}
+
 export const activeWorkers = new Map<string, ActiveWorker>();
 
 /**
@@ -50,7 +76,7 @@ export function getActiveWorkers(): Array<{ jobId: string; startedAt: Date }> {
  * The timeout path (killWorker) handles its own 'timed_out' DB update and calls
  * cleanupWorker without an exitCode so this block is skipped.
  */
-export function cleanupWorker(jobId: string, exitCode?: number): void {
+export function cleanupWorker(jobId: string, exitCode?: number, details?: ExitDetails): void {
 	const worker = activeWorkers.get(jobId);
 	if (worker) {
 		clearTimeout(worker.timeoutHandle);
@@ -62,20 +88,15 @@ export function cleanupWorker(jobId: string, exitCode?: number): void {
 		}
 		if (exitCode !== undefined && exitCode !== 0 && worker.projectId) {
 			const durationMs = Date.now() - worker.startedAt.getTime();
+			const reason = formatCrashReason(exitCode, details);
 			const updatePromise = worker.workItemId
-				? failOrphanedRun(
-						worker.projectId,
-						worker.workItemId,
-						`Worker crashed with exit code ${exitCode}`,
-						'failed',
-						durationMs,
-					)
+				? failOrphanedRun(worker.projectId, worker.workItemId, reason, 'failed', durationMs)
 				: failOrphanedRunFallback(
 						worker.projectId,
 						worker.agentType,
 						worker.startedAt,
 						'failed',
-						`Worker crashed with exit code ${exitCode}`,
+						reason,
 						durationMs,
 					);
 			updatePromise

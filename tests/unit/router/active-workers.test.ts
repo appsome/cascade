@@ -294,5 +294,109 @@ describe('active-workers', () => {
 			expect(mockFailOrphanedRun).not.toHaveBeenCalled();
 			expect(mockFailOrphanedRunFallback).not.toHaveBeenCalled();
 		});
+
+		describe('exit details (diagnostics)', () => {
+			it('packs OOMKilled=true into the error reason', () => {
+				activeWorkers.set(
+					'job-oom',
+					makeActiveWorker({
+						jobId: 'job-oom',
+						projectId: 'proj-1',
+						workItemId: 'card-1',
+						agentType: 'implementation',
+					}),
+				);
+
+				cleanupWorker('job-oom', 137, { oomKilled: true });
+				const reason = mockFailOrphanedRun.mock.calls[0][2] as string;
+				expect(reason).toMatch(/exit code 137/);
+				expect(reason).toMatch(/OOMKilled=true/);
+			});
+
+			it('packs OOMKilled=false into the error reason', () => {
+				activeWorkers.set(
+					'job-not-oom',
+					makeActiveWorker({
+						jobId: 'job-not-oom',
+						projectId: 'proj-1',
+						workItemId: 'card-1',
+						agentType: 'implementation',
+					}),
+				);
+
+				cleanupWorker('job-not-oom', 137, { oomKilled: false });
+				const reason = mockFailOrphanedRun.mock.calls[0][2] as string;
+				expect(reason).toMatch(/OOMKilled=false/);
+			});
+
+			it('includes Docker State.Error reason when present', () => {
+				activeWorkers.set(
+					'job-state-err',
+					makeActiveWorker({
+						jobId: 'job-state-err',
+						projectId: 'proj-1',
+						workItemId: 'card-1',
+						agentType: 'implementation',
+					}),
+				);
+
+				cleanupWorker('job-state-err', 1, { exitReason: 'OCI runtime error' });
+				const reason = mockFailOrphanedRun.mock.calls[0][2] as string;
+				expect(reason).toMatch(/reason="OCI runtime error"/);
+			});
+
+			it('omits OOMKilled label when undefined (legacy callers)', () => {
+				activeWorkers.set(
+					'job-legacy',
+					makeActiveWorker({
+						jobId: 'job-legacy',
+						projectId: 'proj-1',
+						workItemId: 'card-1',
+						agentType: 'implementation',
+					}),
+				);
+
+				cleanupWorker('job-legacy', 1);
+				const reason = mockFailOrphanedRun.mock.calls[0][2] as string;
+				expect(reason).toBe('Worker crashed with exit code 1');
+			});
+
+			it('combines OOMKilled and exit reason in one message', () => {
+				activeWorkers.set(
+					'job-combo',
+					makeActiveWorker({
+						jobId: 'job-combo',
+						projectId: 'proj-1',
+						workItemId: 'card-1',
+						agentType: 'implementation',
+					}),
+				);
+
+				cleanupWorker('job-combo', 137, {
+					oomKilled: true,
+					exitReason: 'Out of memory',
+				});
+				const reason = mockFailOrphanedRun.mock.calls[0][2] as string;
+				expect(reason).toMatch(/exit code 137/);
+				expect(reason).toMatch(/OOMKilled=true/);
+				expect(reason).toMatch(/reason="Out of memory"/);
+			});
+
+			it('forwards diagnostics to failOrphanedRunFallback path too', () => {
+				activeWorkers.set(
+					'job-fb',
+					makeActiveWorker({
+						jobId: 'job-fb',
+						projectId: 'proj-1',
+						agentType: 'review',
+						// no workItemId → fallback path
+					}),
+				);
+
+				cleanupWorker('job-fb', 137, { oomKilled: true });
+				const reason = mockFailOrphanedRunFallback.mock.calls[0][4] as string;
+				expect(reason).toMatch(/OOMKilled=true/);
+			});
+		});
 	});
 });
