@@ -19,6 +19,7 @@ import { logger } from '../utils/logging.js';
 import { activeWorkers, cleanupWorker } from './active-workers.js';
 import { clearAllAgentTypeLocks } from './agent-type-lock.js';
 import { loadProjectConfig, routerConfig } from './config.js';
+import { ROUTER_INSTANCE_ID } from './instance-id.js';
 import { notifyTimeout } from './notifications.js';
 import { stopOrphanCleanup } from './orphan-cleanup.js';
 import type { CascadeJob } from './queue.js';
@@ -386,6 +387,11 @@ async function createAndMonitorContainer(
 			'cascade.job.id': jobId,
 			'cascade.job.type': job.data.type,
 			'cascade.managed': 'true',
+			// Pinning the spawning router's instance id stops sibling
+			// cascade-router instances on the same host from claiming
+			// each other's containers as orphans — see `instance-id.ts`
+			// and `orphan-cleanup.ts:scanAndCleanupOrphans`.
+			'cascade.router.instance': ROUTER_INSTANCE_ID,
 			'cascade.project.id': projectId ?? '',
 			'cascade.agent.type': agentType ?? '',
 			'cascade.snapshot.enabled': snapshotEnabled ? 'true' : 'false',
