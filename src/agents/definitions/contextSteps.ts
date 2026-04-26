@@ -18,7 +18,7 @@ import {
 } from '../../gadgets/todo/storage.js';
 import { githubClient } from '../../github/client.js';
 import { getJiraConfig, getLinearConfig, getTrelloConfig } from '../../pm/config.js';
-import { getPMProviderOrNull, MAX_IMAGES_PER_WORK_ITEM } from '../../pm/index.js';
+import { getPMProviderOrNull } from '../../pm/index.js';
 import { getSentryClient } from '../../sentry/client.js';
 import type { AgentInput, ProjectConfig } from '../../types/index.js';
 import { parseRepoFullName } from '../../utils/repo.js';
@@ -85,7 +85,11 @@ export function fetchContextFilesStep(params: FetchContextParams): ContextInject
 export async function fetchWorkItemStep(params: FetchContextParams): Promise<ContextInjection[]> {
 	if (!params.input.workItemId) return [];
 	try {
-		const { text: cardData, media } = await readWorkItemWithMedia(params.input.workItemId, true);
+		const {
+			text: cardData,
+			media,
+			urlsDetected,
+		} = await readWorkItemWithMedia(params.input.workItemId, true);
 
 		const injection: ContextInjection = {
 			toolName: 'ReadWorkItem',
@@ -94,62 +98,37 @@ export async function fetchWorkItemStep(params: FetchContextParams): Promise<Con
 			description: 'Pre-fetched work item data',
 		};
 
-		// Download image media references in parallel (up to MAX_IMAGES_PER_WORK_ITEM)
-		if (media.length > 0) {
-			const provider = getPMProviderOrNull();
-			const limited = media.slice(0, MAX_IMAGES_PER_WORK_ITEM);
+		// Spec 016/1: defer the actual download + base64 prep to the shared
+		// `downloadAndPrepareImages` helper so the runtime gadget (spec 016/2)
+		// uses the same code path.
+		const { downloadAndPrepareImages } = await import('../../pm/download-and-prepare.js');
+		const { images, failures } = await downloadAndPrepareImages(
+			params.input.workItemId,
+			media,
+			params.logWriter,
+		);
 
-			params.logWriter('INFO', 'fetchWorkItemStep: downloading work item images', {
-				workItemId: params.input.workItemId,
-				count: limited.length,
-			});
+		// Spec 016/1 AC#5: single grep-stable diagnostic log line summarising
+		// the entire boot-path image pipeline outcome. Operators triage any
+		// "no image delivered" report by grepping for `[image-pipeline]
+		// work-item-fetch summary`.
+		const provider = getPMProviderOrNull();
+		const urlsByMimeType: Record<string, number> = {};
+		for (const ref of media) {
+			urlsByMimeType[ref.mimeType] = (urlsByMimeType[ref.mimeType] ?? 0) + 1;
+		}
+		params.logWriter('INFO', '[image-pipeline] work-item-fetch summary', {
+			provider: provider?.type ?? 'unknown',
+			workItemId: params.input.workItemId,
+			urlsDetected,
+			urlsAfterFilter: media.length,
+			urlsDownloaded: images.length,
+			urlsFailed: failures.length,
+			urlsByMimeType,
+		});
 
-			const { jiraClient } = await import('../../jira/client.js');
-			const { trelloClient } = await import('../../trello/client.js');
-			const { linearClient } = await import('../../linear/client.js');
-
-			const results = await Promise.all(
-				limited.map(async (ref) => {
-					try {
-						let downloaded: { buffer: Buffer; mimeType: string } | null = null;
-						if (provider?.type === 'jira') {
-							downloaded = await jiraClient.downloadAttachment(ref.url);
-						} else if (provider?.type === 'linear') {
-							downloaded = await linearClient.downloadAttachment(ref.url);
-						} else {
-							downloaded = await trelloClient.downloadAttachment(ref.url);
-						}
-						if (!downloaded) {
-							params.logWriter('WARN', 'fetchWorkItemStep: image download returned null', {
-								url: ref.url.split('?')[0],
-							});
-							return null;
-						}
-						return {
-							base64Data: downloaded.buffer.toString('base64'),
-							mimeType: downloaded.mimeType,
-							altText: ref.altText,
-						};
-					} catch (err) {
-						params.logWriter('WARN', 'fetchWorkItemStep: failed to download image', {
-							url: ref.url.split('?')[0],
-							error: err instanceof Error ? err.message : String(err),
-						});
-						return null;
-					}
-				}),
-			);
-
-			const images = results.filter((r) => r !== null);
-			params.logWriter('INFO', 'fetchWorkItemStep: image download complete', {
-				workItemId: params.input.workItemId,
-				attempted: limited.length,
-				downloaded: images.length,
-				skipped: limited.length - images.length,
-			});
-			if (images.length > 0) {
-				injection.images = images;
-			}
+		if (images.length > 0) {
+			injection.images = images;
 		}
 
 		return [injection];

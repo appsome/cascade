@@ -1,5 +1,6 @@
 import type { Attachment, MediaReference } from '../../../pm/index.js';
-import { filterImageMedia, getPMProvider } from '../../../pm/index.js';
+import { filterImageMedia, getPMProvider, getPMProviderOrNull } from '../../../pm/index.js';
+import { logger } from '../../../utils/logging.js';
 
 interface Label {
 	name: string;
@@ -33,6 +34,8 @@ export interface WorkItemWithMedia {
 	text: string;
 	/** All image media references discovered in the work item description, card attachments, and comments (deduplicated by URL) */
 	media: MediaReference[];
+	/** The total number of media and attachment references found before MIME-type filtering */
+	urlsDetected: number;
 }
 
 function formatLabels(labels: Label[]): string {
@@ -117,11 +120,15 @@ export async function readWorkItemWithMedia(
 
 	// Collect all image media references
 	const allMedia: MediaReference[] = [];
+	let urlsDetected = 0;
+
 	if (item.inlineMedia && item.inlineMedia.length > 0) {
+		urlsDetected += item.inlineMedia.length;
 		allMedia.push(...filterImageMedia(item.inlineMedia));
 	}
 
 	// Add image-type card attachments as media references
+	urlsDetected += attachments.length;
 	allMedia.push(
 		...filterImageMedia(
 			attachments.map((att) => ({
@@ -142,6 +149,7 @@ export async function readWorkItemWithMedia(
 		const comments = await provider.getWorkItemComments(workItemId);
 		for (const comment of comments) {
 			if (comment.inlineMedia && comment.inlineMedia.length > 0) {
+				urlsDetected += comment.inlineMedia.length;
 				allMedia.push(...filterImageMedia(comment.inlineMedia));
 			}
 		}
@@ -161,13 +169,95 @@ export async function readWorkItemWithMedia(
 	// Append pre-fetched images section listing discovered images
 	text += formatPreFetchedImages(dedupedMedia);
 
-	return { text, media: dedupedMedia };
+	return { text, media: dedupedMedia, urlsDetected };
 }
 
+/**
+ * Format the on-disk paths for a successfully-written batch of runtime
+ * images. Replaces the existing "Pre-fetched Images" URL list with a
+ * "Local Image Files" section that the agent can hand to its file-read
+ * tool. Failed downloads (if any) are surfaced inline so the agent
+ * doesn't silently miss missing context.
+ */
+function formatRuntimeImagePaths(
+	paths: string[],
+	failures: { url: string; reason: string }[],
+): string {
+	if (paths.length === 0 && failures.length === 0) return '';
+	const lines: string[] = ['## Local Image Files', ''];
+	for (const path of paths) {
+		lines.push(`- ${path}`);
+	}
+	if (failures.length > 0) {
+		lines.push('', '### Failed Image Downloads');
+		for (const f of failures) {
+			lines.push(`- ${f.url} — ${f.reason}`);
+		}
+	}
+	lines.push('');
+	return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Spec 016/2: runtime gadget downloads + writes images to disk so the
+ * agent can read them mid-run. Returns text whose pre-fetched-images
+ * section now lists local file paths the agent can hand to its
+ * file-read tool, not just URL refs.
+ *
+ * Each fetch emits the AC#5 grep-stable diagnostic line — same format
+ * as the boot-path emission in `fetchWorkItemStep`.
+ */
 export async function readWorkItem(workItemId: string, includeComments = true): Promise<string> {
 	try {
-		const { text } = await readWorkItemWithMedia(workItemId, includeComments);
-		return text;
+		const { text, media, urlsDetected } = await readWorkItemWithMedia(workItemId, includeComments);
+
+		// Spec 016/2: download + write any image media so agent can Read them.
+		const { downloadAndPrepareImages } = await import('../../../pm/download-and-prepare.js');
+		const { writeRuntimeImages } = await import('./writeRuntimeImages.js');
+
+		const provider = getPMProviderOrNull();
+		const logWriter = (
+			level: 'INFO' | 'WARN' | 'ERROR',
+			message: string,
+			meta?: Record<string, unknown>,
+		) => {
+			logger[level.toLowerCase() as 'info' | 'warn' | 'error'](message, meta);
+		};
+
+		const { images, failures } = await downloadAndPrepareImages(workItemId, media, logWriter);
+
+		let writePaths: string[] = [];
+		let writeFailures: { path: string; reason: string }[] = [];
+		if (images.length > 0) {
+			const writeResult = await writeRuntimeImages({ workItemId, images });
+			writePaths = writeResult.paths;
+			writeFailures = writeResult.failures;
+		}
+		// AC#5 diagnostic line — same prefix as the boot-path emission.
+		const urlsByMimeType: Record<string, number> = {};
+		for (const ref of media) {
+			urlsByMimeType[ref.mimeType] = (urlsByMimeType[ref.mimeType] ?? 0) + 1;
+		}
+		logger.info('[image-pipeline] work-item-fetch summary', {
+			provider: provider?.type ?? 'unknown',
+			workItemId,
+			urlsDetected,
+			urlsAfterFilter: media.length,
+			urlsDownloaded: images.length,
+			urlsFailed: failures.length + writeFailures.length,
+			urlsByMimeType,
+		});
+
+		// Append the local file paths section so agents can Read them.
+		const downloadFailures: { url: string; reason: string }[] = failures.map((f) => ({
+			url: f.url,
+			reason: f.reason,
+		}));
+		for (const f of writeFailures) {
+			downloadFailures.push({ url: f.path, reason: `Local write failed: ${f.reason}` });
+		}
+		const augmented = text + formatRuntimeImagePaths(writePaths, downloadFailures);
+		return augmented;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return `Error reading work item: ${message}`;
