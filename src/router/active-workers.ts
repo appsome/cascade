@@ -9,6 +9,7 @@ import { failOrphanedRun, failOrphanedRunFallback } from '../db/repositories/run
 import { logger } from '../utils/logging.js';
 import { clearAgentTypeEnqueued } from './agent-type-lock.js';
 import type { CascadeJob } from './queue.js';
+import { slotReleased } from './slot-waiter.js';
 import { clearWorkItemEnqueued } from './work-item-lock.js';
 
 export interface ActiveWorker {
@@ -62,11 +63,26 @@ export function getActiveWorkerCount(): number {
 
 /**
  * Get summary info for currently active workers.
+ *
+ * Includes the resolved `(projectId, workItemId, agentType)` trio so callers
+ * (specifically the lock-state classifier added in spec 015/1) can correlate
+ * an in-memory lock count against actual dispatch state. The fields are
+ * `undefined` for workers whose job data didn't carry the corresponding
+ * identifier — never synthesized.
  */
-export function getActiveWorkers(): Array<{ jobId: string; startedAt: Date }> {
+export function getActiveWorkers(): Array<{
+	jobId: string;
+	startedAt: Date;
+	projectId?: string;
+	workItemId?: string;
+	agentType?: string;
+}> {
 	return Array.from(activeWorkers.values()).map((w) => ({
 		jobId: w.jobId,
 		startedAt: w.startedAt,
+		projectId: w.projectId,
+		workItemId: w.workItemId,
+		agentType: w.agentType,
 	}));
 }
 
@@ -86,6 +102,10 @@ export function cleanupWorker(jobId: string, exitCode?: number, details?: ExitDe
 		if (worker.projectId && worker.workItemId && worker.agentType) {
 			clearWorkItemEnqueued(worker.projectId, worker.workItemId, worker.agentType);
 		}
+		// Spec 015/2: free a worker slot so any dispatcher waiting in
+		// `acquireSlot()` can proceed. Idempotent — the surrounding
+		// `if (worker)` guard ensures we call this exactly once per cleanup.
+		slotReleased();
 		if (exitCode !== undefined && exitCode !== 0 && worker.projectId) {
 			const durationMs = Date.now() - worker.startedAt.getTime();
 			const reason = formatCrashReason(exitCode, details);

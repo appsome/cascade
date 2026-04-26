@@ -11,6 +11,7 @@ const {
 	mockClearAllWorkItemLocks,
 	mockClearAgentTypeEnqueued,
 	mockClearAllAgentTypeLocks,
+	mockSlotReleased,
 } = vi.hoisted(() => ({
 	mockFailOrphanedRun: vi.fn().mockResolvedValue(null),
 	mockFailOrphanedRunFallback: vi.fn().mockResolvedValue(null),
@@ -18,6 +19,7 @@ const {
 	mockClearAllWorkItemLocks: vi.fn(),
 	mockClearAgentTypeEnqueued: vi.fn(),
 	mockClearAllAgentTypeLocks: vi.fn(),
+	mockSlotReleased: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,10 @@ vi.mock('../../../src/router/work-item-lock.js', () => ({
 vi.mock('../../../src/router/agent-type-lock.js', () => ({
 	clearAgentTypeEnqueued: (...args: unknown[]) => mockClearAgentTypeEnqueued(...args),
 	clearAllAgentTypeLocks: (...args: unknown[]) => mockClearAllAgentTypeLocks(...args),
+}));
+
+vi.mock('../../../src/router/slot-waiter.js', () => ({
+	slotReleased: (...args: unknown[]) => mockSlotReleased(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -86,6 +92,7 @@ describe('active-workers', () => {
 		mockFailOrphanedRunFallback.mockResolvedValue(null);
 		mockClearWorkItemEnqueued.mockClear();
 		mockClearAgentTypeEnqueued.mockClear();
+		mockSlotReleased.mockClear();
 	});
 
 	afterEach(() => {
@@ -115,7 +122,41 @@ describe('active-workers', () => {
 			activeWorkers.set('job-1', makeActiveWorker({ jobId: 'job-1', startedAt }));
 			const workers = getActiveWorkers();
 			expect(workers).toHaveLength(1);
-			expect(workers[0]).toEqual({ jobId: 'job-1', startedAt });
+			// Allow extra (projectId/workItemId/agentType) fields — they're added
+			// in spec 015/1 so the lock-state classifier can correlate locks with
+			// active dispatch state. Pin only the load-bearing fields here.
+			expect(workers[0]).toMatchObject({ jobId: 'job-1', startedAt });
+		});
+
+		it('returns projectId, workItemId, agentType for each tracked worker (spec 015/1)', () => {
+			const startedAt = new Date();
+			activeWorkers.set(
+				'job-7',
+				makeActiveWorker({
+					jobId: 'job-7',
+					startedAt,
+					projectId: 'ucho',
+					workItemId: 'MNG-350',
+					agentType: 'implementation',
+				}),
+			);
+			const workers = getActiveWorkers();
+			expect(workers).toHaveLength(1);
+			expect(workers[0]).toMatchObject({
+				jobId: 'job-7',
+				startedAt,
+				projectId: 'ucho',
+				workItemId: 'MNG-350',
+				agentType: 'implementation',
+			});
+		});
+
+		it('omitted projectId/workItemId/agentType remain undefined (no synthetic defaults)', () => {
+			activeWorkers.set('job-bare', makeActiveWorker({ jobId: 'job-bare' }));
+			const workers = getActiveWorkers();
+			expect(workers[0]?.projectId).toBeUndefined();
+			expect(workers[0]?.workItemId).toBeUndefined();
+			expect(workers[0]?.agentType).toBeUndefined();
 		});
 	});
 
@@ -171,6 +212,25 @@ describe('active-workers', () => {
 
 			cleanupWorker('job-at');
 			expect(mockClearAgentTypeEnqueued).toHaveBeenCalledWith('proj-1', 'review');
+		});
+
+		it('calls slotReleased exactly once per cleanup (spec 015/2)', () => {
+			activeWorkers.set('job-slot', makeActiveWorker({ jobId: 'job-slot' }));
+			cleanupWorker('job-slot');
+			expect(mockSlotReleased).toHaveBeenCalledTimes(1);
+		});
+
+		it('calls slotReleased on the crash path (exitCode != 0)', () => {
+			activeWorkers.set('job-crash', makeActiveWorker({ jobId: 'job-crash', projectId: 'p1' }));
+			cleanupWorker('job-crash', 137, { oomKilled: true });
+			expect(mockSlotReleased).toHaveBeenCalledTimes(1);
+		});
+
+		it('does NOT double-call slotReleased on duplicate cleanup invocations', () => {
+			activeWorkers.set('job-dup', makeActiveWorker({ jobId: 'job-dup' }));
+			cleanupWorker('job-dup');
+			cleanupWorker('job-dup'); // second call: worker already removed
+			expect(mockSlotReleased).toHaveBeenCalledTimes(1);
 		});
 
 		it('calls failOrphanedRun on non-zero exit code', () => {
