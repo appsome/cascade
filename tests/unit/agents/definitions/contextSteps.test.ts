@@ -231,6 +231,7 @@ describe('fetchWorkItemStep', () => {
 		mockReadWorkItemWithMedia.mockResolvedValue({
 			text: '# Card Title\n\nDescription',
 			media: [],
+			urlsDetected: 0,
 		});
 		mockGetPMProviderOrNull.mockReturnValue({ type: 'trello' } as never);
 
@@ -353,11 +354,12 @@ describe('fetchWorkItemStep', () => {
 		expect(result[0].images).toHaveLength(1);
 		expect(result[0].images?.[0].base64Data).toBe(Buffer.from('ok').toString('base64'));
 
-		// WARN for the null return, URL sanitized (no query params)
+		// WARN for the null return, URL sanitized (no query params); spec 016/1
+		// renamed the helper so the message prefix is now `downloadAndPrepareImages`.
 		expect(params.logWriter).toHaveBeenCalledWith(
 			'WARN',
-			'fetchWorkItemStep: image download returned null',
-			{ url: 'https://trello.com/fail.png' },
+			'downloadAndPrepareImages: download returned null',
+			{ workItemId: 'card-1', url: 'https://trello.com/fail.png' },
 		);
 	});
 
@@ -381,12 +383,15 @@ describe('fetchWorkItemStep', () => {
 		expect(result[0].images).toBeUndefined();
 		expect(params.logWriter).toHaveBeenCalledWith(
 			'WARN',
-			'fetchWorkItemStep: failed to download image',
-			{ url: 'https://trello.com/err.png', error: 'network failure' },
+			'downloadAndPrepareImages: failed to download image',
+			{ workItemId: 'card-1', url: 'https://trello.com/err.png', error: 'network failure' },
 		);
 	});
 
-	it('emits INFO logs before and after download with correct counts', async () => {
+	// Spec 016/1 AC#5: single grep-stable INFO line per work-item-fetch with
+	// the `[image-pipeline] work-item-fetch summary` literal prefix and a
+	// stable field schema. Replaces the prior pre/post WARN/INFO log pair.
+	it("emits the '[image-pipeline] work-item-fetch summary' INFO line with correct counts", async () => {
 		mockReadWorkItemWithMedia.mockResolvedValue({
 			text: '# Card',
 			media: [
@@ -394,6 +399,7 @@ describe('fetchWorkItemStep', () => {
 				{ url: 'https://trello.com/b.png', mimeType: 'image/png', source: 'description' },
 				{ url: 'https://trello.com/c.png', mimeType: 'image/png', source: 'description' },
 			],
+			urlsDetected: 3,
 		});
 		mockGetPMProviderOrNull.mockReturnValue({ type: 'trello' } as never);
 		mockTrelloDownload
@@ -406,13 +412,71 @@ describe('fetchWorkItemStep', () => {
 
 		expect(params.logWriter).toHaveBeenCalledWith(
 			'INFO',
-			'fetchWorkItemStep: downloading work item images',
-			{ workItemId: 'card-1', count: 3 },
+			'[image-pipeline] work-item-fetch summary',
+			expect.objectContaining({
+				provider: 'trello',
+				workItemId: 'card-1',
+				urlsDetected: 3,
+				urlsAfterFilter: 3,
+				urlsDownloaded: 1,
+				urlsFailed: 2,
+				urlsByMimeType: { 'image/png': 3 },
+			}),
 		);
+	});
+
+	it('emits the diagnostic line even when no images are present (urlsDetected: 0)', async () => {
+		mockReadWorkItemWithMedia.mockResolvedValue({ text: '# Card', media: [], urlsDetected: 0 });
+		mockGetPMProviderOrNull.mockReturnValue({ type: 'trello' } as never);
+
+		const params = makeParams({ workItemId: 'card-1' });
+		await fetchWorkItemStep(params);
+
 		expect(params.logWriter).toHaveBeenCalledWith(
 			'INFO',
-			'fetchWorkItemStep: image download complete',
-			{ workItemId: 'card-1', attempted: 3, downloaded: 1, skipped: 2 },
+			'[image-pipeline] work-item-fetch summary',
+			expect.objectContaining({
+				provider: 'trello',
+				workItemId: 'card-1',
+				urlsDetected: 0,
+				urlsAfterFilter: 0,
+				urlsDownloaded: 0,
+				urlsFailed: 0,
+				urlsByMimeType: {},
+			}),
+		);
+	});
+
+	it('reports MIME distribution covering both extensioned and image/* wildcard refs', async () => {
+		mockReadWorkItemWithMedia.mockResolvedValue({
+			text: '# Card',
+			media: [
+				{ url: 'https://trello.com/a.png', mimeType: 'image/png', source: 'description' },
+				{
+					url: 'https://uploads.linear.app/abc',
+					mimeType: 'image/*',
+					source: 'description',
+				},
+			],
+			urlsDetected: 2,
+		});
+		mockGetPMProviderOrNull.mockReturnValue({ type: 'linear' } as never);
+		mockLinearDownload.mockResolvedValue({ buffer: Buffer.from('x'), mimeType: 'image/png' });
+
+		const params = makeParams({ workItemId: 'MNG-357' });
+		await fetchWorkItemStep(params);
+
+		expect(params.logWriter).toHaveBeenCalledWith(
+			'INFO',
+			'[image-pipeline] work-item-fetch summary',
+			expect.objectContaining({
+				provider: 'linear',
+				workItemId: 'MNG-357',
+				urlsDetected: 2,
+				urlsAfterFilter: 2,
+				urlsDownloaded: 2,
+				urlsByMimeType: { 'image/png': 1, 'image/*': 1 },
+			}),
 		);
 	});
 
@@ -422,7 +486,11 @@ describe('fetchWorkItemStep', () => {
 			mimeType: 'image/png',
 			source: 'description' as const,
 		}));
-		mockReadWorkItemWithMedia.mockResolvedValue({ text: '# Card', media: manyMedia });
+		mockReadWorkItemWithMedia.mockResolvedValue({
+			text: '# Card',
+			media: manyMedia,
+			urlsDetected: 35,
+		});
 		mockGetPMProviderOrNull.mockReturnValue({ type: 'trello' } as never);
 		mockTrelloDownload.mockResolvedValue({ buffer: Buffer.from('data'), mimeType: 'image/png' });
 
