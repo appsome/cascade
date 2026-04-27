@@ -22,12 +22,33 @@ interface ContainerPickerProps {
 	onChange: (id: string) => void;
 }
 
+/**
+ * Maps a PM provider slug to its discovery capability that returns container-like items.
+ * Trello → "boards", JIRA → "projects", Linear → "teams".
+ * Falls back to undefined (disabling the fetch button) for unknown providers.
+ */
+function containerCapabilityForProvider(
+	provider: string,
+): 'boards' | 'projects' | 'teams' | undefined {
+	const map: Record<string, 'boards' | 'projects' | 'teams'> = {
+		trello: 'boards',
+		jira: 'projects',
+		linear: 'teams',
+	};
+	return map[provider];
+}
+
 function PMContainerPicker({ projectId, pmProvider, value, onChange }: ContainerPickerProps) {
+	const capability = containerCapabilityForProvider(pmProvider);
+
 	const containersMutation = useMutation({
 		mutationFn: async () => {
+			if (!capability) {
+				throw new Error(`No container discovery capability mapped for provider "${pmProvider}"`);
+			}
 			return (await trpcClient.pm.discovery.discover.mutate({
 				providerId: pmProvider,
-				capability: 'containers',
+				capability,
 				args: {},
 				projectId,
 			})) as Array<{ id: string; name: string }>;
@@ -59,7 +80,8 @@ function PMContainerPicker({ projectId, pmProvider, value, onChange }: Container
 				<button
 					type="button"
 					onClick={() => containersMutation.mutate()}
-					disabled={containersMutation.isPending}
+					disabled={containersMutation.isPending || !capability}
+					title={!capability ? `No list-fetch support for provider "${pmProvider}"` : undefined}
 					className="inline-flex h-9 shrink-0 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
 				>
 					{containersMutation.isPending ? 'Loading...' : 'Fetch Lists'}

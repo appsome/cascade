@@ -75,8 +75,7 @@ export function buildPromptContext(
 	const terminology = getPromptTerminology(pmProvider?.type);
 
 	// Fall back to the Sentry-configured results container when no PM backlog is set.
-	const backlogListId =
-		listIds.backlogListId ?? (alertingResultsContainerId ? alertingResultsContainerId : undefined);
+	const backlogListId = listIds.backlogListId ?? alertingResultsContainerId;
 
 	return {
 		workItemId,
