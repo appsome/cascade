@@ -40,7 +40,7 @@ export class PRConflictDetectedTrigger implements TriggerHandler {
 			!(await checkTriggerEnabled(
 				ctx.project.id,
 				'resolve-conflicts',
-				'scm:conflict-resolution',
+				'scm:pr-conflict-detected',
 				this.name,
 			))
 		) {
