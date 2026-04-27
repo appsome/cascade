@@ -9,6 +9,7 @@ import type { createAgentLogger } from '../agents/utils/logging.js';
 import { mergeEngineSettings } from '../config/engineSettings.js';
 import { loadPartials } from '../db/repositories/partialsRepository.js';
 import { withGitHubToken } from '../github/client.js';
+import { getSentryIntegrationConfig } from '../sentry/integration.js';
 import type { AgentInput, CascadeConfig, ProjectConfig } from '../types/index.js';
 import { getDashboardUrl } from '../utils/runLink.js';
 import { createNativeToolRuntimeArtifacts } from './nativeToolRuntime.js';
@@ -59,11 +60,25 @@ export async function buildExecutionPlan(
 				}
 			: undefined;
 
+	// For alerting agents, look up Sentry `resultsContainerId` as a fallback
+	// backlogListId when no PM backlog status/list is configured on the project.
+	let alertingResultsContainerId: string | undefined;
+	if (agentType === 'alerting') {
+		try {
+			const sentryConfig = await getSentryIntegrationConfig(project.id);
+			alertingResultsContainerId = sentryConfig?.resultsContainerId;
+		} catch {
+			// Non-fatal — proceed without the fallback container
+		}
+	}
+
 	const promptContext: PromptContext = buildPromptContext(
 		workItemId,
 		project,
 		input.triggerType,
 		prContext,
+		undefined,
+		alertingResultsContainerId,
 	);
 
 	// Load DB partials for template include resolution

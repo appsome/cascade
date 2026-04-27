@@ -96,6 +96,46 @@ describe('sentry/integration', () => {
 			expect(result).toEqual({ organizationSlug: 'acme-corp' });
 		});
 
+		it('returns resultsContainerId when present in config', async () => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValueOnce({
+				id: 'int-3',
+				provider: 'sentry',
+				config: { organizationSlug: 'my-org', resultsContainerId: 'list-backlog-123' },
+			});
+
+			const result = await getSentryIntegrationConfig('proj-3');
+
+			expect(result).toEqual({
+				organizationSlug: 'my-org',
+				resultsContainerId: 'list-backlog-123',
+			});
+		});
+
+		it('omits resultsContainerId when absent from config', async () => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValueOnce({
+				id: 'int-4',
+				provider: 'sentry',
+				config: { organizationSlug: 'my-org' },
+			});
+
+			const result = await getSentryIntegrationConfig('proj-4');
+
+			expect(result).toEqual({ organizationSlug: 'my-org' });
+			expect(result?.resultsContainerId).toBeUndefined();
+		});
+
+		it('omits resultsContainerId when it is not a string', async () => {
+			mockGetIntegrationByProjectAndCategory.mockResolvedValueOnce({
+				id: 'int-5',
+				provider: 'sentry',
+				config: { organizationSlug: 'my-org', resultsContainerId: 42 },
+			});
+
+			const result = await getSentryIntegrationConfig('proj-5');
+
+			expect(result?.resultsContainerId).toBeUndefined();
+		});
+
 		it('queries using projectId and alerting category', async () => {
 			mockGetIntegrationByProjectAndCategory.mockResolvedValueOnce(null);
 

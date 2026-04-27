@@ -2,7 +2,7 @@
  * Alerting (Sentry) integration tab component.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Trash2 } from 'lucide-react';
+import { Info, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { CopyButton } from '@/components/ui/copy-button.js';
 import { Input } from '@/components/ui/input.js';
@@ -12,20 +12,96 @@ import { trpc, trpcClient } from '@/lib/trpc.js';
 import { ProjectSecretField } from './project-secret-field.js';
 
 // ============================================================================
+// PM Container Picker
+// ============================================================================
+
+interface ContainerPickerProps {
+	projectId: string;
+	pmProvider: string;
+	value: string;
+	onChange: (id: string) => void;
+}
+
+function PMContainerPicker({ projectId, pmProvider, value, onChange }: ContainerPickerProps) {
+	const containersMutation = useMutation({
+		mutationFn: async () => {
+			return (await trpcClient.pm.discovery.discover.mutate({
+				providerId: pmProvider,
+				capability: 'containers',
+				args: {},
+				projectId,
+			})) as Array<{ id: string; name: string }>;
+		},
+	});
+
+	return (
+		<div className="space-y-2">
+			<div className="flex gap-2">
+				<select
+					id="sentry-results-container"
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+					className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				>
+					<option value="">
+						{containersMutation.isPending
+							? 'Loading...'
+							: containersMutation.data
+								? '— Select a list —'
+								: '— Click Fetch to load lists —'}
+					</option>
+					{containersMutation.data?.map((c) => (
+						<option key={c.id} value={c.id}>
+							{c.name}
+						</option>
+					))}
+				</select>
+				<button
+					type="button"
+					onClick={() => containersMutation.mutate()}
+					disabled={containersMutation.isPending}
+					className="inline-flex h-9 shrink-0 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+				>
+					{containersMutation.isPending ? 'Loading...' : 'Fetch Lists'}
+				</button>
+			</div>
+			{containersMutation.isError && (
+				<p className="text-xs text-destructive">{containersMutation.error.message}</p>
+			)}
+			<p className="text-xs text-muted-foreground">
+				Or enter the ID manually:{' '}
+				<input
+					type="text"
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+					placeholder="container-id"
+					className="ml-1 inline-block h-6 rounded border border-input bg-background px-2 text-xs"
+				/>
+			</p>
+		</div>
+	);
+}
+
+// ============================================================================
 // Alerting Tab (Sentry)
 // ============================================================================
 
 interface AlertingTabProps {
 	projectId: string;
 	alertingIntegration?: Record<string, unknown>;
+	/** PM provider slug (e.g. "trello", "jira", "linear") when a PM integration is configured. */
+	pmProvider?: string;
 }
 
-export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps) {
+export function AlertingTab({ projectId, alertingIntegration, pmProvider }: AlertingTabProps) {
 	const queryClient = useQueryClient();
 
 	const existingConfig = (alertingIntegration?.config as Record<string, unknown>) ?? {};
 	const [organizationSlug, setOrganizationSlug] = useState(
 		(existingConfig.organizationSlug as string) ?? '',
+	);
+	const [resultsContainerId, setResultsContainerId] = useState(
+		(existingConfig.resultsContainerId as string) ?? '',
 	);
 
 	const [verifyResult, setVerifyResult] = useState<{
@@ -80,7 +156,10 @@ export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps
 				projectId,
 				category: 'alerting',
 				provider: 'sentry',
-				config: { organizationSlug },
+				config: {
+					organizationSlug,
+					...(resultsContainerId ? { resultsContainerId } : {}),
+				},
 			});
 		},
 		onSuccess: () => {
@@ -106,6 +185,17 @@ export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps
 
 	return (
 		<div className="space-y-6">
+			{/* Agent enablement info box */}
+			<div className="flex gap-3 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+				<Info className="mt-0.5 h-4 w-4 shrink-0" />
+				<div>
+					<span className="font-medium">Enable the Alerting Agent</span> — After saving this
+					integration, go to the <span className="font-medium">Agents</span> tab and enable the{' '}
+					<span className="font-mono text-xs">alerting</span> agent type so Sentry alerts trigger
+					investigation runs automatically.
+				</div>
+			</div>
+
 			{/* Organization Slug */}
 			<div className="space-y-2">
 				<Label htmlFor="sentry-org-slug">Organization Slug</Label>
@@ -119,6 +209,32 @@ export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps
 					onChange={(e) => setOrganizationSlug(e.target.value)}
 					placeholder="my-organization"
 				/>
+			</div>
+
+			<hr className="border-border" />
+
+			{/* Investigation Results List */}
+			<div className="space-y-2">
+				<Label htmlFor="sentry-results-container">Investigation Results List</Label>
+				<p className="text-xs text-muted-foreground">
+					The PM list or status where the alerting agent creates investigation work items. Used as
+					the target container when the agent creates bug fix cards.
+				</p>
+				{pmProvider ? (
+					<PMContainerPicker
+						projectId={projectId}
+						pmProvider={pmProvider}
+						value={resultsContainerId}
+						onChange={setResultsContainerId}
+					/>
+				) : (
+					<Input
+						id="sentry-results-container"
+						value={resultsContainerId}
+						onChange={(e) => setResultsContainerId(e.target.value)}
+						placeholder="List ID or status name (configure PM integration to use a picker)"
+					/>
+				)}
 			</div>
 
 			<hr className="border-border" />
