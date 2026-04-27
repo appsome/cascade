@@ -114,7 +114,7 @@ describe('PRConflictDetectedTrigger', () => {
 			expect(checkTriggerEnabled).toHaveBeenCalledWith(
 				'test',
 				'resolve-conflicts',
-				'scm:conflict-resolution',
+				'scm:pr-conflict-detected',
 				'pr-conflict-detected',
 			);
 		});
