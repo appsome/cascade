@@ -140,6 +140,7 @@ export class PRCommentMentionTrigger implements TriggerHandler {
 				triggerCommentPath: commentPath,
 				triggerCommentUrl: commentUrl,
 				commentAuthor,
+				workItemId,
 			},
 			prNumber,
 			prUrl,
