@@ -24,15 +24,11 @@ import type { ProjectConfig, TriggerContext, TriggerResult } from '../../types/i
 import { logger } from '../../utils/logging.js';
 import { buildWorkItemRunsLink, getDashboardUrl } from '../../utils/runLink.js';
 import { extractGitHubContext, generateAckMessage } from '../ackMessageGenerator.js';
-import {
-	postGitHubAck,
-	postJiraAck,
-	postTrelloAck,
-	resolveGitHubTokenForAckByAgent,
-} from '../acknowledgments.js';
+import { postGitHubAck, resolveGitHubTokenForAckByAgent } from '../acknowledgments.js';
 import { loadProjectConfig, type RouterProjectConfig } from '../config.js';
 import { extractPRNumber } from '../notifications.js';
 import type { AckResult, ParsedWebhookEvent, RouterPlatformAdapter } from '../platform-adapter.js';
+import { dispatchPMAck } from '../pm-ack-dispatch.js';
 import { addEyesReactionToPR } from '../pre-actions.js';
 import type { CascadeJob, GitHubJob } from '../queue.js';
 import { sendAcknowledgeReaction } from '../reactions.js';
@@ -42,8 +38,11 @@ import { sendAcknowledgeReaction } from '../reactions.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Post an acknowledgment comment to the PM tool (Trello/JIRA) for PM-focused agents.
- * Returns an AckResult with the comment ID and message, or undefined on failure.
+ * Post an acknowledgment comment to the PM tool for PM-focused agents.
+ *
+ * Delegates to the consolidated `dispatchPMAck` helper which indexes the
+ * manifest registry — no per-PM-type literal branching. See spec 017,
+ * failure mode A.
  */
 async function postPMAck(
 	projectId: string,
@@ -52,17 +51,9 @@ async function postPMAck(
 	agentType: string,
 	message: string,
 ): Promise<AckResult | undefined> {
-	let commentId: string | null = null;
-	if (pmType === 'trello') {
-		commentId = await postTrelloAck(projectId, workItemId, message);
-	} else if (pmType === 'jira') {
-		commentId = await postJiraAck(projectId, workItemId, message);
-	} else {
-		logger.warn('Unknown PM type for PM-focused agent ack, skipping', { agentType, pmType });
-		return undefined;
-	}
-	if (commentId) return { commentId, message };
-	return undefined;
+	const result = await dispatchPMAck({ projectId, workItemId, pmType, message, agentType });
+	if (!result) return undefined;
+	return { commentId: result.commentId, message: result.message };
 }
 
 /**

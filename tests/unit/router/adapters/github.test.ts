@@ -22,6 +22,13 @@ vi.mock('../../../../src/router/acknowledgments.js', () => ({
 	postJiraAck: vi.fn(),
 	resolveGitHubTokenForAckByAgent: vi.fn(),
 }));
+// Spec 017 / plan 1: postPMAck now delegates to dispatchPMAck (the consolidated
+// helper that consumes the manifest registry). Mock at the dispatch level so
+// the test exercises the github router adapter's wiring without pulling the
+// real provider registry into the assertion.
+vi.mock('../../../../src/router/pm-ack-dispatch.js', () => ({
+	dispatchPMAck: vi.fn(),
+}));
 
 vi.mock('../../../../src/agents/definitions/loader.js', () => ({
 	isPMFocusedAgent: vi.fn().mockResolvedValue(false),
@@ -86,6 +93,7 @@ import { GitHubRouterAdapter, injectEventType } from '../../../../src/router/ada
 import type { RouterProjectConfig } from '../../../../src/router/config.js';
 import { loadProjectConfig } from '../../../../src/router/config.js';
 import { extractPRNumber } from '../../../../src/router/notifications.js';
+import { dispatchPMAck } from '../../../../src/router/pm-ack-dispatch.js';
 import { addEyesReactionToPR } from '../../../../src/router/pre-actions.js';
 import type { GitHubJob } from '../../../../src/router/queue.js';
 import { sendAcknowledgeReaction } from '../../../../src/router/reactions.js';
@@ -366,9 +374,12 @@ describe('GitHubRouterAdapter', () => {
 			expect(ackResult?.message).toBe('Starting implementation...');
 		});
 
-		it('routes ack to PM tool (Trello) for PM-focused agents (backlog-manager)', async () => {
+		it('routes ack to PM tool for PM-focused agents (backlog-manager)', async () => {
 			vi.mocked(isPMFocusedAgent).mockResolvedValue(true);
-			vi.mocked(postTrelloAck).mockResolvedValue('trello-comment-id');
+			vi.mocked(dispatchPMAck).mockResolvedValue({
+				commentId: 'pm-comment-id',
+				message: 'Starting...',
+			});
 
 			const ackResult = await adapter.postAck(
 				{
@@ -385,14 +396,25 @@ describe('GitHubRouterAdapter', () => {
 				{ agentType: 'backlog-manager', agentInput: {}, workItemId: 'card-123' },
 			);
 
-			expect(postTrelloAck).toHaveBeenCalledWith('p1', 'card-123', expect.any(String));
+			expect(dispatchPMAck).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: 'p1',
+					workItemId: 'card-123',
+					pmType: 'trello',
+					agentType: 'backlog-manager',
+					message: expect.any(String),
+				}),
+			);
 			expect(postGitHubAck).not.toHaveBeenCalled();
-			expect(ackResult?.commentId).toBe('trello-comment-id');
+			expect(ackResult?.commentId).toBe('pm-comment-id');
 		});
 
 		it('uses triggerResult.workItemId over event.workItemId for PM-focused agents', async () => {
 			vi.mocked(isPMFocusedAgent).mockResolvedValue(true);
-			vi.mocked(postTrelloAck).mockResolvedValue('comment-from-trigger');
+			vi.mocked(dispatchPMAck).mockResolvedValue({
+				commentId: 'comment-from-trigger',
+				message: 'Starting...',
+			});
 
 			await adapter.postAck(
 				{
@@ -409,7 +431,54 @@ describe('GitHubRouterAdapter', () => {
 				{ agentType: 'backlog-manager', agentInput: {}, workItemId: 'trigger-card-id' },
 			);
 
-			expect(postTrelloAck).toHaveBeenCalledWith('p1', 'trigger-card-id', expect.any(String));
+			expect(dispatchPMAck).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: 'p1',
+					workItemId: 'trigger-card-id',
+				}),
+			);
+		});
+
+		it('routes ack to PM tool for Linear-based projects (spec 017 plan 1 regression pin)', async () => {
+			// Failure mode A from spec 017's 2026-04-29 audit: Linear-based
+			// projects had no PM ack posted because `postPMAck` only handled
+			// Trello + JIRA. Now `postPMAck` delegates to `dispatchPMAck` which
+			// indexes the manifest registry — Linear is reachable for free.
+			vi.mocked(isPMFocusedAgent).mockResolvedValue(true);
+			vi.mocked(dispatchPMAck).mockResolvedValue({
+				commentId: 'linear-comment-uuid',
+				message: 'Starting...',
+			});
+
+			const linearProject: RouterProjectConfig = {
+				id: 'ucho',
+				repo: 'org/ucho',
+				pmType: 'linear',
+			};
+
+			const ackResult = await adapter.postAck(
+				{
+					projectIdentifier: 'org/ucho',
+					eventType: 'pull_request',
+					workItemId: 'MNG-100',
+					isCommentEvent: false,
+					// @ts-expect-error extended field
+					repoFullName: 'org/ucho',
+				},
+				{},
+				linearProject,
+				'backlog-manager',
+				{ agentType: 'backlog-manager', agentInput: {}, workItemId: 'MNG-100' },
+			);
+
+			expect(dispatchPMAck).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: 'ucho',
+					workItemId: 'MNG-100',
+					pmType: 'linear',
+				}),
+			);
+			expect(ackResult?.commentId).toBe('linear-comment-uuid');
 		});
 
 		it('uses triggerResult.workItemId over event.workItemId for GitHub PR run link', async () => {

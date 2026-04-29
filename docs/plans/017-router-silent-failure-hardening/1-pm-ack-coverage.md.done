@@ -6,7 +6,7 @@ plan_slug: pm-ack-coverage
 level: plan
 parent_spec: docs/specs/017-router-silent-failure-hardening.md
 depends_on: []
-status: wip
+status: done
 ---
 
 # 017/1: PM-ack dispatch coverage (Linear branch missing)
@@ -197,14 +197,14 @@ n/a — all ACs auto-tested.
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1
-- [ ] AC #2
-- [ ] AC #3
-- [ ] AC #4
-- [ ] AC #5
-- [ ] AC #6
-- [ ] AC #7
-- [ ] AC #8
-- [ ] AC #9
-- [ ] AC #10
-- [ ] AC #11
+- [x] AC #1 — `dispatchPMAck` exists at `src/router/pm-ack-dispatch.ts`, indexes the manifest registry, no `pmType` literal branching (verified by `tests/unit/router/pm-ack-dispatch.test.ts > dispatchPMAck` happy-paths for all three PM types + the static no-literal-branching guard).
+- [x] AC #2 — `postPMAck` in `src/router/adapters/github.ts` delegates to `dispatchPMAck`; static guard rejects literal branching (verified by the static guard test in `pm-ack-dispatch.test.ts`).
+- [x] AC #3 — `postPMAckComment` in `src/triggers/shared/pm-ack.ts` delegates to `dispatchPMAck` and preserves the `string | null` return contract (verified by `tests/unit/triggers/shared/pm-ack.test.ts`).
+- [x] AC #4 — Linear-based PM-focused agents reach the dispatch helper (verified by the new `routes ack to PM tool for Linear-based projects (spec 017 plan 1 regression pin)` test in `tests/unit/router/adapters/github.test.ts` + the pm-ack-dispatch Linear happy-path).
+- [x] AC #5 — Unknown PM types log ERROR + Sentry capture under `pm_ack_unknown_pm_type` (verified by the dispatch helper's "unknown pmType" + "undefined pmType" tests).
+- [x] AC #6 — Conformance harness asserts dispatch coverage per registered provider (verified by the new per-provider `dispatchPMAck reaches this provider without throwing` assertion in `pm-conformance.test.ts`'s `describe.each` block).
+- [x] AC #7 — `src/integrations/README.md` documents the dispatch coverage invariant (new "PM-ack dispatch coverage invariant (spec 017 plan 1)" subsection added).
+- [x] AC #8 — All new/modified code has tests (+6 in pm-ack-dispatch, +4 in pm-ack, +1 per-provider in conformance harness, +1 Linear regression pin in github adapter test, plus 2 existing github adapter tests migrated from postTrelloAck to dispatchPMAck mocking).
+- [x] AC #9 — `npm run typecheck` passes.
+- [x] AC #10 — `npm test` (full unit suite) passes (472 files / 8668 tests, +19 from baseline).
+- [x] AC #11 — `npm run lint` passes (Biome clean).

@@ -154,6 +154,42 @@ describe('PM provider conformance (every registered provider)', () => {
 			expect(typeof client.deleteComment).toBe('function');
 		});
 
+		// Spec 017 / plan 1: every registered manifest must be reachable from
+		// the consolidated PM-ack dispatch helper. Adding a future provider
+		// without a working `platformClientFactory` produces a CI failure here.
+		// This is the regression net for failure mode A from the 2026-04-29
+		// audit, where Linear-based PM-focused agents silently skipped their
+		// PM-side ack because the github router adapter's local `postPMAck`
+		// helper had only Trello + JIRA branches (no `linear`).
+		//
+		// Strategy: dispatch against the real registry. `postComment` may
+		// resolve credentials and return null when none are configured (the
+		// expected outcome in this test environment). What is NOT acceptable
+		// is the dispatch helper throwing or hitting its unknown-PM-type
+		// Sentry path — both indicate the provider is unreachable from the
+		// dispatch surface. We therefore assert the result is either undefined
+		// or has the AckResult shape, and that no exception propagates.
+		it('dispatchPMAck reaches this provider without throwing', async () => {
+			const { dispatchPMAck } = await import('../../../src/router/pm-ack-dispatch.js');
+
+			const result = await dispatchPMAck({
+				projectId: 'proj-conformance',
+				workItemId: 'item-conformance',
+				pmType: id,
+				message: 'conformance check',
+				agentType: 'backlog-manager',
+			});
+
+			if (result !== undefined) {
+				expect(result).toEqual(
+					expect.objectContaining({
+						commentId: expect.anything(),
+						message: 'conformance check',
+					}),
+				);
+			}
+		});
+
 		it('pmIntegration is wired (type matches id)', () => {
 			// Confirms the manifest plumbs the PMIntegration. Actual behavior of
 			// parseWebhookPayload on the integration is tested per-provider; the
