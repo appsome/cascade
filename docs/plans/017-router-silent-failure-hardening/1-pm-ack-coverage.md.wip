@@ -6,7 +6,7 @@ plan_slug: pm-ack-coverage
 level: plan
 parent_spec: docs/specs/017-router-silent-failure-hardening.md
 depends_on: []
-status: pending
+status: wip
 ---
 
 # 017/1: PM-ack dispatch coverage (Linear branch missing)
