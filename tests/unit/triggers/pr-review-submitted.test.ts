@@ -169,6 +169,7 @@ describe('PRReviewSubmittedTrigger', () => {
 					triggerCommentPath: '',
 					triggerCommentUrl: 'https://github.com/owner/repo/pull/42#pullrequestreview-100',
 					triggerEvent: 'scm:pr-review-submitted',
+					workItemId: 'abc123',
 				},
 				prNumber: 42,
 				prUrl: 'https://github.com/owner/repo/pull/42',
@@ -306,12 +307,33 @@ describe('PRReviewSubmittedTrigger', () => {
 					triggerCommentPath: '',
 					triggerCommentUrl: 'https://github.com/owner/repo/pull/42#pullrequestreview-200',
 					triggerEvent: 'scm:pr-review-submitted',
+					workItemId: 'abc123',
 				},
 				prNumber: 42,
 				prUrl: 'https://github.com/owner/repo/pull/42',
 				prTitle: 'Test PR',
 				workItemId: 'abc123',
 			});
+		});
+
+		it('propagates workItemId into agentInput so tryCreateRun persists it on agent_runs', async () => {
+			// Regression: respond-to-review runs were stored with NULL work_item_id
+			// because workItemId was set at the top-level only, not on agentInput.
+			// runTracking reads input.workItemId from agentInput; the dashboard's
+			// work-item page filters by agent_runs.work_item_id. Live incident:
+			// 4 respond-to-review runs for ucho/MNG-400 (PR #136) on 2026-04-28
+			// were invisible on the work-item page despite firing successfully.
+			const ctx: TriggerContext = {
+				project: mockProject,
+				source: 'github',
+				payload: makeReviewPayload(),
+				personaIdentities: mockPersonaIdentities,
+			};
+
+			const result = await trigger.handle(ctx);
+
+			expect(result?.workItemId).toBe('abc123');
+			expect(result?.agentInput.workItemId).toBe('abc123');
 		});
 
 		it('uses Review: commented fallback when commented review has null body', async () => {

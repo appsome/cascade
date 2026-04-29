@@ -225,6 +225,16 @@ describe('PRCommentMentionTrigger', () => {
 			expect(result?.agentInput.triggerCommentBody).toContain(`@${IMPLEMENTER_USERNAME}`);
 		});
 
+		it('propagates workItemId into agentInput so tryCreateRun persists it on agent_runs', async () => {
+			// Regression: see same test in pr-review-submitted.test.ts. tryCreateRun
+			// reads input.workItemId from agentInput, so omitting it leaves
+			// agent_runs.work_item_id NULL and hides the run from the work-item page.
+			const result = await trigger.handle(buildCtx());
+
+			expect(result?.workItemId).toBe(CARD_SHORT_ID);
+			expect(result?.agentInput.workItemId).toBe(CARD_SHORT_ID);
+		});
+
 		it('returns null when no @mention of implementer', async () => {
 			const result = await trigger.handle(
 				buildCtx({

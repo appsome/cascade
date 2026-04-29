@@ -79,6 +79,7 @@ export class PRReviewSubmittedTrigger implements TriggerHandler {
 				triggerCommentBody: reviewPayload.review.body || `Review: ${reviewPayload.review.state}`,
 				triggerCommentPath: '', // Reviews don't have a specific file path
 				triggerCommentUrl: reviewPayload.review.html_url,
+				workItemId,
 			},
 			prNumber,
 			prUrl: reviewPayload.pull_request.html_url,
