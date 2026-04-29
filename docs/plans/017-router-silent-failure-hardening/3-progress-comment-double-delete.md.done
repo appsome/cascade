@@ -6,7 +6,7 @@ plan_slug: progress-comment-double-delete
 level: plan
 parent_spec: docs/specs/017-router-silent-failure-hardening.md
 depends_on: []
-status: wip
+status: done
 ---
 
 # 017/3: Progress-comment double-delete race
@@ -198,13 +198,13 @@ n/a — all ACs auto-tested.
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1
-- [ ] AC #2
-- [ ] AC #3
-- [ ] AC #4
-- [ ] AC #5
-- [ ] AC #6
-- [ ] AC #7
-- [ ] AC #8
-- [ ] AC #9
-- [ ] AC #10
+- [x] AC #1 — `SessionStateData.initialCommentIdConsumed: boolean` exists, default `false` (verified by `tests/unit/gadgets/sessionState.test.ts > initialCommentIdConsumed flag > fresh state has initialCommentIdConsumed: false`).
+- [x] AC #2 — `deleteInitialComment` sets consumed on 200/404, leaves it false on other errors (verified by sessionState tests "on success" and "on error").
+- [x] AC #3 — `deleteProgressCommentOnSuccess` skips entirely when consumed=true (verified by `tests/unit/triggers/github/ack-comments.test.ts > skips entirely when initialCommentIdConsumed=true` + the headline "consumed=true wins over agentInput.ackCommentId fallback" regression pin).
+- [x] AC #4 — Legacy fallback preserved when consumed=false (verified by `consumed=false preserves the legacy fallback to agentInput.ackCommentId` test).
+- [x] AC #5 — `deletePRComment` treats 404 as success (verified by `tests/unit/github/client.test.ts > treats HTTP 404 as success` + 5xx/401/network rejection regression pins).
+- [x] AC #6 — Routine gadget-then-hook flow produces exactly one DELETE (covered by tests 3+5 in combination; no separate integration test required given per-component coverage).
+- [x] AC #7 — All new/modified code has tests (sessionState +7 tests, ack-comments +3, client +4 = 14 new tests).
+- [x] AC #8 — `npm run typecheck` passes (no errors).
+- [x] AC #9 — `npm test` (full unit suite) passes (470 files / 8649 tests, +14 from prior baseline).
+- [x] AC #10 — `npm run lint` passes (Biome clean).

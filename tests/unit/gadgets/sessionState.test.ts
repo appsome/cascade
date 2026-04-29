@@ -317,6 +317,85 @@ describe('deleteInitialComment', () => {
 	});
 });
 
+// ---------------------------------------------------------------------------
+// initialCommentIdConsumed flag (spec 017 / plan 3 — progress-comment-double-delete)
+// ---------------------------------------------------------------------------
+
+describe('initialCommentIdConsumed flag', () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+		initSessionState({ agentType: 'implementation' });
+	});
+
+	it('fresh state has initialCommentIdConsumed: false', () => {
+		const state = getSessionState();
+		expect(state.initialCommentIdConsumed).toBe(false);
+	});
+
+	it('recordInitialComment does NOT flip the consumed flag', () => {
+		recordInitialComment(123);
+		const state = getSessionState();
+		expect(state.initialCommentId).toBe(123);
+		expect(state.initialCommentIdConsumed).toBe(false);
+	});
+
+	it('deleteInitialComment on success: clears initialCommentId AND sets initialCommentIdConsumed=true', async () => {
+		recordInitialComment(99);
+		mockDeletePRComment.mockResolvedValue(undefined);
+
+		await deleteInitialComment('owner', 'repo');
+
+		const state = getSessionState();
+		expect(state.initialCommentId).toBeNull();
+		expect(state.initialCommentIdConsumed).toBe(true);
+	});
+
+	it('deleteInitialComment on error: does NOT set consumed (post-agent hook may retry)', async () => {
+		recordInitialComment(99);
+		mockDeletePRComment.mockRejectedValue(new Error('5xx server error'));
+
+		await deleteInitialComment('owner', 'repo');
+
+		const state = getSessionState();
+		expect(state.initialCommentId).toBe(99); // restored for retry
+		expect(state.initialCommentIdConsumed).toBe(false);
+	});
+
+	it('deleteInitialComment when initialCommentId is null: no-op, consumed stays false', async () => {
+		// Don't call recordInitialComment — id stays null
+		await deleteInitialComment('owner', 'repo');
+
+		const state = getSessionState();
+		expect(state.initialCommentId).toBeNull();
+		expect(state.initialCommentIdConsumed).toBe(false);
+		expect(mockDeletePRComment).not.toHaveBeenCalled();
+	});
+
+	it('clearInitialComment also sets initialCommentIdConsumed=true', () => {
+		// The sidecar-driven path: backend adapter signals subprocess already deleted.
+		// The post-agent callback must NOT redundantly delete after this signal.
+		recordInitialComment(456);
+		clearInitialComment();
+
+		const state = getSessionState();
+		expect(state.initialCommentId).toBeNull();
+		expect(state.initialCommentIdConsumed).toBe(true);
+	});
+
+	it('initSessionState resets initialCommentIdConsumed to false', () => {
+		// Set up a state where consumed=true, then re-init: the new run starts fresh.
+		recordInitialComment(789);
+		clearInitialComment();
+		expect(getSessionState().initialCommentIdConsumed).toBe(true);
+
+		initSessionState({ agentType: 'review' });
+
+		const state = getSessionState();
+		expect(state.initialCommentId).toBeNull();
+		expect(state.initialCommentIdConsumed).toBe(false);
+	});
+});
+
 describe('getSessionState', () => {
 	beforeEach(() => {
 		initSessionState({
