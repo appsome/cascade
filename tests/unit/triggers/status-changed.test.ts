@@ -15,6 +15,13 @@ vi.mock('../../../src/utils/logging.js', () => ({ logger: mockLogger }));
 vi.mock('../../../src/triggers/config-resolver.js', () => mockConfigResolverModule);
 vi.mock('../../../src/triggers/shared/trigger-check.js', () => mockTriggerCheckModule);
 
+// Spec 017 / plan 2: the capacity gate is now fail-closed when no
+// PM-provider AsyncLocalStorage scope is in effect (the case in these
+// unit tests). Mock as passthrough so trigger-logic assertions still run.
+vi.mock('../../../src/triggers/shared/pipeline-capacity-gate.js', () => ({
+	shouldBlockForPipelineCapacity: vi.fn().mockResolvedValue(false),
+}));
+
 // Mocks required for PM integration registration (pm/index.js side-effect)
 vi.mock('../../../src/config/provider.js', () => mockConfigProvider);
 vi.mock('../../../src/trello/client.js', () => mockTrelloClientModule);

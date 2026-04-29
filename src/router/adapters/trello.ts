@@ -25,6 +25,7 @@ import {
 	isReadyToProcessLabelAdded,
 	isSelfAuthoredTrelloComment,
 } from '../trello.js';
+import { withPMScopeForDispatch } from './_shared.js';
 
 export class TrelloRouterAdapter implements RouterPlatformAdapter {
 	readonly type = 'trello' as const;
@@ -125,7 +126,12 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'trello', payload };
-		return withTrelloCredentials(trelloCreds, () => triggerRegistry.dispatch(ctx));
+		// Wrap dispatch in BOTH credential scope AND PM-provider scope so that
+		// the pipeline-capacity gate at `src/triggers/shared/pipeline-capacity-gate.ts`
+		// can resolve `getPMProvider()`. See spec 017 plan 2.
+		return withTrelloCredentials(trelloCreds, () =>
+			withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),
+		);
 	}
 
 	async postAck(

@@ -19,6 +19,7 @@ import type { AckResult, ParsedWebhookEvent, RouterPlatformAdapter } from '../pl
 import { resolveJiraCredentials } from '../platformClients/index.js';
 import type { CascadeJob, JiraJob } from '../queue.js';
 import { sendAcknowledgeReaction } from '../reactions.js';
+import { withPMScopeForDispatch } from './_shared.js';
 
 const PROCESSABLE_EVENTS = [
 	'jira:issue_updated',
@@ -125,9 +126,12 @@ export class JiraRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'jira', payload };
+		// Wrap dispatch in BOTH credential scope AND PM-provider scope so that
+		// the pipeline-capacity gate at `src/triggers/shared/pipeline-capacity-gate.ts`
+		// can resolve `getPMProvider()`. See spec 017 plan 2.
 		return withJiraCredentials(
 			{ email: jiraCreds.email, apiToken: jiraCreds.apiToken, baseUrl: jiraCreds.baseUrl },
-			() => triggerRegistry.dispatch(ctx),
+			() => withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),
 		);
 	}
 

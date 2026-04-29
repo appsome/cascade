@@ -16,6 +16,7 @@
 
 import { getPMProvider } from '../../pm/context.js';
 import type { PMProvider } from '../../pm/types.js';
+import { captureException } from '../../sentry.js';
 import type { ProjectConfig } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
 import { isActivePipelineOverCapacity } from './backlog-check.js';
@@ -34,14 +35,36 @@ export async function shouldBlockForPipelineCapacity(args: {
 	try {
 		provider = getPMProvider();
 	} catch (err) {
-		// No credential scope — conservative: allow.
-		logger.warn('pipeline-capacity-gate: PM provider unavailable, allowing run', {
+		// Spec 017 / plan 2: fail closed.
+		//
+		// Before plan 2, this branch logged WARN and returned `false` (allow)
+		// because the PM router adapters dispatched outside PM-provider scope
+		// — hitting this branch was the routine path for every PM
+		// `status-changed` trigger. After plan 2 wraps every PM router adapter
+		// in `withPMScopeForDispatch`, hitting this branch represents a real
+		// AsyncLocalStorage scope leak that operators need to investigate.
+		// Failing closed (block + error + Sentry) is preferable to silently
+		// failing open and re-introducing the original incident class
+		// (multiple concurrent implementation runs against a project pinned
+		// to `maxInFlightItems: 1`).
+		const error = err instanceof Error ? err : new Error(String(err));
+		logger.error('pipeline-capacity-gate: PM provider unavailable, blocking run', {
 			source: args.source,
 			projectId: args.project.id,
 			workItemId: args.workItemId,
+			agentType: args.agentType,
 			error: String(err),
 		});
-		return false;
+		captureException(error, {
+			tags: { source: 'pipeline_capacity_gate_no_pm_provider' },
+			extra: {
+				projectId: args.project.id,
+				workItemId: args.workItemId,
+				agentType: args.agentType,
+				triggerSource: args.source,
+			},
+		});
+		return true;
 	}
 
 	const result = await isActivePipelineOverCapacity(args.project, provider, {

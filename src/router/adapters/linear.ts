@@ -19,6 +19,7 @@ import { loadProjectConfig, type RouterProjectConfig } from '../config.js';
 import type { AckResult, ParsedWebhookEvent, RouterPlatformAdapter } from '../platform-adapter.js';
 import { resolveLinearCredentials } from '../platformClients/index.js';
 import type { CascadeJob, LinearJob } from '../queue.js';
+import { withPMScopeForDispatch } from './_shared.js';
 
 // ============================================================================
 // Processable event combinations (action/type)
@@ -236,8 +237,12 @@ export class LinearRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'linear', payload };
+		// Wrap dispatch in BOTH credential scope AND PM-provider scope.
+		// The PM-provider scope is what the pipeline-capacity gate
+		// (src/triggers/shared/pipeline-capacity-gate.ts) needs to resolve
+		// `getPMProvider()`. Without it the gate fails closed (spec 017).
 		return withLinearCredentials({ apiKey: linearCreds.apiKey }, () =>
-			triggerRegistry.dispatch(ctx),
+			withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),
 		);
 	}
 
