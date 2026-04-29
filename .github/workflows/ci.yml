@@ -92,6 +92,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -111,6 +121,7 @@ jobs:
         run: npm run test:integration
         env:
           TEST_DATABASE_URL: postgresql://cascade_test:cascade_test@localhost:5433/cascade_test
+          REDIS_URL: redis://localhost:6379
 
   docker-build-check:
     name: Validate Docker builds
