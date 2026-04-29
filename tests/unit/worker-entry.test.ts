@@ -388,7 +388,7 @@ describe('dispatchJob - deferred ack (pendingAck=true)', () => {
 			actionType: 'updateCard',
 			receivedAt: '2024-01-01T00:00:00Z',
 			pendingAck: true,
-			ackMessage: 'do the thing',
+			ackContextHint: 'do the thing',
 			triggerResult: { agentType: 'implementation' } as never,
 		};
 
@@ -432,7 +432,7 @@ describe('dispatchJob - deferred ack (pendingAck=true)', () => {
 			webhookEvent: 'jira:issue_updated',
 			receivedAt: '2024-01-01T00:00:00Z',
 			pendingAck: true,
-			ackMessage: 'Fix bug',
+			ackContextHint: 'Fix bug',
 			triggerResult: { agentType: 'implementation' } as never,
 		};
 
@@ -476,7 +476,7 @@ describe('dispatchJob - deferred ack (pendingAck=true)', () => {
 			eventType: 'update/Issue',
 			receivedAt: '2024-01-01T00:00:00Z',
 			pendingAck: true,
-			ackMessage: 'Add feature',
+			ackContextHint: 'Add feature',
 			triggerResult: { agentType: 'implementation' } as never,
 		};
 
@@ -503,7 +503,7 @@ describe('dispatchJob - deferred ack (pendingAck=true)', () => {
 		);
 	});
 
-	it('falls back to ackMessage hint when payload extractor returns empty', async () => {
+	it('falls back to ackContextHint when payload extractor returns empty', async () => {
 		vi.mocked(extractJiraContext).mockReturnValueOnce('');
 		vi.mocked(generateAckMessage).mockResolvedValueOnce('🔨 generic');
 		vi.mocked(dispatchPMAck).mockResolvedValueOnce({
@@ -520,7 +520,7 @@ describe('dispatchJob - deferred ack (pendingAck=true)', () => {
 			webhookEvent: 'jira:issue_updated',
 			receivedAt: '2024-01-01T00:00:00Z',
 			pendingAck: true,
-			ackMessage: 'Fallback Title',
+			ackContextHint: 'Fallback Title',
 			triggerResult: { agentType: 'implementation' } as never,
 		};
 
@@ -547,7 +547,7 @@ describe('dispatchJob - deferred ack (pendingAck=true)', () => {
 			actionType: 'updateCard',
 			receivedAt: '2024-01-01T00:00:00Z',
 			pendingAck: true,
-			// no triggerResult and no ackMessage
+			// no triggerResult and no ackContextHint
 		};
 
 		await dispatchJob('job-no-agent', jobData, {} as never);

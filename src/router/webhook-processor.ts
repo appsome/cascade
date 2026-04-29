@@ -160,7 +160,7 @@ export async function processRouterWebhook(
 			// full payload context extractor returns nothing.
 			if (job.type === 'trello' || job.type === 'jira' || job.type === 'linear') {
 				job.pendingAck = true;
-				job.ackMessage = result.workItemTitle ?? undefined;
+				job.ackContextHint = result.workItemTitle ?? undefined;
 			}
 
 			// Schedule as a delayed BullMQ job; supersedes any prior pending job
@@ -223,6 +223,22 @@ export async function processRouterWebhook(
 				}
 			} catch (err) {
 				result.onBlocked?.();
+				// Other dispatch-failure paths flow through BullMQ retry →
+				// `worker.on('failed')` → `releaseLocksForFailedJob` → Sentry
+				// (per spec 015 plan 1). This catch handles a Redis-side failure
+				// BEFORE the job is enqueued, so it bypasses that pipeline. Capture
+				// to Sentry directly under a stable tag so coalesce-scheduling
+				// failures don't silently escape observability.
+				captureException(err instanceof Error ? err : new Error(String(err)), {
+					tags: { source: 'coalesce_schedule_failure' },
+					extra: {
+						projectId: project.id,
+						workItemId: result.workItemId,
+						agentType: result.agentType,
+						coalesceKey: result.coalesceKey,
+						adapterType: adapter.type,
+					},
+				});
 				logger.error(`Failed to schedule coalesced ${adapter.type} job`, {
 					error: String(err),
 					coalesceKey: result.coalesceKey,

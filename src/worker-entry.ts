@@ -56,8 +56,13 @@ export interface TrelloJobData {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
-	ackMessage?: string;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface GitHubJobData {
@@ -84,8 +89,13 @@ export interface JiraJobData {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
-	ackMessage?: string;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface SentryJobData {
@@ -112,8 +122,13 @@ export interface LinearJobData {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
-	ackMessage?: string;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface ManualRunJobData {
@@ -209,8 +224,8 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
  * posts it via `dispatchPMAck`. Returns the new comment ID string, or
  * `undefined` if the ack could not be posted (non-fatal).
  *
- * The stored `ackMessage` field contains the `workItemTitle` as a context hint
- * fallback when payload extraction returns nothing.
+ * The stored `ackContextHint` field contains the `workItemTitle` as a fallback
+ * for `generateAckMessage` when payload extraction returns nothing.
  */
 async function postDeferredAck(
 	projectId: string,
@@ -274,7 +289,7 @@ export async function dispatchJob(
 						'trello',
 						jobData.payload,
 						jobData.triggerResult?.agentType ?? undefined,
-						jobData.ackMessage,
+						jobData.ackContextHint,
 					)) ?? trelloAckCommentId;
 			}
 			await processTrelloWebhook(
@@ -321,7 +336,7 @@ export async function dispatchJob(
 						'jira',
 						jobData.payload,
 						jobData.triggerResult?.agentType ?? undefined,
-						jobData.ackMessage,
+						jobData.ackContextHint,
 					)) ?? jiraAckCommentId;
 			}
 			await processJiraWebhook(
@@ -366,7 +381,7 @@ export async function dispatchJob(
 						'linear',
 						jobData.payload,
 						jobData.triggerResult?.agentType ?? undefined,
-						jobData.ackMessage,
+						jobData.ackContextHint,
 					)) ?? linearAckCommentId;
 			}
 			await processLinearWebhook(

@@ -23,8 +23,13 @@ export interface TrelloJob {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
-	ackMessage?: string;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface GitHubJob {
@@ -51,8 +56,13 @@ export interface JiraJob {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
-	ackMessage?: string;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface SentryJob {
@@ -78,8 +88,13 @@ export interface LinearJob {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
-	ackMessage?: string;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export type CascadeJob = TrelloJob | GitHubJob | JiraJob | SentryJob | LinearJob;
