@@ -99,7 +99,12 @@ export function IntegrationForm({ projectId }: { projectId: string }) {
 			{activeTab === 'scm' && <SCMTab projectId={projectId} project={projectQuery.data} />}
 
 			{activeTab === 'alerting' && (
-				<AlertingTab projectId={projectId} alertingIntegration={alertingIntegration} />
+				<AlertingTab
+					projectId={projectId}
+					alertingIntegration={alertingIntegration}
+					pmProvider={pmIntegration ? pmProvider : undefined}
+					pmConfig={pmIntegration ? (pmIntegration.config as Record<string, unknown>) : undefined}
+				/>
 			)}
 		</div>
 	);

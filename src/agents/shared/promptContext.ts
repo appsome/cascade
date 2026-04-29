@@ -51,6 +51,10 @@ function getPromptTerminology(pmType: string | undefined) {
  * Shared by the llmist agent lifecycle (agents/base.ts) and the adapter
  * (backends/adapter.ts) so both backends use consistent prompt context
  * building logic including PM-type normalization and work item noun i18n.
+ *
+ * @param alertingResultsContainerId - Optional PM container ID from Sentry integration config.
+ *   Used as a fallback `backlogListId` when no PM backlog is configured on the project.
+ *   Populated by `secretOrchestrator` for alerting agent runs.
  */
 export function buildPromptContext(
 	workItemId: string | undefined,
@@ -64,10 +68,14 @@ export function buildPromptContext(
 		originalWorkItemUrl: string;
 		detectedAgentType: string;
 	},
+	alertingResultsContainerId?: string,
 ): PromptContext {
 	const pmProvider = getPMProviderOrNull();
 	const listIds = getListIds(project);
 	const terminology = getPromptTerminology(pmProvider?.type);
+
+	// Fall back to the Sentry-configured results container when no PM backlog is set.
+	const backlogListId = listIds.backlogListId ?? alertingResultsContainerId;
 
 	return {
 		workItemId,
@@ -75,6 +83,7 @@ export function buildPromptContext(
 		projectId: project.id,
 		baseBranch: project.baseBranch,
 		...listIds,
+		backlogListId,
 		pmType: pmProvider?.type,
 		...terminology,
 		maxInFlightItems: project.maxInFlightItems ?? 1,

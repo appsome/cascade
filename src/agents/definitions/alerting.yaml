@@ -58,9 +58,12 @@ prompts:
     2. Read the relevant source files to understand context and confirm the root cause
     3. Summarize: what failed, why, and which code path is responsible
     <% if (it.backlogListId) { %>
-    4. Create a bug fix work item in the backlog (list/status ID: <%= it.backlogListId %>) with:
+    4. Create a bug fix investigation work item in the backlog (list/status ID: <%= it.backlogListId %>) with:
        - Title: short, actionable description (e.g. "Fix: NullPointerException in PaymentService.charge")
        - Description: root cause, error details, affected file/function, link to the alert issue
+    <% } else if (it.workItemId) { %>
+    4. Post a comment on the current work item (<%= it.workItemId %>) summarising the investigation:
+       root cause, affected file/function, and recommended fix approach
     <% } %>
     5. Call Finish when done
 
@@ -69,3 +72,4 @@ hint: |
   Focus on frames from application code (not third-party library frames).
   Check the event timeline/breadcrumbs for the action or request that preceded the failure.
   Keep the bug work item description concise and actionable.
+  If no backlog list is configured, post investigation findings as a comment on the triggering work item.

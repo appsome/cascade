@@ -467,6 +467,87 @@ describe('buildPromptContext', () => {
 		});
 	});
 
+	describe('with alertingResultsContainerId fallback', () => {
+		beforeEach(() => {
+			const mockProvider = createMockPMProvider();
+			mockProvider.type = 'trello';
+			mockProvider.getWorkItemUrl = vi.fn((id: string) => `https://trello.com/c/${id}`);
+			mockGetPMProvider.mockReturnValue(mockProvider);
+		});
+
+		it('uses alertingResultsContainerId as backlogListId when PM backlog is not set', () => {
+			const projectWithoutBacklog = makeProject({
+				trello: {
+					boardId: 'board1',
+					lists: {
+						splitting: 'list1',
+						planning: 'list2',
+						todo: 'list3',
+						// no backlog
+						inProgress: 'list-in-progress',
+						inReview: 'list-in-review',
+						merged: 'list-merged',
+					},
+					labels: { readyToProcess: 'label1', processed: 'label2' },
+				},
+			});
+			const ctx = buildPromptContext(
+				'card123',
+				projectWithoutBacklog as never,
+				undefined,
+				undefined,
+				undefined,
+				'sentry-container-id',
+			);
+			expect(ctx.backlogListId).toBe('sentry-container-id');
+		});
+
+		it('PM backlogListId takes precedence over alertingResultsContainerId', () => {
+			const ctx = buildPromptContext(
+				'card123',
+				makeProject() as never,
+				undefined,
+				undefined,
+				undefined,
+				'sentry-container-id',
+			);
+			// makeProject has trello.lists.backlog = 'list-backlog'
+			expect(ctx.backlogListId).toBe('list-backlog');
+		});
+
+		it('alertingResultsContainerId is ignored when it is undefined', () => {
+			const ctx = buildPromptContext(
+				'card123',
+				makeProject() as never,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+			);
+			// still gets backlog from PM config
+			expect(ctx.backlogListId).toBe('list-backlog');
+		});
+
+		it('backlogListId remains undefined when neither PM backlog nor alertingResultsContainerId is set', () => {
+			const projectWithoutBacklog = makeProject({
+				trello: {
+					boardId: 'board1',
+					lists: {
+						splitting: 'list1',
+						planning: 'list2',
+						todo: 'list3',
+						inProgress: 'list-in-progress',
+						inReview: 'list-in-review',
+						merged: 'list-merged',
+					},
+					labels: { readyToProcess: 'label1', processed: 'label2' },
+				},
+			});
+			const ctx = buildPromptContext('card123', projectWithoutBacklog as never);
+			expect(ctx.backlogListId).toBeUndefined();
+		});
+	});
+
 	describe('without PM provider (no PM context — e.g. debug agent from dashboard)', () => {
 		beforeEach(() => {
 			mockGetPMProvider.mockReturnValue(null);
