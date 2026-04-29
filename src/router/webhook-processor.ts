@@ -10,24 +10,22 @@
  * from `pm/webhook-handler.ts` but for the router (enqueue-only) path.
  */
 
-import {
-	clearPendingCreate,
-	getCoalesceWindowMs,
-	registerPendingCreate,
-} from '../pm/create-coalesce-window.js';
+import { getCoalesceWindowMs } from '../pm/coalesce-config.js';
 import { captureException } from '../sentry.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import { logger } from '../utils/logging.js';
 import { isDuplicateAction, markActionProcessed } from './action-dedup.js';
 import {
 	checkAgentTypeConcurrency,
+	clearAgentTypeEnqueued,
+	clearRecentlyDispatched,
 	markAgentTypeEnqueued,
 	markRecentlyDispatched,
 } from './agent-type-lock.js';
 import { classifyLockState } from './lock-state-classifier.js';
 import type { RouterPlatformAdapter } from './platform-adapter.js';
-import { addJob } from './queue.js';
-import { isWorkItemLocked, markWorkItemEnqueued } from './work-item-lock.js';
+import { addJob, scheduleCoalescedJob } from './queue.js';
+import { clearWorkItemEnqueued, isWorkItemLocked, markWorkItemEnqueued } from './work-item-lock.js';
 
 export interface ProcessRouterWebhookResult {
 	/** Whether the event was of a processable type for this platform. */
@@ -142,30 +140,131 @@ export async function processRouterWebhook(
 		projectId: project.id,
 	});
 
-	// Step 7b: Coalesce PM create→update sequences. JIRA emits two webhooks when
-	// a user creates an issue in a non-default workflow column (initial status,
-	// then transition); without this, both fire different agents on the same
-	// work item. A 'create' trigger waits the coalesce window; an 'update'
-	// trigger arriving for the same key within the window supersedes it.
-	if (result.coalesceKey) {
-		if (result.coalesceRole === 'update') {
-			clearPendingCreate(result.coalesceKey);
-		} else if (result.coalesceRole === 'create') {
-			const windowMs = getCoalesceWindowMs();
-			const outcome = await registerPendingCreate(result.coalesceKey, windowMs);
-			if (outcome === 'superseded') {
-				logger.info(`${adapter.type} create trigger superseded by follow-up update`, {
-					agentType: result.agentType,
-					workItemId: result.workItemId,
-					projectId: project.id,
-				});
+	// Step 7b: BullMQ delayed-job coalescing for PM status-change sequences.
+	//
+	// Any dispatch for the same coalesceKey (${projectId}:${workItemId}) within
+	// the settle window supersedes the prior pending dispatch — regardless of
+	// agent type or whether the event is a create vs. update. The ack comment
+	// is deferred to job fire time (pendingAck=true) so no orphaned ack comment
+	// is left behind when a job is superseded.
+	if (result.coalesceKey && result.agentType) {
+		const windowMs = getCoalesceWindowMs();
+		if (windowMs > 0) {
+			// Build the job without ack info (ack will be posted at fire time).
+			const job = adapter.buildJob(event, payload, project, result, undefined);
+
+			// Attach the deferred-ack marker. Store workItemTitle as a context
+			// hint (not a literal comment) — the worker calls generateAckMessage()
+			// at fire time to produce a proper role-aware ack message. Storing
+			// the title lets generateAckMessage fall back gracefully when the
+			// full payload context extractor returns nothing.
+			if (job.type === 'trello' || job.type === 'jira' || job.type === 'linear') {
+				job.pendingAck = true;
+				job.ackContextHint = result.workItemTitle ?? undefined;
+			}
+
+			// Schedule as a delayed BullMQ job; supersedes any prior pending job
+			// with the same key so only the latest event fires.
+			try {
+				const { superseded, supersededJobData, activeExists } = await scheduleCoalescedJob(
+					job,
+					result.coalesceKey,
+					windowMs,
+				);
+
+				// When an active job is already running for this coalesceKey, BullMQ
+				// would silently ignore any new add(). No new job was created, so skip
+				// lock marking and return an accurate decision reason.
+				if (activeExists) {
+					logger.info(`${adapter.type} coalesced dispatch skipped — active job already running`, {
+						agentType: result.agentType,
+						workItemId: result.workItemId,
+						projectId: project.id,
+						coalesceKey: result.coalesceKey,
+					});
+					return {
+						shouldProcess: true,
+						projectId: project.id,
+						decisionReason: `Coalesced dispatch skipped: active job already running for work item ${result.workItemId ?? '(unknown)'}`,
+					};
+				}
+
+				if (superseded) {
+					logger.info(`${adapter.type} coalesced dispatch superseded prior pending job`, {
+						agentType: result.agentType,
+						workItemId: result.workItemId,
+						projectId: project.id,
+						coalesceKey: result.coalesceKey,
+					});
+					// Release in-memory locks for the superseded job to prevent phantom
+					// lock entries from accumulating. existing.remove() removes the
+					// delayed BullMQ entry but does NOT fire worker.on('failed'), so
+					// releaseLocksForFailedJob is never called for the superseded job.
+					// Manually undo the lock marks from the previous webhook invocation.
+					if (supersededJobData && supersededJobData.type !== 'github') {
+						const oldAgentType = supersededJobData.triggerResult?.agentType;
+						const oldWorkItemId = supersededJobData.triggerResult?.workItemId;
+						if (oldAgentType) {
+							if (oldWorkItemId) {
+								clearWorkItemEnqueued(supersededJobData.projectId, oldWorkItemId, oldAgentType);
+							}
+							clearAgentTypeEnqueued(supersededJobData.projectId, oldAgentType);
+							clearRecentlyDispatched(supersededJobData.projectId, oldAgentType, oldWorkItemId);
+						}
+					}
+				} else {
+					logger.info(`${adapter.type} coalesced dispatch scheduled`, {
+						agentType: result.agentType,
+						workItemId: result.workItemId,
+						projectId: project.id,
+						coalesceKey: result.coalesceKey,
+						delayMs: windowMs,
+					});
+				}
+			} catch (err) {
 				result.onBlocked?.();
+				// Other dispatch-failure paths flow through BullMQ retry →
+				// `worker.on('failed')` → `releaseLocksForFailedJob` → Sentry
+				// (per spec 015 plan 1). This catch handles a Redis-side failure
+				// BEFORE the job is enqueued, so it bypasses that pipeline. Capture
+				// to Sentry directly under a stable tag so coalesce-scheduling
+				// failures don't silently escape observability.
+				captureException(err instanceof Error ? err : new Error(String(err)), {
+					tags: { source: 'coalesce_schedule_failure' },
+					extra: {
+						projectId: project.id,
+						workItemId: result.workItemId,
+						agentType: result.agentType,
+						coalesceKey: result.coalesceKey,
+						adapterType: adapter.type,
+					},
+				});
+				logger.error(`Failed to schedule coalesced ${adapter.type} job`, {
+					error: String(err),
+					coalesceKey: result.coalesceKey,
+					workItemId: result.workItemId,
+				});
 				return {
 					shouldProcess: true,
 					projectId: project.id,
-					decisionReason: 'Create trigger superseded by follow-up update (coalesce window)',
+					decisionReason: 'Failed to schedule coalesced job to Redis',
 				};
 			}
+
+			// Mark locks for the newly-scheduled job exactly as the non-coalesced
+			// path does. (The activeExists early-return above ensures we only reach
+			// this point when a real new job was added to the queue.)
+			if (result.workItemId) {
+				markWorkItemEnqueued(project.id, result.workItemId, result.agentType);
+			}
+			markRecentlyDispatched(project.id, result.agentType, result.workItemId);
+			markAgentTypeEnqueued(project.id, result.agentType);
+
+			return {
+				shouldProcess: true,
+				projectId: project.id,
+				decisionReason: `Coalesced dispatch scheduled: ${result.agentType} agent for work item ${result.workItemId ?? '(unknown)'}`,
+			};
 		}
 	}
 

@@ -22,6 +22,13 @@ import { registerBuiltInEngines } from './backends/bootstrap.js';
 import { loadEnvConfigSafe } from './config/env.js';
 import { loadConfig } from './config/provider.js';
 import { getDb } from './db/client.js';
+import {
+	extractJiraContext,
+	extractLinearContext,
+	extractTrelloContext,
+	generateAckMessage,
+} from './router/ackMessageGenerator.js';
+import { dispatchPMAck } from './router/pm-ack-dispatch.js';
 import { captureException, flush, setTag } from './sentry.js';
 import {
 	createTriggerRegistry,
@@ -47,6 +54,15 @@ export interface TrelloJobData {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface GitHubJobData {
@@ -71,6 +87,15 @@ export interface JiraJobData {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface SentryJobData {
@@ -95,6 +120,15 @@ export interface LinearJobData {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface ManualRunJobData {
@@ -181,27 +215,91 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
 	}
 }
 
+/**
+ * Post the deferred acknowledgment comment for a coalesced PM job.
+ *
+ * Called at job fire time when `pendingAck=true`. Extracts a context snippet
+ * from the stored webhook payload, calls `generateAckMessage()` to produce a
+ * proper role-aware message (same path as the non-coalesced `postAck`), then
+ * posts it via `dispatchPMAck`. Returns the new comment ID string, or
+ * `undefined` if the ack could not be posted (non-fatal).
+ *
+ * The stored `ackContextHint` field contains the `workItemTitle` as a fallback
+ * for `generateAckMessage` when payload extraction returns nothing.
+ */
+async function postDeferredAck(
+	projectId: string,
+	workItemId: string,
+	pmType: 'trello' | 'jira' | 'linear',
+	payload: unknown,
+	agentType: string | undefined,
+	contextHint: string | undefined,
+): Promise<string | undefined> {
+	// Extract context from the raw payload (same source as the non-coalesced postAck path).
+	let contextSnippet =
+		pmType === 'jira'
+			? extractJiraContext(payload)
+			: pmType === 'linear'
+				? extractLinearContext(payload)
+				: extractTrelloContext(payload);
+
+	// Fall back to the stored workItemTitle hint when the extractor yields nothing.
+	if (!contextSnippet && contextHint) {
+		contextSnippet = `Issue: ${contextHint}`;
+	}
+
+	const message = await generateAckMessage(agentType ?? '', contextSnippet, projectId);
+
+	const ackResult = await dispatchPMAck({
+		projectId,
+		workItemId,
+		pmType,
+		message,
+		agentType,
+	}).catch((err) => {
+		logger.warn(`[Worker] Deferred ${pmType} ack failed (non-fatal)`, { error: String(err) });
+		return undefined;
+	});
+
+	return ackResult?.commentId != null ? String(ackResult.commentId) : undefined;
+}
+
 export async function dispatchJob(
 	jobId: string,
 	jobData: JobData,
 	triggerRegistry: TriggerRegistry,
 ): Promise<void> {
 	switch (jobData.type) {
-		case 'trello':
+		case 'trello': {
 			logger.info('[Worker] Processing Trello job', {
 				jobId,
 				workItemId: jobData.workItemId,
 				actionType: jobData.actionType,
 				ackCommentId: jobData.ackCommentId,
+				pendingAck: jobData.pendingAck,
 				hasTriggerResult: !!jobData.triggerResult,
 			});
+			// Deferred ack: post the ack comment that was skipped at schedule time.
+			let trelloAckCommentId = jobData.ackCommentId;
+			if (jobData.pendingAck) {
+				trelloAckCommentId =
+					(await postDeferredAck(
+						jobData.projectId,
+						jobData.workItemId,
+						'trello',
+						jobData.payload,
+						jobData.triggerResult?.agentType ?? undefined,
+						jobData.ackContextHint,
+					)) ?? trelloAckCommentId;
+			}
 			await processTrelloWebhook(
 				jobData.payload,
 				triggerRegistry,
-				jobData.ackCommentId,
+				trelloAckCommentId,
 				jobData.triggerResult,
 			);
 			break;
+		}
 		case 'github':
 			logger.info('[Worker] Processing GitHub job', {
 				jobId,
@@ -219,21 +317,36 @@ export async function dispatchJob(
 				jobData.triggerResult,
 			);
 			break;
-		case 'jira':
+		case 'jira': {
 			logger.info('[Worker] Processing JIRA job', {
 				jobId,
 				issueKey: jobData.issueKey,
 				webhookEvent: jobData.webhookEvent,
 				ackCommentId: jobData.ackCommentId,
+				pendingAck: jobData.pendingAck,
 				hasTriggerResult: !!jobData.triggerResult,
 			});
+			// Deferred ack: post the ack comment that was skipped at schedule time.
+			let jiraAckCommentId = jobData.ackCommentId;
+			if (jobData.pendingAck) {
+				jiraAckCommentId =
+					(await postDeferredAck(
+						jobData.projectId,
+						jobData.issueKey,
+						'jira',
+						jobData.payload,
+						jobData.triggerResult?.agentType ?? undefined,
+						jobData.ackContextHint,
+					)) ?? jiraAckCommentId;
+			}
 			await processJiraWebhook(
 				jobData.payload,
 				triggerRegistry,
-				jobData.ackCommentId,
+				jiraAckCommentId,
 				jobData.triggerResult,
 			);
 			break;
+		}
 		case 'sentry':
 			logger.info('[Worker] Processing Sentry job', {
 				jobId,
@@ -248,22 +361,37 @@ export async function dispatchJob(
 				jobData.triggerResult,
 			);
 			break;
-		case 'linear':
+		case 'linear': {
 			logger.info('[Worker] Processing Linear job', {
 				jobId,
 				projectId: jobData.projectId,
 				workItemId: jobData.workItemId,
 				eventType: jobData.eventType,
 				ackCommentId: jobData.ackCommentId,
+				pendingAck: jobData.pendingAck,
 				hasTriggerResult: !!jobData.triggerResult,
 			});
+			// Deferred ack: post the ack comment that was skipped at schedule time.
+			let linearAckCommentId = jobData.ackCommentId;
+			if (jobData.pendingAck && jobData.workItemId) {
+				linearAckCommentId =
+					(await postDeferredAck(
+						jobData.projectId,
+						jobData.workItemId,
+						'linear',
+						jobData.payload,
+						jobData.triggerResult?.agentType ?? undefined,
+						jobData.ackContextHint,
+					)) ?? linearAckCommentId;
+			}
 			await processLinearWebhook(
 				jobData.payload,
 				triggerRegistry,
-				jobData.ackCommentId,
+				linearAckCommentId,
 				jobData.triggerResult,
 			);
 			break;
+		}
 		case 'manual-run':
 		case 'retry-run':
 		case 'debug-analysis':

@@ -21,6 +21,15 @@ export interface TrelloJob {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface GitHubJob {
@@ -45,6 +54,15 @@ export interface JiraJob {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export interface SentryJob {
@@ -68,6 +86,15 @@ export interface LinearJob {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/**
+	 * Work-item title stored as a context hint, passed to `generateAckMessage`
+	 * at deferred-ack fire time. NOT the literal comment text — the worker
+	 * generates the actual ack message via the role-aware LLM path. Renamed
+	 * from `ackMessage` (which read like the literal text) for clarity.
+	 */
+	ackContextHint?: string;
 }
 
 export type CascadeJob = TrelloJob | GitHubJob | JiraJob | SentryJob | LinearJob;
@@ -108,6 +135,86 @@ export async function addJob(job: CascadeJob): Promise<string> {
 	const result = await jobQueue.add(job.type, job, { jobId });
 	logger.info('Job added to queue', { id: result.id, type: job.type });
 	return result.id ?? jobId;
+}
+
+export interface ScheduleCoalescedJobResult {
+	jobId: string;
+	superseded: boolean;
+	/**
+	 * Data from the superseded delayed/waiting job. Present when
+	 * `superseded === true`. Used by the caller to release the orphaned
+	 * in-memory locks that were marked for the previous dispatch — those locks
+	 * are never released via `worker.on('failed')` because BullMQ's `remove()`
+	 * does not fire that event.
+	 */
+	supersededJobData?: CascadeJob;
+	/**
+	 * True when a job with the same coalesce ID is already active (running).
+	 * BullMQ silently ignores `add()` for a duplicate active jobId, so we skip
+	 * the `add()` call entirely and return this flag instead. The caller must
+	 * NOT mark new in-memory locks — no new job was created.
+	 */
+	activeExists?: boolean;
+}
+
+/**
+ * Schedule a PM job as a BullMQ delayed job keyed by `coalesceKey`.
+ *
+ * If a delayed/waiting job with the same key already exists it is removed
+ * before the new job is added, superseding the previous dispatch. Active
+ * (already running) jobs are left untouched and `activeExists` is returned
+ * as `true` so the caller can skip lock marking.
+ *
+ * This replaces the in-memory `create-coalesce-window.ts` mechanism with a
+ * durable, per-key deduplication that coalesces across any agent types for
+ * the same `${projectId}:${workItemId}` within the settle window.
+ */
+export async function scheduleCoalescedJob(
+	job: CascadeJob,
+	coalesceKey: string,
+	delayMs: number,
+): Promise<ScheduleCoalescedJobResult> {
+	const jobId = `coalesce:${coalesceKey}`;
+	let superseded = false;
+	let supersededJobData: CascadeJob | undefined;
+
+	// Remove any existing delayed/waiting job with the same key so the new
+	// job supersedes it. Active jobs are left alone — they are already running.
+	//
+	// TOCTOU NOTE: The getJob → getState → remove → add sequence is not atomic.
+	// Two concurrent webhook handlers for the same coalesceKey can both read the
+	// existing delayed job, both attempt remove() (the second no-ops silently),
+	// and then both call add() — but BullMQ silently ignores a duplicate jobId
+	// for a non-completed job, so the second event's data is lost. In practice
+	// this race is rare: the coalesce window exists for events tens-to-hundreds
+	// of milliseconds apart, not truly simultaneous arrivals. A Lua-script
+	// atomic compare-and-replace would close this, but the operational impact is
+	// low enough that a documented best-effort approach is acceptable here.
+	const existing = await jobQueue.getJob(jobId);
+	if (existing) {
+		const state = await existing.getState();
+		if (state === 'delayed' || state === 'waiting') {
+			// Capture job data before removal so the caller can release orphaned locks.
+			supersededJobData = existing.data;
+			await existing.remove();
+			superseded = true;
+		} else if (state === 'active') {
+			// An active (running) job already holds this ID. BullMQ would
+			// silently ignore add() for a duplicate active jobId — no new job
+			// would be created, but the caller wouldn't know and would mark
+			// locks incorrectly. Return activeExists=true so the caller can
+			// log accurately and skip marking new in-memory locks.
+			logger.info('Coalesced job skipped — active job with same ID already running', {
+				jobId,
+				coalesceKey,
+			});
+			return { jobId, superseded: false, activeExists: true };
+		}
+	}
+
+	await jobQueue.add(job.type, job, { jobId, delay: delayMs });
+	logger.info('Coalesced job scheduled', { jobId, coalesceKey, delayMs, superseded });
+	return { jobId, superseded, supersededJobData };
 }
 
 // Get queue stats

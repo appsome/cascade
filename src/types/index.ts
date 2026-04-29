@@ -113,17 +113,17 @@ export interface TriggerResult {
 	 *  Allows the trigger handler to undo side-effects like dedup marking. */
 	onBlocked?: () => void;
 	/**
-	 * Coalesce key for handling PM provider create→update webhook sequences.
+	 * Coalesce key for PM status-change webhook deduplication.
 	 *
-	 * Set on `pm:status-changed` triggers where the event kind matters. When
-	 * `coalesceRole === 'create'`, the router defers dispatch by the
-	 * `PM_CREATE_COALESCE_WINDOW_MS` window; an incoming `'update'` event
-	 * sharing the same key within the window supersedes the create.
+	 * Set on `pm:status-changed` triggers. When present, the router schedules
+	 * the job as a BullMQ delayed job keyed by this value. Any subsequent
+	 * event sharing the same key within the `PM_COALESCE_WINDOW_MS` window
+	 * supersedes the prior pending dispatch — regardless of agent type or
+	 * whether the event is a create vs. update.
 	 *
 	 * Typical key: `${projectId}:${workItemId}`.
 	 */
 	coalesceKey?: string;
-	coalesceRole?: 'create' | 'update';
 }
 
 export interface TriggerHandler {
