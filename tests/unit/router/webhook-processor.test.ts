@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../src/utils/logging.js', () => ({
 	logger: {
@@ -10,6 +10,10 @@ vi.mock('../../../src/utils/logging.js', () => ({
 }));
 vi.mock('../../../src/router/queue.js', () => ({
 	addJob: vi.fn(),
+	scheduleCoalescedJob: vi.fn().mockResolvedValue({ jobId: 'coalesce:key', superseded: false }),
+}));
+vi.mock('../../../src/pm/coalesce-config.js', () => ({
+	getCoalesceWindowMs: vi.fn().mockReturnValue(10_000),
 }));
 vi.mock('../../../src/router/work-item-lock.js', () => ({
 	isWorkItemLocked: vi.fn().mockResolvedValue({ locked: false }),
@@ -31,13 +35,18 @@ vi.mock('../../../src/sentry.js', () => ({
 	captureException: vi.fn(),
 }));
 
+import { getCoalesceWindowMs } from '../../../src/pm/coalesce-config.js';
 import { isDuplicateAction, markActionProcessed } from '../../../src/router/action-dedup.js';
-import { checkAgentTypeConcurrency } from '../../../src/router/agent-type-lock.js';
+import {
+	checkAgentTypeConcurrency,
+	markAgentTypeEnqueued,
+	markRecentlyDispatched,
+} from '../../../src/router/agent-type-lock.js';
 import type { RouterProjectConfig } from '../../../src/router/config.js';
 import { classifyLockState } from '../../../src/router/lock-state-classifier.js';
 import type { RouterPlatformAdapter } from '../../../src/router/platform-adapter.js';
 import type { CascadeJob } from '../../../src/router/queue.js';
-import { addJob } from '../../../src/router/queue.js';
+import { addJob, scheduleCoalescedJob } from '../../../src/router/queue.js';
 import { processRouterWebhook } from '../../../src/router/webhook-processor.js';
 import { isWorkItemLocked, markWorkItemEnqueued } from '../../../src/router/work-item-lock.js';
 import { captureException } from '../../../src/sentry.js';
@@ -555,77 +564,180 @@ describe('processRouterWebhook', () => {
 		expect(markWorkItemEnqueued).not.toHaveBeenCalled();
 	});
 
-	describe('create→update coalesce', () => {
-		// Use real timers + short window so the create resolves quickly when not superseded.
-		const origWindow = process.env.PM_CREATE_COALESCE_WINDOW_MS;
-
+	describe('BullMQ delayed-job coalescing', () => {
 		beforeEach(() => {
-			process.env.PM_CREATE_COALESCE_WINDOW_MS = '50';
-		});
-		afterEach(() => {
-			if (origWindow === undefined) delete process.env.PM_CREATE_COALESCE_WINDOW_MS;
-			else process.env.PM_CREATE_COALESCE_WINDOW_MS = origWindow;
+			vi.mocked(scheduleCoalescedJob).mockResolvedValue({
+				jobId: 'coalesce:p1:PROJ-1',
+				superseded: false,
+			});
+			vi.mocked(getCoalesceWindowMs).mockReturnValue(10_000);
 		});
 
-		it('supersedes a create when an update with the same coalesceKey arrives within the window', async () => {
-			vi.mocked(addJob).mockResolvedValue('job-x');
-			const createAdapter = makeMockAdapter({
+		it('schedules a coalesced delayed job when coalesceKey is present', async () => {
+			const adapter = makeMockAdapter({
 				type: 'jira',
 				dispatchWithCredentials: vi.fn().mockResolvedValue({
 					agentType: 'implementation',
 					agentInput: { workItemId: 'PROJ-1' },
 					workItemId: 'PROJ-1',
 					coalesceKey: 'p1:PROJ-1',
-					coalesceRole: 'create',
-				}),
-			});
-			const updateAdapter = makeMockAdapter({
-				type: 'jira',
-				dispatchWithCredentials: vi.fn().mockResolvedValue({
-					agentType: 'planning',
-					agentInput: { workItemId: 'PROJ-1' },
-					workItemId: 'PROJ-1',
-					coalesceKey: 'p1:PROJ-1',
-					coalesceRole: 'update',
-				}),
-			});
-
-			// Fire create (will wait 50ms) and update (resolves immediately, supersedes create)
-			const createPromise = processRouterWebhook(createAdapter, {}, mockTriggerRegistry);
-			// Let microtasks settle so the create registers before we dispatch the update.
-			await Promise.resolve();
-			const updateResult = await processRouterWebhook(updateAdapter, {}, mockTriggerRegistry);
-			const createResult = await createPromise;
-
-			expect(createResult.decisionReason).toBe(
-				'Create trigger superseded by follow-up update (coalesce window)',
-			);
-			expect(updateResult.shouldProcess).toBe(true);
-
-			// Only one job should have been queued (for the update), not two.
-			expect(addJob).toHaveBeenCalledTimes(1);
-			expect(createAdapter.postAck).not.toHaveBeenCalled();
-			expect(updateAdapter.postAck).toHaveBeenCalled();
-		});
-
-		it('proceeds with a create when no update arrives within the window', async () => {
-			vi.mocked(addJob).mockResolvedValue('job-solo');
-			const adapter = makeMockAdapter({
-				type: 'jira',
-				dispatchWithCredentials: vi.fn().mockResolvedValue({
-					agentType: 'planning',
-					agentInput: { workItemId: 'PROJ-2' },
-					workItemId: 'PROJ-2',
-					coalesceKey: 'p1:PROJ-2',
-					coalesceRole: 'create',
 				}),
 			});
 
 			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
 
 			expect(result.shouldProcess).toBe(true);
-			expect(addJob).toHaveBeenCalledTimes(1);
-			expect(adapter.postAck).toHaveBeenCalled();
+			expect(result.decisionReason).toMatch(/Coalesced dispatch scheduled/);
+			expect(scheduleCoalescedJob).toHaveBeenCalledOnce();
+			// Immediate addJob must NOT be called for coalesced path
+			expect(addJob).not.toHaveBeenCalled();
+		});
+
+		it('does not post ack immediately for coalesced jobs (deferred to fire time)', async () => {
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'PROJ-1' },
+					workItemId: 'PROJ-1',
+					coalesceKey: 'p1:PROJ-1',
+				}),
+			});
+
+			await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			// postAck must NOT be called at schedule time for coalesced jobs
+			expect(adapter.postAck).not.toHaveBeenCalled();
+		});
+
+		it('marks work-item lock when coalesced job is scheduled', async () => {
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'PROJ-1' },
+					workItemId: 'PROJ-1',
+					coalesceKey: 'p1:PROJ-1',
+				}),
+			});
+
+			await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			expect(markWorkItemEnqueued).toHaveBeenCalledWith('p1', 'PROJ-1', 'implementation');
+			expect(markRecentlyDispatched).toHaveBeenCalled();
+			expect(markAgentTypeEnqueued).toHaveBeenCalled();
+		});
+
+		it('logs supersede when prior delayed job is replaced (UA-21 regression)', async () => {
+			vi.mocked(scheduleCoalescedJob).mockResolvedValue({
+				jobId: 'coalesce:p1:PROJ-1',
+				superseded: true,
+			});
+			const { logger } = await import('../../../src/utils/logging.js');
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'planning',
+					agentInput: { workItemId: 'PROJ-1' },
+					workItemId: 'PROJ-1',
+					coalesceKey: 'p1:PROJ-1',
+				}),
+			});
+
+			await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			const infoCall = vi
+				.mocked(logger.info)
+				.mock.calls.find((c) => String(c[0]).includes('superseded prior pending job'));
+			expect(infoCall).toBeDefined();
+		});
+
+		it('falls back to normal dispatch when PM_COALESCE_WINDOW_MS=0 (disable)', async () => {
+			vi.mocked(getCoalesceWindowMs).mockReturnValue(0);
+			vi.mocked(addJob).mockResolvedValue('job-immediate');
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'PROJ-2' },
+					workItemId: 'PROJ-2',
+					coalesceKey: 'p1:PROJ-2',
+				}),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			// Window=0 → normal path: scheduleCoalescedJob not called, addJob called
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+			expect(addJob).toHaveBeenCalled();
+			expect(result.decisionReason).toMatch(/Job queued/);
+		});
+
+		it('coalesce isolation: different coalesceKeys do not interfere', async () => {
+			vi.mocked(addJob).mockResolvedValue('job-y');
+			const adapterA = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'PROJ-10' },
+					workItemId: 'PROJ-10',
+					coalesceKey: 'p1:PROJ-10',
+				}),
+			});
+			const adapterB = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'PROJ-20' },
+					workItemId: 'PROJ-20',
+					coalesceKey: 'p1:PROJ-20',
+				}),
+			});
+
+			await processRouterWebhook(adapterA, {}, mockTriggerRegistry);
+			await processRouterWebhook(adapterB, {}, mockTriggerRegistry);
+
+			// scheduleCoalescedJob called once per distinct key
+			expect(scheduleCoalescedJob).toHaveBeenCalledTimes(2);
+			expect(vi.mocked(scheduleCoalescedJob).mock.calls[0][1]).toBe('p1:PROJ-10');
+			expect(vi.mocked(scheduleCoalescedJob).mock.calls[1][1]).toBe('p1:PROJ-20');
+		});
+
+		it('returns error reason when scheduleCoalescedJob throws', async () => {
+			vi.mocked(scheduleCoalescedJob).mockRejectedValue(new Error('Redis down'));
+			const onBlocked = vi.fn();
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'PROJ-3' },
+					workItemId: 'PROJ-3',
+					coalesceKey: 'p1:PROJ-3',
+					onBlocked,
+				}),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			expect(result.decisionReason).toBe('Failed to schedule coalesced job to Redis');
+			expect(onBlocked).toHaveBeenCalledOnce();
+			expect(addJob).not.toHaveBeenCalled();
+		});
+
+		it('skips coalesce path when no agentType (no-agent triggers)', async () => {
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: null,
+					agentInput: {},
+					coalesceKey: 'p1:PROJ-99',
+				}),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+			expect(result.decisionReason).toBe('Trigger completed without agent (PM operation)');
 		});
 	});
 });

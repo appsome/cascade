@@ -21,6 +21,10 @@ export interface TrelloJob {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/** Pre-generated ack message text for deferred ack posting. */
+	ackMessage?: string;
 }
 
 export interface GitHubJob {
@@ -45,6 +49,10 @@ export interface JiraJob {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/** Pre-generated ack message text for deferred ack posting. */
+	ackMessage?: string;
 }
 
 export interface SentryJob {
@@ -68,6 +76,10 @@ export interface LinearJob {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/** Pre-generated ack message text for deferred ack posting. */
+	ackMessage?: string;
 }
 
 export type CascadeJob = TrelloJob | GitHubJob | JiraJob | SentryJob | LinearJob;
@@ -108,6 +120,47 @@ export async function addJob(job: CascadeJob): Promise<string> {
 	const result = await jobQueue.add(job.type, job, { jobId });
 	logger.info('Job added to queue', { id: result.id, type: job.type });
 	return result.id ?? jobId;
+}
+
+export interface ScheduleCoalescedJobResult {
+	jobId: string;
+	superseded: boolean;
+}
+
+/**
+ * Schedule a PM job as a BullMQ delayed job keyed by `coalesceKey`.
+ *
+ * If a delayed/waiting job with the same key already exists it is removed
+ * before the new job is added, superseding the previous dispatch. Active
+ * (already running) jobs are left untouched; `superseded` is `false` in that
+ * case.
+ *
+ * This replaces the in-memory `create-coalesce-window.ts` mechanism with a
+ * durable, per-key deduplication that coalesces across any agent types for
+ * the same `${projectId}:${workItemId}` within the settle window.
+ */
+export async function scheduleCoalescedJob(
+	job: CascadeJob,
+	coalesceKey: string,
+	delayMs: number,
+): Promise<ScheduleCoalescedJobResult> {
+	const jobId = `coalesce:${coalesceKey}`;
+	let superseded = false;
+
+	// Remove any existing delayed/waiting job with the same key so the new
+	// job supersedes it. Active jobs are left alone — they are already running.
+	const existing = await jobQueue.getJob(jobId);
+	if (existing) {
+		const state = await existing.getState();
+		if (state === 'delayed' || state === 'waiting') {
+			await existing.remove();
+			superseded = true;
+		}
+	}
+
+	await jobQueue.add(job.type, job, { jobId, delay: delayMs });
+	logger.info('Coalesced job scheduled', { jobId, coalesceKey, delayMs, superseded });
+	return { jobId, superseded };
 }
 
 // Get queue stats

@@ -338,17 +338,17 @@ describe('JiraStatusChangedTrigger', () => {
 	});
 
 	describe('coalesce metadata', () => {
-		it('tags move results with coalesceRole: "update" and a project-scoped key', async () => {
+		it('tags move results with a project-scoped coalesceKey (no coalesceRole)', async () => {
 			const ctx = buildCtx({
 				statusChangeItems: [{ field: 'status', fromString: 'Backlog', toString: 'Splitting' }],
 			});
 			const result = await trigger.handle(ctx);
 
 			expect(result?.coalesceKey).toBe('test-project:PROJ-42');
-			expect(result?.coalesceRole).toBe('update');
+			expect(result).not.toHaveProperty('coalesceRole');
 		});
 
-		it('tags create results with coalesceRole: "create" and a project-scoped key', async () => {
+		it('tags create results with a project-scoped coalesceKey (no coalesceRole)', async () => {
 			mockTriggerConfig(true, { onCreate: true, onMove: true });
 			const ctx = buildCtx({
 				webhookEvent: 'jira:issue_created',
@@ -357,7 +357,7 @@ describe('JiraStatusChangedTrigger', () => {
 			const result = await trigger.handle(ctx);
 
 			expect(result?.coalesceKey).toBe('test-project:PROJ-42');
-			expect(result?.coalesceRole).toBe('create');
+			expect(result).not.toHaveProperty('coalesceRole');
 		});
 	});
 });

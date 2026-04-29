@@ -160,7 +160,6 @@ export class JiraStatusChangedTrigger implements TriggerHandler {
 			workItemUrl,
 			workItemTitle,
 			coalesceKey: `${ctx.project.id}:${issueKey}`,
-			coalesceRole: isCreate ? 'create' : 'update',
 		};
 	}
 }

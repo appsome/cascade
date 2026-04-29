@@ -22,6 +22,7 @@ import { registerBuiltInEngines } from './backends/bootstrap.js';
 import { loadEnvConfigSafe } from './config/env.js';
 import { loadConfig } from './config/provider.js';
 import { getDb } from './db/client.js';
+import { dispatchPMAck } from './router/pm-ack-dispatch.js';
 import { captureException, flush, setTag } from './sentry.js';
 import {
 	createTriggerRegistry,
@@ -47,6 +48,10 @@ export interface TrelloJobData {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/** Pre-generated ack message text for deferred ack posting. */
+	ackMessage?: string;
 }
 
 export interface GitHubJobData {
@@ -71,6 +76,10 @@ export interface JiraJobData {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/** Pre-generated ack message text for deferred ack posting. */
+	ackMessage?: string;
 }
 
 export interface SentryJobData {
@@ -95,6 +104,10 @@ export interface LinearJobData {
 	receivedAt: string;
 	ackCommentId?: string;
 	triggerResult?: TriggerResult;
+	/** When true, the worker must post the ack comment before processing (deferred ack). */
+	pendingAck?: boolean;
+	/** Pre-generated ack message text for deferred ack posting. */
+	ackMessage?: string;
 }
 
 export interface ManualRunJobData {
@@ -181,27 +194,47 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
 	}
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: webhook dispatch pipeline with deferred ack for coalesced PM jobs
 export async function dispatchJob(
 	jobId: string,
 	jobData: JobData,
 	triggerRegistry: TriggerRegistry,
 ): Promise<void> {
 	switch (jobData.type) {
-		case 'trello':
+		case 'trello': {
 			logger.info('[Worker] Processing Trello job', {
 				jobId,
 				workItemId: jobData.workItemId,
 				actionType: jobData.actionType,
 				ackCommentId: jobData.ackCommentId,
+				pendingAck: jobData.pendingAck,
 				hasTriggerResult: !!jobData.triggerResult,
 			});
+			// Deferred ack: post the ack comment that was skipped at schedule time.
+			let trelloAckCommentId = jobData.ackCommentId;
+			if (jobData.pendingAck) {
+				const ackResult = await dispatchPMAck({
+					projectId: jobData.projectId,
+					workItemId: jobData.workItemId,
+					pmType: 'trello',
+					message: jobData.ackMessage ?? '✍️ On it',
+					agentType: jobData.triggerResult?.agentType ?? undefined,
+				}).catch((err) => {
+					logger.warn('[Worker] Deferred Trello ack failed (non-fatal)', { error: String(err) });
+					return undefined;
+				});
+				if (ackResult?.commentId != null) {
+					trelloAckCommentId = String(ackResult.commentId);
+				}
+			}
 			await processTrelloWebhook(
 				jobData.payload,
 				triggerRegistry,
-				jobData.ackCommentId,
+				trelloAckCommentId,
 				jobData.triggerResult,
 			);
 			break;
+		}
 		case 'github':
 			logger.info('[Worker] Processing GitHub job', {
 				jobId,
@@ -219,21 +252,40 @@ export async function dispatchJob(
 				jobData.triggerResult,
 			);
 			break;
-		case 'jira':
+		case 'jira': {
 			logger.info('[Worker] Processing JIRA job', {
 				jobId,
 				issueKey: jobData.issueKey,
 				webhookEvent: jobData.webhookEvent,
 				ackCommentId: jobData.ackCommentId,
+				pendingAck: jobData.pendingAck,
 				hasTriggerResult: !!jobData.triggerResult,
 			});
+			// Deferred ack: post the ack comment that was skipped at schedule time.
+			let jiraAckCommentId = jobData.ackCommentId;
+			if (jobData.pendingAck) {
+				const ackResult = await dispatchPMAck({
+					projectId: jobData.projectId,
+					workItemId: jobData.issueKey,
+					pmType: 'jira',
+					message: jobData.ackMessage ?? '✍️ On it',
+					agentType: jobData.triggerResult?.agentType ?? undefined,
+				}).catch((err) => {
+					logger.warn('[Worker] Deferred JIRA ack failed (non-fatal)', { error: String(err) });
+					return undefined;
+				});
+				if (ackResult?.commentId != null) {
+					jiraAckCommentId = String(ackResult.commentId);
+				}
+			}
 			await processJiraWebhook(
 				jobData.payload,
 				triggerRegistry,
-				jobData.ackCommentId,
+				jiraAckCommentId,
 				jobData.triggerResult,
 			);
 			break;
+		}
 		case 'sentry':
 			logger.info('[Worker] Processing Sentry job', {
 				jobId,
@@ -248,22 +300,41 @@ export async function dispatchJob(
 				jobData.triggerResult,
 			);
 			break;
-		case 'linear':
+		case 'linear': {
 			logger.info('[Worker] Processing Linear job', {
 				jobId,
 				projectId: jobData.projectId,
 				workItemId: jobData.workItemId,
 				eventType: jobData.eventType,
 				ackCommentId: jobData.ackCommentId,
+				pendingAck: jobData.pendingAck,
 				hasTriggerResult: !!jobData.triggerResult,
 			});
+			// Deferred ack: post the ack comment that was skipped at schedule time.
+			let linearAckCommentId = jobData.ackCommentId;
+			if (jobData.pendingAck && jobData.workItemId) {
+				const ackResult = await dispatchPMAck({
+					projectId: jobData.projectId,
+					workItemId: jobData.workItemId,
+					pmType: 'linear',
+					message: jobData.ackMessage ?? '✍️ On it',
+					agentType: jobData.triggerResult?.agentType ?? undefined,
+				}).catch((err) => {
+					logger.warn('[Worker] Deferred Linear ack failed (non-fatal)', { error: String(err) });
+					return undefined;
+				});
+				if (ackResult?.commentId != null) {
+					linearAckCommentId = String(ackResult.commentId);
+				}
+			}
 			await processLinearWebhook(
 				jobData.payload,
 				triggerRegistry,
-				jobData.ackCommentId,
+				linearAckCommentId,
 				jobData.triggerResult,
 			);
 			break;
+		}
 		case 'manual-run':
 		case 'retry-run':
 		case 'debug-analysis':

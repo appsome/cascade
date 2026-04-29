@@ -352,19 +352,19 @@ describe('LinearStatusChangedTrigger', () => {
 	});
 
 	describe('coalesce metadata', () => {
-		it('tags move results with coalesceRole: "update" and a project-scoped key', async () => {
+		it('tags move results with a project-scoped coalesceKey (no coalesceRole)', async () => {
 			const result = await trigger.handle(buildCtx({ newStateId: 'state-todo' }));
 			expect(result?.coalesceKey).toBe('proj-linear:TEAM-123');
-			expect(result?.coalesceRole).toBe('update');
+			expect(result).not.toHaveProperty('coalesceRole');
 		});
 
-		it('tags create results with coalesceRole: "create" and a project-scoped key', async () => {
+		it('tags create results with a project-scoped coalesceKey (no coalesceRole)', async () => {
 			mockTriggerConfig(true, { onCreate: true, onMove: true });
 			const result = await trigger.handle(
 				buildCtx({ action: 'create', newStateId: 'state-todo', noUpdatedFrom: true }),
 			);
 			expect(result?.coalesceKey).toBe('proj-linear:TEAM-123');
-			expect(result?.coalesceRole).toBe('create');
+			expect(result).not.toHaveProperty('coalesceRole');
 		});
 	});
 });

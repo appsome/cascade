@@ -10,11 +10,7 @@
  * from `pm/webhook-handler.ts` but for the router (enqueue-only) path.
  */
 
-import {
-	clearPendingCreate,
-	getCoalesceWindowMs,
-	registerPendingCreate,
-} from '../pm/create-coalesce-window.js';
+import { getCoalesceWindowMs } from '../pm/coalesce-config.js';
 import { captureException } from '../sentry.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import { logger } from '../utils/logging.js';
@@ -26,7 +22,7 @@ import {
 } from './agent-type-lock.js';
 import { classifyLockState } from './lock-state-classifier.js';
 import type { RouterPlatformAdapter } from './platform-adapter.js';
-import { addJob } from './queue.js';
+import { addJob, scheduleCoalescedJob } from './queue.js';
 import { isWorkItemLocked, markWorkItemEnqueued } from './work-item-lock.js';
 
 export interface ProcessRouterWebhookResult {
@@ -142,30 +138,74 @@ export async function processRouterWebhook(
 		projectId: project.id,
 	});
 
-	// Step 7b: Coalesce PM create→update sequences. JIRA emits two webhooks when
-	// a user creates an issue in a non-default workflow column (initial status,
-	// then transition); without this, both fire different agents on the same
-	// work item. A 'create' trigger waits the coalesce window; an 'update'
-	// trigger arriving for the same key within the window supersedes it.
-	if (result.coalesceKey) {
-		if (result.coalesceRole === 'update') {
-			clearPendingCreate(result.coalesceKey);
-		} else if (result.coalesceRole === 'create') {
-			const windowMs = getCoalesceWindowMs();
-			const outcome = await registerPendingCreate(result.coalesceKey, windowMs);
-			if (outcome === 'superseded') {
-				logger.info(`${adapter.type} create trigger superseded by follow-up update`, {
-					agentType: result.agentType,
-					workItemId: result.workItemId,
-					projectId: project.id,
-				});
+	// Step 7b: BullMQ delayed-job coalescing for PM status-change sequences.
+	//
+	// Any dispatch for the same coalesceKey (${projectId}:${workItemId}) within
+	// the settle window supersedes the prior pending dispatch — regardless of
+	// agent type or whether the event is a create vs. update. The ack comment
+	// is deferred to job fire time (pendingAck=true) so no orphaned ack comment
+	// is left behind when a job is superseded.
+	if (result.coalesceKey && result.agentType) {
+		const windowMs = getCoalesceWindowMs();
+		if (windowMs > 0) {
+			// Build the job without ack info (ack will be posted at fire time).
+			const job = adapter.buildJob(event, payload, project, result, undefined);
+
+			// Attach the deferred-ack marker and a pre-generated message so the
+			// worker does not need to re-derive the context.
+			if (job.type === 'trello' || job.type === 'jira' || job.type === 'linear') {
+				job.pendingAck = true;
+				// Use workItemTitle as context if available; generateAckMessage
+				// already has its own LLM-backed fallback path via the adapter.
+				job.ackMessage = result.workItemTitle ?? undefined;
+			}
+
+			// Schedule as a delayed BullMQ job; supersedes any prior pending job
+			// with the same key so only the latest event fires.
+			try {
+				const { superseded } = await scheduleCoalescedJob(job, result.coalesceKey, windowMs);
+				if (superseded) {
+					logger.info(`${adapter.type} coalesced dispatch superseded prior pending job`, {
+						agentType: result.agentType,
+						workItemId: result.workItemId,
+						projectId: project.id,
+						coalesceKey: result.coalesceKey,
+					});
+				} else {
+					logger.info(`${adapter.type} coalesced dispatch scheduled`, {
+						agentType: result.agentType,
+						workItemId: result.workItemId,
+						projectId: project.id,
+						coalesceKey: result.coalesceKey,
+						delayMs: windowMs,
+					});
+				}
+			} catch (err) {
 				result.onBlocked?.();
+				logger.error(`Failed to schedule coalesced ${adapter.type} job`, {
+					error: String(err),
+					coalesceKey: result.coalesceKey,
+					workItemId: result.workItemId,
+				});
 				return {
 					shouldProcess: true,
 					projectId: project.id,
-					decisionReason: 'Create trigger superseded by follow-up update (coalesce window)',
+					decisionReason: 'Failed to schedule coalesced job to Redis',
 				};
 			}
+
+			// Mark locks exactly as the non-coalesced path does.
+			if (result.workItemId) {
+				markWorkItemEnqueued(project.id, result.workItemId, result.agentType);
+			}
+			markRecentlyDispatched(project.id, result.agentType, result.workItemId);
+			markAgentTypeEnqueued(project.id, result.agentType);
+
+			return {
+				shouldProcess: true,
+				projectId: project.id,
+				decisionReason: `Coalesced dispatch scheduled: ${result.agentType} agent for work item ${result.workItemId ?? '(unknown)'}`,
+			};
 		}
 	}
 
