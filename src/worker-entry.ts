@@ -249,7 +249,6 @@ async function postDeferredAck(
 	return ackResult?.commentId != null ? String(ackResult.commentId) : undefined;
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: webhook dispatch pipeline with deferred ack for coalesced PM jobs
 export async function dispatchJob(
 	jobId: string,
 	jobData: JobData,
