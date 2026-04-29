@@ -23,7 +23,7 @@ export interface TrelloJob {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** Pre-generated ack message text for deferred ack posting. */
+	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
 	ackMessage?: string;
 }
 
@@ -51,7 +51,7 @@ export interface JiraJob {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** Pre-generated ack message text for deferred ack posting. */
+	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
 	ackMessage?: string;
 }
 
@@ -78,7 +78,7 @@ export interface LinearJob {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** Pre-generated ack message text for deferred ack posting. */
+	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
 	ackMessage?: string;
 }
 
@@ -149,6 +149,16 @@ export async function scheduleCoalescedJob(
 
 	// Remove any existing delayed/waiting job with the same key so the new
 	// job supersedes it. Active jobs are left alone — they are already running.
+	//
+	// TOCTOU NOTE: The getJob → getState → remove → add sequence is not atomic.
+	// Two concurrent webhook handlers for the same coalesceKey can both read the
+	// existing delayed job, both attempt remove() (the second no-ops silently),
+	// and then both call add() — but BullMQ silently ignores a duplicate jobId
+	// for a non-completed job, so the second event's data is lost. In practice
+	// this race is rare: the coalesce window exists for events tens-to-hundreds
+	// of milliseconds apart, not truly simultaneous arrivals. A Lua-script
+	// atomic compare-and-replace would close this, but the operational impact is
+	// low enough that a documented best-effort approach is acceptable here.
 	const existing = await jobQueue.getJob(jobId);
 	if (existing) {
 		const state = await existing.getState();

@@ -151,12 +151,13 @@ export async function processRouterWebhook(
 			// Build the job without ack info (ack will be posted at fire time).
 			const job = adapter.buildJob(event, payload, project, result, undefined);
 
-			// Attach the deferred-ack marker and a pre-generated message so the
-			// worker does not need to re-derive the context.
+			// Attach the deferred-ack marker. Store workItemTitle as a context
+			// hint (not a literal comment) — the worker calls generateAckMessage()
+			// at fire time to produce a proper role-aware ack message. Storing
+			// the title lets generateAckMessage fall back gracefully when the
+			// full payload context extractor returns nothing.
 			if (job.type === 'trello' || job.type === 'jira' || job.type === 'linear') {
 				job.pendingAck = true;
-				// Use workItemTitle as context if available; generateAckMessage
-				// already has its own LLM-backed fallback path via the adapter.
 				job.ackMessage = result.workItemTitle ?? undefined;
 			}
 

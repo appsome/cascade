@@ -22,6 +22,12 @@ import { registerBuiltInEngines } from './backends/bootstrap.js';
 import { loadEnvConfigSafe } from './config/env.js';
 import { loadConfig } from './config/provider.js';
 import { getDb } from './db/client.js';
+import {
+	extractJiraContext,
+	extractLinearContext,
+	extractTrelloContext,
+	generateAckMessage,
+} from './router/ackMessageGenerator.js';
 import { dispatchPMAck } from './router/pm-ack-dispatch.js';
 import { captureException, flush, setTag } from './sentry.js';
 import {
@@ -50,7 +56,7 @@ export interface TrelloJobData {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** Pre-generated ack message text for deferred ack posting. */
+	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
 	ackMessage?: string;
 }
 
@@ -78,7 +84,7 @@ export interface JiraJobData {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** Pre-generated ack message text for deferred ack posting. */
+	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
 	ackMessage?: string;
 }
 
@@ -106,7 +112,7 @@ export interface LinearJobData {
 	triggerResult?: TriggerResult;
 	/** When true, the worker must post the ack comment before processing (deferred ack). */
 	pendingAck?: boolean;
-	/** Pre-generated ack message text for deferred ack posting. */
+	/** workItemTitle stored as a context hint for generateAckMessage at fire time. NOT the literal comment text. */
 	ackMessage?: string;
 }
 
@@ -194,6 +200,55 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
 	}
 }
 
+/**
+ * Post the deferred acknowledgment comment for a coalesced PM job.
+ *
+ * Called at job fire time when `pendingAck=true`. Extracts a context snippet
+ * from the stored webhook payload, calls `generateAckMessage()` to produce a
+ * proper role-aware message (same path as the non-coalesced `postAck`), then
+ * posts it via `dispatchPMAck`. Returns the new comment ID string, or
+ * `undefined` if the ack could not be posted (non-fatal).
+ *
+ * The stored `ackMessage` field contains the `workItemTitle` as a context hint
+ * fallback when payload extraction returns nothing.
+ */
+async function postDeferredAck(
+	projectId: string,
+	workItemId: string,
+	pmType: 'trello' | 'jira' | 'linear',
+	payload: unknown,
+	agentType: string | undefined,
+	contextHint: string | undefined,
+): Promise<string | undefined> {
+	// Extract context from the raw payload (same source as the non-coalesced postAck path).
+	let contextSnippet =
+		pmType === 'jira'
+			? extractJiraContext(payload)
+			: pmType === 'linear'
+				? extractLinearContext(payload)
+				: extractTrelloContext(payload);
+
+	// Fall back to the stored workItemTitle hint when the extractor yields nothing.
+	if (!contextSnippet && contextHint) {
+		contextSnippet = `Issue: ${contextHint}`;
+	}
+
+	const message = await generateAckMessage(agentType ?? '', contextSnippet, projectId);
+
+	const ackResult = await dispatchPMAck({
+		projectId,
+		workItemId,
+		pmType,
+		message,
+		agentType,
+	}).catch((err) => {
+		logger.warn(`[Worker] Deferred ${pmType} ack failed (non-fatal)`, { error: String(err) });
+		return undefined;
+	});
+
+	return ackResult?.commentId != null ? String(ackResult.commentId) : undefined;
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: webhook dispatch pipeline with deferred ack for coalesced PM jobs
 export async function dispatchJob(
 	jobId: string,
@@ -213,19 +268,15 @@ export async function dispatchJob(
 			// Deferred ack: post the ack comment that was skipped at schedule time.
 			let trelloAckCommentId = jobData.ackCommentId;
 			if (jobData.pendingAck) {
-				const ackResult = await dispatchPMAck({
-					projectId: jobData.projectId,
-					workItemId: jobData.workItemId,
-					pmType: 'trello',
-					message: jobData.ackMessage ?? '✍️ On it',
-					agentType: jobData.triggerResult?.agentType ?? undefined,
-				}).catch((err) => {
-					logger.warn('[Worker] Deferred Trello ack failed (non-fatal)', { error: String(err) });
-					return undefined;
-				});
-				if (ackResult?.commentId != null) {
-					trelloAckCommentId = String(ackResult.commentId);
-				}
+				trelloAckCommentId =
+					(await postDeferredAck(
+						jobData.projectId,
+						jobData.workItemId,
+						'trello',
+						jobData.payload,
+						jobData.triggerResult?.agentType ?? undefined,
+						jobData.ackMessage,
+					)) ?? trelloAckCommentId;
 			}
 			await processTrelloWebhook(
 				jobData.payload,
@@ -264,19 +315,15 @@ export async function dispatchJob(
 			// Deferred ack: post the ack comment that was skipped at schedule time.
 			let jiraAckCommentId = jobData.ackCommentId;
 			if (jobData.pendingAck) {
-				const ackResult = await dispatchPMAck({
-					projectId: jobData.projectId,
-					workItemId: jobData.issueKey,
-					pmType: 'jira',
-					message: jobData.ackMessage ?? '✍️ On it',
-					agentType: jobData.triggerResult?.agentType ?? undefined,
-				}).catch((err) => {
-					logger.warn('[Worker] Deferred JIRA ack failed (non-fatal)', { error: String(err) });
-					return undefined;
-				});
-				if (ackResult?.commentId != null) {
-					jiraAckCommentId = String(ackResult.commentId);
-				}
+				jiraAckCommentId =
+					(await postDeferredAck(
+						jobData.projectId,
+						jobData.issueKey,
+						'jira',
+						jobData.payload,
+						jobData.triggerResult?.agentType ?? undefined,
+						jobData.ackMessage,
+					)) ?? jiraAckCommentId;
 			}
 			await processJiraWebhook(
 				jobData.payload,
@@ -313,19 +360,15 @@ export async function dispatchJob(
 			// Deferred ack: post the ack comment that was skipped at schedule time.
 			let linearAckCommentId = jobData.ackCommentId;
 			if (jobData.pendingAck && jobData.workItemId) {
-				const ackResult = await dispatchPMAck({
-					projectId: jobData.projectId,
-					workItemId: jobData.workItemId,
-					pmType: 'linear',
-					message: jobData.ackMessage ?? '✍️ On it',
-					agentType: jobData.triggerResult?.agentType ?? undefined,
-				}).catch((err) => {
-					logger.warn('[Worker] Deferred Linear ack failed (non-fatal)', { error: String(err) });
-					return undefined;
-				});
-				if (ackResult?.commentId != null) {
-					linearAckCommentId = String(ackResult.commentId);
-				}
+				linearAckCommentId =
+					(await postDeferredAck(
+						jobData.projectId,
+						jobData.workItemId,
+						'linear',
+						jobData.payload,
+						jobData.triggerResult?.agentType ?? undefined,
+						jobData.ackMessage,
+					)) ?? linearAckCommentId;
 			}
 			await processLinearWebhook(
 				jobData.payload,
