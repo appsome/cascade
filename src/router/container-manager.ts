@@ -480,7 +480,13 @@ async function createAndMonitorContainer(
  */
 export async function spawnWorker(job: Job<CascadeJob>): Promise<void> {
 	const jobId = job.id ?? `unknown-${Date.now()}`;
-	const containerName = `cascade-worker-${jobId}`;
+	// Docker container names accept only `[a-zA-Z0-9][a-zA-Z0-9_.-]`. PR #1226
+	// introduced coalesced-job IDs shaped `coalesce:${projectId}:${workItemId}`
+	// where the colons crashed `createContainer` with HTTP 400 — every coalesced
+	// job that fired post-deploy failed to spawn. Sanitize disallowed chars to
+	// underscores; the original `jobId` stays intact in logs and dedup keys.
+	const containerSafeJobId = jobId.replace(/[^a-zA-Z0-9_.-]/g, '_');
+	const containerName = `cascade-worker-${containerSafeJobId}`;
 
 	// Resolve projectId once — used for both credential env and work-item lock tracking
 	const projectId = await extractProjectIdFromJob(job.data);
