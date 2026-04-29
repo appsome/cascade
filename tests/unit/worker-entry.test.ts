@@ -40,6 +40,21 @@ vi.mock('../../src/triggers/sentry/webhook-handler.js', () => ({
 	processSentryWebhook: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../src/triggers/linear/webhook-handler.js', () => ({
+	processLinearWebhook: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../src/router/pm-ack-dispatch.js', () => ({
+	dispatchPMAck: vi.fn(),
+}));
+
+vi.mock('../../src/router/ackMessageGenerator.js', () => ({
+	extractTrelloContext: vi.fn().mockReturnValue(''),
+	extractJiraContext: vi.fn().mockReturnValue(''),
+	extractLinearContext: vi.fn().mockReturnValue(''),
+	generateAckMessage: vi.fn().mockResolvedValue('🔨 Generated ack message'),
+}));
+
 vi.mock('../../src/utils/index.js', () => ({
 	logger: {
 		info: vi.fn(),
@@ -83,8 +98,16 @@ vi.mock('../../src/agents/prompts/index.js', () => ({
 
 import { loadProjectConfigById } from '../../src/config/provider.js';
 import { getRunById } from '../../src/db/repositories/runsRepository.js';
+import {
+	extractJiraContext,
+	extractLinearContext,
+	extractTrelloContext,
+	generateAckMessage,
+} from '../../src/router/ackMessageGenerator.js';
+import { dispatchPMAck } from '../../src/router/pm-ack-dispatch.js';
 import { captureException, flush } from '../../src/sentry.js';
 import { processGitHubWebhook, processJiraWebhook } from '../../src/triggers/index.js';
+import { processLinearWebhook } from '../../src/triggers/linear/webhook-handler.js';
 import { processSentryWebhook } from '../../src/triggers/sentry/webhook-handler.js';
 import { triggerDebugAnalysis } from '../../src/triggers/shared/debug-runner.js';
 import { triggerManualRun, triggerRetryRun } from '../../src/triggers/shared/manual-runner.js';
@@ -94,6 +117,7 @@ import {
 	dispatchJob,
 	type GitHubJobData,
 	type JiraJobData,
+	type LinearJobData,
 	type ManualRunJobData,
 	main,
 	processDashboardJob,
@@ -284,6 +308,35 @@ describe('dispatchJob routing', () => {
 		);
 	});
 
+	it('routes linear job to processLinearWebhook with payload, registry, ackCommentId, triggerResult', async () => {
+		const mockRegistry = {};
+		const jobPayload = { type: 'Issue', data: { id: 'lin-1' } };
+		const triggerResult = { matched: true, agentType: 'implementation' } as never;
+
+		const jobData: LinearJobData = {
+			type: 'linear',
+			source: 'linear',
+			payload: jobPayload,
+			projectId: 'proj-1',
+			workItemId: 'lin-1',
+			eventType: 'create/Issue',
+			receivedAt: '2024-01-01T00:00:00Z',
+			ackCommentId: 'lin-comment-789',
+			triggerResult,
+		};
+
+		await dispatchJob('job-linear-1', jobData, mockRegistry as never);
+
+		expect(processLinearWebhook).toHaveBeenCalledWith(
+			jobPayload,
+			mockRegistry,
+			'lin-comment-789',
+			triggerResult,
+		);
+		// Without pendingAck, the deferred-ack path is NOT taken
+		expect(dispatchPMAck).not.toHaveBeenCalled();
+	});
+
 	it('handles unknown job type by calling captureException with worker_unknown_job tag', async () => {
 		const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?) => {
 			throw new Error(`process.exit(${code})`);
@@ -304,6 +357,279 @@ describe('dispatchJob routing', () => {
 			expect.objectContaining({ tags: { source: 'worker_unknown_job' } }),
 		);
 		expect(flush).toHaveBeenCalled();
+	});
+});
+
+// ── deferred ack tests (postDeferredAck via dispatchJob) ──────────────────────
+
+describe('dispatchJob - deferred ack (pendingAck=true)', () => {
+	beforeEach(() => {
+		vi.mocked(dispatchPMAck).mockReset();
+		vi.mocked(extractJiraContext).mockReset().mockReturnValue('');
+		vi.mocked(extractLinearContext).mockReset().mockReturnValue('');
+		vi.mocked(extractTrelloContext).mockReset().mockReturnValue('');
+		vi.mocked(generateAckMessage).mockReset().mockResolvedValue('🔨 Generated ack');
+	});
+
+	it('trello pendingAck: extracts context, generates ack message, posts via dispatchPMAck, passes new commentId to processTrelloWebhook', async () => {
+		vi.mocked(extractTrelloContext).mockReturnValueOnce('Card: do the thing');
+		vi.mocked(generateAckMessage).mockResolvedValueOnce('🔨 Working on the thing');
+		vi.mocked(dispatchPMAck).mockResolvedValueOnce({
+			commentId: 'trello-deferred-1',
+			message: '🔨 Working on the thing',
+		});
+
+		const jobData: TrelloJobData = {
+			type: 'trello',
+			source: 'trello',
+			payload: { action: { data: { card: { name: 'do the thing' } } } },
+			projectId: 'proj-1',
+			workItemId: 'card-1',
+			actionType: 'updateCard',
+			receivedAt: '2024-01-01T00:00:00Z',
+			pendingAck: true,
+			ackMessage: 'do the thing',
+			triggerResult: { agentType: 'implementation' } as never,
+		};
+
+		await dispatchJob('job-trello-deferred', jobData, {} as never);
+
+		expect(extractTrelloContext).toHaveBeenCalledWith(jobData.payload);
+		expect(generateAckMessage).toHaveBeenCalledWith(
+			'implementation',
+			'Card: do the thing',
+			'proj-1',
+		);
+		expect(dispatchPMAck).toHaveBeenCalledWith({
+			projectId: 'proj-1',
+			workItemId: 'card-1',
+			pmType: 'trello',
+			message: '🔨 Working on the thing',
+			agentType: 'implementation',
+		});
+		expect(processTrelloWebhook).toHaveBeenCalledWith(
+			jobData.payload,
+			expect.anything(),
+			'trello-deferred-1',
+			jobData.triggerResult,
+		);
+	});
+
+	it('jira pendingAck: extracts context, generates ack, posts via dispatchPMAck, passes new commentId to processJiraWebhook', async () => {
+		vi.mocked(extractJiraContext).mockReturnValueOnce('Issue: PROJ-1 — Fix bug');
+		vi.mocked(generateAckMessage).mockResolvedValueOnce('🔨 On the bug fix');
+		vi.mocked(dispatchPMAck).mockResolvedValueOnce({
+			commentId: 'jira-deferred-1',
+			message: '🔨 On the bug fix',
+		});
+
+		const jobData: JiraJobData = {
+			type: 'jira',
+			source: 'jira',
+			payload: { issue: { key: 'PROJ-1', fields: { summary: 'Fix bug' } } },
+			projectId: 'proj-1',
+			issueKey: 'PROJ-1',
+			webhookEvent: 'jira:issue_updated',
+			receivedAt: '2024-01-01T00:00:00Z',
+			pendingAck: true,
+			ackMessage: 'Fix bug',
+			triggerResult: { agentType: 'implementation' } as never,
+		};
+
+		await dispatchJob('job-jira-deferred', jobData, {} as never);
+
+		expect(extractJiraContext).toHaveBeenCalledWith(jobData.payload);
+		expect(generateAckMessage).toHaveBeenCalledWith(
+			'implementation',
+			'Issue: PROJ-1 — Fix bug',
+			'proj-1',
+		);
+		expect(dispatchPMAck).toHaveBeenCalledWith({
+			projectId: 'proj-1',
+			workItemId: 'PROJ-1',
+			pmType: 'jira',
+			message: '🔨 On the bug fix',
+			agentType: 'implementation',
+		});
+		expect(processJiraWebhook).toHaveBeenCalledWith(
+			jobData.payload,
+			expect.anything(),
+			'jira-deferred-1',
+			jobData.triggerResult,
+		);
+	});
+
+	it('linear pendingAck: extracts context, generates ack, posts via dispatchPMAck, passes new commentId to processLinearWebhook', async () => {
+		vi.mocked(extractLinearContext).mockReturnValueOnce('Issue: TEAM-12 — Add feature');
+		vi.mocked(generateAckMessage).mockResolvedValueOnce('🔨 Building the feature');
+		vi.mocked(dispatchPMAck).mockResolvedValueOnce({
+			commentId: 'linear-deferred-1',
+			message: '🔨 Building the feature',
+		});
+
+		const jobData: LinearJobData = {
+			type: 'linear',
+			source: 'linear',
+			payload: { type: 'Issue', data: { id: 'lin-1', title: 'Add feature' } },
+			projectId: 'proj-1',
+			workItemId: 'lin-1',
+			eventType: 'update/Issue',
+			receivedAt: '2024-01-01T00:00:00Z',
+			pendingAck: true,
+			ackMessage: 'Add feature',
+			triggerResult: { agentType: 'implementation' } as never,
+		};
+
+		await dispatchJob('job-linear-deferred', jobData, {} as never);
+
+		expect(extractLinearContext).toHaveBeenCalledWith(jobData.payload);
+		expect(generateAckMessage).toHaveBeenCalledWith(
+			'implementation',
+			'Issue: TEAM-12 — Add feature',
+			'proj-1',
+		);
+		expect(dispatchPMAck).toHaveBeenCalledWith({
+			projectId: 'proj-1',
+			workItemId: 'lin-1',
+			pmType: 'linear',
+			message: '🔨 Building the feature',
+			agentType: 'implementation',
+		});
+		expect(processLinearWebhook).toHaveBeenCalledWith(
+			jobData.payload,
+			expect.anything(),
+			'linear-deferred-1',
+			jobData.triggerResult,
+		);
+	});
+
+	it('falls back to ackMessage hint when payload extractor returns empty', async () => {
+		vi.mocked(extractJiraContext).mockReturnValueOnce('');
+		vi.mocked(generateAckMessage).mockResolvedValueOnce('🔨 generic');
+		vi.mocked(dispatchPMAck).mockResolvedValueOnce({
+			commentId: 'jira-fallback-1',
+			message: '🔨 generic',
+		});
+
+		const jobData: JiraJobData = {
+			type: 'jira',
+			source: 'jira',
+			payload: { issue: {} },
+			projectId: 'proj-1',
+			issueKey: 'PROJ-1',
+			webhookEvent: 'jira:issue_updated',
+			receivedAt: '2024-01-01T00:00:00Z',
+			pendingAck: true,
+			ackMessage: 'Fallback Title',
+			triggerResult: { agentType: 'implementation' } as never,
+		};
+
+		await dispatchJob('job-jira-fallback', jobData, {} as never);
+
+		expect(generateAckMessage).toHaveBeenCalledWith(
+			'implementation',
+			'Issue: Fallback Title',
+			'proj-1',
+		);
+	});
+
+	it('passes empty agentType when triggerResult.agentType is missing', async () => {
+		vi.mocked(extractTrelloContext).mockReturnValueOnce('Card: x');
+		vi.mocked(generateAckMessage).mockResolvedValueOnce('msg');
+		vi.mocked(dispatchPMAck).mockResolvedValueOnce({ commentId: 't', message: 'msg' });
+
+		const jobData: TrelloJobData = {
+			type: 'trello',
+			source: 'trello',
+			payload: {},
+			projectId: 'proj-1',
+			workItemId: 'card-1',
+			actionType: 'updateCard',
+			receivedAt: '2024-01-01T00:00:00Z',
+			pendingAck: true,
+			// no triggerResult and no ackMessage
+		};
+
+		await dispatchJob('job-no-agent', jobData, {} as never);
+
+		expect(generateAckMessage).toHaveBeenCalledWith('', 'Card: x', 'proj-1');
+		expect(dispatchPMAck).toHaveBeenCalledWith(expect.objectContaining({ agentType: undefined }));
+	});
+
+	it('preserves original ackCommentId when dispatchPMAck rejects (non-fatal)', async () => {
+		vi.mocked(extractJiraContext).mockReturnValueOnce('Issue: x');
+		vi.mocked(dispatchPMAck).mockRejectedValueOnce(new Error('PM API down'));
+
+		const jobData: JiraJobData = {
+			type: 'jira',
+			source: 'jira',
+			payload: {},
+			projectId: 'proj-1',
+			issueKey: 'PROJ-2',
+			webhookEvent: 'jira:issue_updated',
+			receivedAt: '2024-01-01T00:00:00Z',
+			ackCommentId: 'pre-existing',
+			pendingAck: true,
+			triggerResult: { agentType: 'implementation' } as never,
+		};
+
+		// Must not throw — deferred ack failure is non-fatal
+		await expect(dispatchJob('job-ack-fail', jobData, {} as never)).resolves.toBeUndefined();
+
+		// Falls back to the pre-existing ackCommentId from the job data
+		expect(processJiraWebhook).toHaveBeenCalledWith(
+			jobData.payload,
+			expect.anything(),
+			'pre-existing',
+			jobData.triggerResult,
+		);
+	});
+
+	it('preserves original ackCommentId when dispatchPMAck returns undefined (no comment posted)', async () => {
+		vi.mocked(extractTrelloContext).mockReturnValueOnce('Card: x');
+		vi.mocked(dispatchPMAck).mockResolvedValueOnce(undefined);
+
+		const jobData: TrelloJobData = {
+			type: 'trello',
+			source: 'trello',
+			payload: {},
+			projectId: 'proj-1',
+			workItemId: 'card-1',
+			actionType: 'updateCard',
+			receivedAt: '2024-01-01T00:00:00Z',
+			ackCommentId: 'fallback-comment',
+			pendingAck: true,
+			triggerResult: { agentType: 'implementation' } as never,
+		};
+
+		await dispatchJob('job-undef-ack', jobData, {} as never);
+
+		expect(processTrelloWebhook).toHaveBeenCalledWith(
+			jobData.payload,
+			expect.anything(),
+			'fallback-comment',
+			jobData.triggerResult,
+		);
+	});
+
+	it('linear pendingAck without workItemId: skips deferred ack entirely', async () => {
+		const jobData: LinearJobData = {
+			type: 'linear',
+			source: 'linear',
+			payload: {},
+			projectId: 'proj-1',
+			// workItemId is missing
+			eventType: 'create/Comment',
+			receivedAt: '2024-01-01T00:00:00Z',
+			pendingAck: true,
+			triggerResult: { agentType: 'implementation' } as never,
+		};
+
+		await dispatchJob('job-linear-no-id', jobData, {} as never);
+
+		// Without workItemId, the deferred-ack branch is skipped
+		expect(dispatchPMAck).not.toHaveBeenCalled();
+		expect(processLinearWebhook).toHaveBeenCalled();
 	});
 });
 
