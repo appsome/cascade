@@ -8,18 +8,20 @@
  * Used by:
  * - Worker-side: `triggers/github/webhook-handler.ts` (maybePostPmAckComment)
  *
- * Note: `router/adapters/github.ts` has its own local `postPMAck` function
- * and does not use this shared utility.
+ * After spec 017 / plan 1, this delegates to `dispatchPMAck` in
+ * `src/router/pm-ack-dispatch.ts` — the single source of truth for PM-ack
+ * dispatch. No per-PM-type literal branching here. The legacy `string | null`
+ * return contract is preserved for the existing call site in
+ * `src/triggers/github/webhook-handler.ts:maybePostPmAckComment`.
  */
 
-import { postJiraAck, postLinearAck, postTrelloAck } from '../../router/acknowledgments.js';
-import { logger } from '../../utils/logging.js';
+import { dispatchPMAck } from '../../router/pm-ack-dispatch.js';
 
 /**
- * Post a PM acknowledgment comment to Trello, JIRA, or Linear.
+ * Post a PM acknowledgment comment via the consolidated dispatch helper.
  *
- * Returns the comment ID if successfully posted, or null if the PM type
- * is not supported or posting failed.
+ * Returns the comment ID as a string if successfully posted, or `null` if
+ * the PM type is not supported or posting failed.
  *
  * @param projectId  The project ID for credential resolution.
  * @param workItemId The work item ID to post the comment on (card ID / issue key).
@@ -34,21 +36,7 @@ export async function postPMAckComment(
 	message: string,
 	agentType?: string,
 ): Promise<string | null> {
-	if (pmType === 'trello') {
-		return postTrelloAck(projectId, workItemId, message);
-	}
-
-	if (pmType === 'jira') {
-		return postJiraAck(projectId, workItemId, message);
-	}
-
-	if (pmType === 'linear') {
-		return postLinearAck(projectId, workItemId, message);
-	}
-
-	logger.warn('Unknown PM type for PM-focused agent ack, skipping', {
-		agentType,
-		pmType,
-	});
-	return null;
+	const result = await dispatchPMAck({ projectId, workItemId, pmType, message, agentType });
+	if (!result) return null;
+	return String(result.commentId);
 }
