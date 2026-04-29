@@ -125,6 +125,21 @@ export async function addJob(job: CascadeJob): Promise<string> {
 export interface ScheduleCoalescedJobResult {
 	jobId: string;
 	superseded: boolean;
+	/**
+	 * Data from the superseded delayed/waiting job. Present when
+	 * `superseded === true`. Used by the caller to release the orphaned
+	 * in-memory locks that were marked for the previous dispatch — those locks
+	 * are never released via `worker.on('failed')` because BullMQ's `remove()`
+	 * does not fire that event.
+	 */
+	supersededJobData?: CascadeJob;
+	/**
+	 * True when a job with the same coalesce ID is already active (running).
+	 * BullMQ silently ignores `add()` for a duplicate active jobId, so we skip
+	 * the `add()` call entirely and return this flag instead. The caller must
+	 * NOT mark new in-memory locks — no new job was created.
+	 */
+	activeExists?: boolean;
 }
 
 /**
@@ -132,8 +147,8 @@ export interface ScheduleCoalescedJobResult {
  *
  * If a delayed/waiting job with the same key already exists it is removed
  * before the new job is added, superseding the previous dispatch. Active
- * (already running) jobs are left untouched; `superseded` is `false` in that
- * case.
+ * (already running) jobs are left untouched and `activeExists` is returned
+ * as `true` so the caller can skip lock marking.
  *
  * This replaces the in-memory `create-coalesce-window.ts` mechanism with a
  * durable, per-key deduplication that coalesces across any agent types for
@@ -146,6 +161,7 @@ export async function scheduleCoalescedJob(
 ): Promise<ScheduleCoalescedJobResult> {
 	const jobId = `coalesce:${coalesceKey}`;
 	let superseded = false;
+	let supersededJobData: CascadeJob | undefined;
 
 	// Remove any existing delayed/waiting job with the same key so the new
 	// job supersedes it. Active jobs are left alone — they are already running.
@@ -163,14 +179,27 @@ export async function scheduleCoalescedJob(
 	if (existing) {
 		const state = await existing.getState();
 		if (state === 'delayed' || state === 'waiting') {
+			// Capture job data before removal so the caller can release orphaned locks.
+			supersededJobData = existing.data;
 			await existing.remove();
 			superseded = true;
+		} else if (state === 'active') {
+			// An active (running) job already holds this ID. BullMQ would
+			// silently ignore add() for a duplicate active jobId — no new job
+			// would be created, but the caller wouldn't know and would mark
+			// locks incorrectly. Return activeExists=true so the caller can
+			// log accurately and skip marking new in-memory locks.
+			logger.info('Coalesced job skipped — active job with same ID already running', {
+				jobId,
+				coalesceKey,
+			});
+			return { jobId, superseded: false, activeExists: true };
 		}
 	}
 
 	await jobQueue.add(job.type, job, { jobId, delay: delayMs });
 	logger.info('Coalesced job scheduled', { jobId, coalesceKey, delayMs, superseded });
-	return { jobId, superseded };
+	return { jobId, superseded, supersededJobData };
 }
 
 // Get queue stats

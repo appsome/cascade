@@ -17,13 +17,15 @@ import { logger } from '../utils/logging.js';
 import { isDuplicateAction, markActionProcessed } from './action-dedup.js';
 import {
 	checkAgentTypeConcurrency,
+	clearAgentTypeEnqueued,
+	clearRecentlyDispatched,
 	markAgentTypeEnqueued,
 	markRecentlyDispatched,
 } from './agent-type-lock.js';
 import { classifyLockState } from './lock-state-classifier.js';
 import type { RouterPlatformAdapter } from './platform-adapter.js';
 import { addJob, scheduleCoalescedJob } from './queue.js';
-import { isWorkItemLocked, markWorkItemEnqueued } from './work-item-lock.js';
+import { clearWorkItemEnqueued, isWorkItemLocked, markWorkItemEnqueued } from './work-item-lock.js';
 
 export interface ProcessRouterWebhookResult {
 	/** Whether the event was of a processable type for this platform. */
@@ -164,7 +166,29 @@ export async function processRouterWebhook(
 			// Schedule as a delayed BullMQ job; supersedes any prior pending job
 			// with the same key so only the latest event fires.
 			try {
-				const { superseded } = await scheduleCoalescedJob(job, result.coalesceKey, windowMs);
+				const { superseded, supersededJobData, activeExists } = await scheduleCoalescedJob(
+					job,
+					result.coalesceKey,
+					windowMs,
+				);
+
+				// When an active job is already running for this coalesceKey, BullMQ
+				// would silently ignore any new add(). No new job was created, so skip
+				// lock marking and return an accurate decision reason.
+				if (activeExists) {
+					logger.info(`${adapter.type} coalesced dispatch skipped — active job already running`, {
+						agentType: result.agentType,
+						workItemId: result.workItemId,
+						projectId: project.id,
+						coalesceKey: result.coalesceKey,
+					});
+					return {
+						shouldProcess: true,
+						projectId: project.id,
+						decisionReason: `Coalesced dispatch skipped: active job already running for work item ${result.workItemId ?? '(unknown)'}`,
+					};
+				}
+
 				if (superseded) {
 					logger.info(`${adapter.type} coalesced dispatch superseded prior pending job`, {
 						agentType: result.agentType,
@@ -172,6 +196,22 @@ export async function processRouterWebhook(
 						projectId: project.id,
 						coalesceKey: result.coalesceKey,
 					});
+					// Release in-memory locks for the superseded job to prevent phantom
+					// lock entries from accumulating. existing.remove() removes the
+					// delayed BullMQ entry but does NOT fire worker.on('failed'), so
+					// releaseLocksForFailedJob is never called for the superseded job.
+					// Manually undo the lock marks from the previous webhook invocation.
+					if (supersededJobData && supersededJobData.type !== 'github') {
+						const oldAgentType = supersededJobData.triggerResult?.agentType;
+						const oldWorkItemId = supersededJobData.triggerResult?.workItemId;
+						if (oldAgentType) {
+							if (oldWorkItemId) {
+								clearWorkItemEnqueued(supersededJobData.projectId, oldWorkItemId, oldAgentType);
+							}
+							clearAgentTypeEnqueued(supersededJobData.projectId, oldAgentType);
+							clearRecentlyDispatched(supersededJobData.projectId, oldAgentType, oldWorkItemId);
+						}
+					}
 				} else {
 					logger.info(`${adapter.type} coalesced dispatch scheduled`, {
 						agentType: result.agentType,
@@ -195,7 +235,9 @@ export async function processRouterWebhook(
 				};
 			}
 
-			// Mark locks exactly as the non-coalesced path does.
+			// Mark locks for the newly-scheduled job exactly as the non-coalesced
+			// path does. (The activeExists early-return above ensures we only reach
+			// this point when a real new job was added to the queue.)
 			if (result.workItemId) {
 				markWorkItemEnqueued(project.id, result.workItemId, result.agentType);
 			}

@@ -83,15 +83,22 @@ describe('scheduleCoalescedJob', () => {
 		);
 	});
 
-	it('removes existing delayed job and returns superseded=true', async () => {
-		mockJobInstance.getState.mockResolvedValue('delayed');
-		mockJobInstance.remove.mockResolvedValue(undefined);
-		mockQueueInstance.getJob.mockResolvedValue(mockJobInstance);
+	it('removes existing delayed job and returns superseded=true with supersededJobData', async () => {
+		const existingData: CascadeJob = {
+			...sampleJob,
+			projectId: 'proj-old',
+			triggerResult: { agentType: 'planning', workItemId: 'PROJ-42', agentInput: {} },
+		};
+		const mockJobWithData = { ...mockJobInstance, data: existingData };
+		mockJobWithData.getState = vi.fn().mockResolvedValue('delayed');
+		mockJobWithData.remove = vi.fn().mockResolvedValue(undefined);
+		mockQueueInstance.getJob.mockResolvedValue(mockJobWithData);
 
 		const result = await scheduleCoalescedJob(sampleJob, 'proj-1:PROJ-42', 10_000);
 
 		expect(result.superseded).toBe(true);
-		expect(mockJobInstance.remove).toHaveBeenCalledOnce();
+		expect(result.supersededJobData).toEqual(existingData);
+		expect(mockJobWithData.remove).toHaveBeenCalledOnce();
 		expect(mockQueueInstance.add).toHaveBeenCalledWith(
 			'jira',
 			sampleJob,
@@ -99,7 +106,7 @@ describe('scheduleCoalescedJob', () => {
 		);
 	});
 
-	it('does not remove an active (running) job and returns superseded=false', async () => {
+	it('returns activeExists=true and skips add() when an active job has the same ID', async () => {
 		mockJobInstance.getState.mockResolvedValue('active');
 		mockJobInstance.remove.mockResolvedValue(undefined);
 		mockQueueInstance.getJob.mockResolvedValue(mockJobInstance);
@@ -107,9 +114,11 @@ describe('scheduleCoalescedJob', () => {
 		const result = await scheduleCoalescedJob(sampleJob, 'proj-1:PROJ-42', 10_000);
 
 		expect(result.superseded).toBe(false);
+		expect(result.activeExists).toBe(true);
 		expect(mockJobInstance.remove).not.toHaveBeenCalled();
-		// Still adds the new job even if an active job exists with same ID
-		expect(mockQueueInstance.add).toHaveBeenCalled();
+		// Must NOT add a new job — BullMQ would silently ignore it for active IDs
+		// and the caller would incorrectly mark locks for a non-existent job.
+		expect(mockQueueInstance.add).not.toHaveBeenCalled();
 	});
 
 	it('uses the coalesceKey to derive the BullMQ job ID', async () => {

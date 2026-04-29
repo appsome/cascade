@@ -18,11 +18,14 @@ vi.mock('../../../src/pm/coalesce-config.js', () => ({
 vi.mock('../../../src/router/work-item-lock.js', () => ({
 	isWorkItemLocked: vi.fn().mockResolvedValue({ locked: false }),
 	markWorkItemEnqueued: vi.fn(),
+	clearWorkItemEnqueued: vi.fn(),
 }));
 vi.mock('../../../src/router/agent-type-lock.js', () => ({
 	checkAgentTypeConcurrency: vi.fn().mockResolvedValue({ maxConcurrency: null, blocked: false }),
 	markAgentTypeEnqueued: vi.fn(),
 	markRecentlyDispatched: vi.fn(),
+	clearAgentTypeEnqueued: vi.fn(),
+	clearRecentlyDispatched: vi.fn(),
 }));
 vi.mock('../../../src/router/action-dedup.js', () => ({
 	isDuplicateAction: vi.fn().mockReturnValue(false),
@@ -39,6 +42,8 @@ import { getCoalesceWindowMs } from '../../../src/pm/coalesce-config.js';
 import { isDuplicateAction, markActionProcessed } from '../../../src/router/action-dedup.js';
 import {
 	checkAgentTypeConcurrency,
+	clearAgentTypeEnqueued,
+	clearRecentlyDispatched,
 	markAgentTypeEnqueued,
 	markRecentlyDispatched,
 } from '../../../src/router/agent-type-lock.js';
@@ -48,7 +53,11 @@ import type { RouterPlatformAdapter } from '../../../src/router/platform-adapter
 import type { CascadeJob } from '../../../src/router/queue.js';
 import { addJob, scheduleCoalescedJob } from '../../../src/router/queue.js';
 import { processRouterWebhook } from '../../../src/router/webhook-processor.js';
-import { isWorkItemLocked, markWorkItemEnqueued } from '../../../src/router/work-item-lock.js';
+import {
+	clearWorkItemEnqueued,
+	isWorkItemLocked,
+	markWorkItemEnqueued,
+} from '../../../src/router/work-item-lock.js';
 import { captureException } from '../../../src/sentry.js';
 import type { TriggerRegistry } from '../../../src/triggers/registry.js';
 
@@ -650,6 +659,72 @@ describe('processRouterWebhook', () => {
 				.mocked(logger.info)
 				.mock.calls.find((c) => String(c[0]).includes('superseded prior pending job'));
 			expect(infoCall).toBeDefined();
+		});
+
+		it('releases superseded job locks when supersededJobData is returned', async () => {
+			const supersededJobData: CascadeJob = {
+				type: 'jira',
+				source: 'jira',
+				payload: {},
+				projectId: 'p1',
+				issueKey: 'PROJ-1',
+				webhookEvent: 'jira:issue_created',
+				receivedAt: new Date().toISOString(),
+				triggerResult: {
+					agentType: 'splitting',
+					workItemId: 'PROJ-1',
+					agentInput: {},
+				},
+			};
+			vi.mocked(scheduleCoalescedJob).mockResolvedValue({
+				jobId: 'coalesce:p1:PROJ-1',
+				superseded: true,
+				supersededJobData,
+			});
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'planning',
+					agentInput: { workItemId: 'PROJ-1' },
+					workItemId: 'PROJ-1',
+					coalesceKey: 'p1:PROJ-1',
+				}),
+			});
+
+			await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			// Must clear the superseded job's locks to prevent phantom entries
+			expect(clearWorkItemEnqueued).toHaveBeenCalledWith('p1', 'PROJ-1', 'splitting');
+			expect(clearAgentTypeEnqueued).toHaveBeenCalledWith('p1', 'splitting');
+			expect(clearRecentlyDispatched).toHaveBeenCalledWith('p1', 'splitting', 'PROJ-1');
+			// Must still mark locks for the new job
+			expect(markWorkItemEnqueued).toHaveBeenCalled();
+			expect(markAgentTypeEnqueued).toHaveBeenCalled();
+		});
+
+		it('skips lock marking when activeExists=true (no new job was created)', async () => {
+			vi.mocked(scheduleCoalescedJob).mockResolvedValue({
+				jobId: 'coalesce:p1:PROJ-1',
+				superseded: false,
+				activeExists: true,
+			});
+			const adapter = makeMockAdapter({
+				type: 'jira',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'PROJ-1' },
+					workItemId: 'PROJ-1',
+					coalesceKey: 'p1:PROJ-1',
+				}),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			// No new job → must not mark any in-memory locks
+			expect(markWorkItemEnqueued).not.toHaveBeenCalled();
+			expect(markAgentTypeEnqueued).not.toHaveBeenCalled();
+			expect(markRecentlyDispatched).not.toHaveBeenCalled();
+			expect(result.decisionReason).toMatch(/active job already running/);
 		});
 
 		it('falls back to normal dispatch when PM_COALESCE_WINDOW_MS=0 (disable)', async () => {
