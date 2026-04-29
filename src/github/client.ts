@@ -234,11 +234,28 @@ export const githubClient = {
 
 	async deletePRComment(owner: string, repo: string, commentId: number): Promise<void> {
 		logger.debug('Deleting PR comment', { owner, repo, commentId });
-		await getClient().issues.deleteComment({
-			owner,
-			repo,
-			comment_id: commentId,
-		});
+		try {
+			await getClient().issues.deleteComment({
+				owner,
+				repo,
+				comment_id: commentId,
+			});
+		} catch (err) {
+			// 404 is success-equivalent under RFC-7231 idempotency (the comment is gone).
+			// Any path — gadget mid-run delete, sidecar-driven clear, user manual delete —
+			// can have already removed the comment. The post-agent cleanup hook used to
+			// log this as a WARN 72 times/day in prod; downgrade to DEBUG so the noise
+			// doesn't drown out real failures while preserving an audit breadcrumb.
+			if ((err as { status?: number })?.status === 404) {
+				logger.debug('PR comment already deleted (404 on DELETE)', {
+					owner,
+					repo,
+					commentId,
+				});
+				return;
+			}
+			throw err;
+		}
 	},
 
 	async getPRReviews(owner: string, repo: string, prNumber: number): Promise<PRReview[]> {

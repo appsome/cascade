@@ -1,0 +1,182 @@
+---
+id: 017
+slug: router-silent-failure-hardening
+level: spec
+title: Router-side silent-failure hardening
+created: 2026-04-29
+status: draft
+---
+
+# 017: Router-side silent-failure hardening
+
+## Problem & Motivation
+
+A 24-hour audit of cascade-router production logs and webhook decision history on 2026-04-29 surfaced three distinct silent-failure modes producing 128 combined WARN entries per day with no functional escalation to operators. Each represents a different class of degradation — missing UX feedback on the PM card, a security-gate bypass, log noise that masks real signal — but they share a structural pattern: the router code path "succeeds" from its caller's perspective while a behavioral guarantee is silently broken, and the operator's only signal is a WARN line buried in normal traffic.
+
+The audit was triggered by the same investigation that produced PR #1220 (`respond-to-review` and `respond-to-pr-comment` runs persisting NULL `agent_runs.work_item_id`, hiding them from the dashboard's work-item page). After fixing that bug, a sweep of the previous 24 hours of cascade-router logs surfaced these three additional silent failures, each independently actionable and each rooted in either parallel-path drift between two helpers that should have been one, or a missing wrapper around an `AsyncLocalStorage` scope.
+
+This spec consolidates the three fixes under one motivation. They are independent enough to ship as separate plans/PRs but related enough that solving them together — with shared regression-prevention strategy and shared "silent fail no longer permitted" policy — is cheaper than three separate spec rounds.
+
+### Failure mode A — Linear PM-ack silently skipped on PM-focused agents
+
+24 occurrences in 24h. PM-focused agents (e.g. `backlog-manager`) triggered from a GitHub webhook need to post their acknowledgment comment to the PM tool, not the GitHub PR. The router-side helper that dispatches that ack handles only Trello and JIRA; for Linear-based projects, control flow falls through to an "unknown PM type" branch, no ack is posted, and a `WARN: Unknown PM type for PM-focused agent ack, skipping` is logged. A parallel helper elsewhere in the codebase already has the Linear branch — this is missed-migration drift, the same shape of bug as PR #1220. User-visible impact: Linear-based projects (the most active being `ucho`) never see the "agent is working on it" comment that Trello/JIRA-based projects get on the same agent type. The silent skip masks any future case where a PM type is added to the registry without being wired through every ack-posting site.
+
+### Failure mode B — Pipeline-capacity gate fails open on every PM `status-changed` trigger
+
+32 occurrences in 24h. The pipeline-capacity gate is a hard cap on the active pipeline (TODO + IN_PROGRESS + IN_REVIEW work items) introduced in response to a prior incident where three implementation runs fired concurrently against a project pinned at `maxInFlightItems: 1` after a human moved three cards into TODO simultaneously. The gate calls a PM-provider getter from within `AsyncLocalStorage` to count in-flight items; on scope miss it conservatively returns "allow" and emits `WARN: pipeline-capacity-gate: PM provider unavailable, allowing run`. Today, that conservative branch fires on every PM-source `status-changed` trigger because the PM router adapters wrap dispatch in PM credentials but not in the PM-provider scope. The GitHub router adapter does both correctly. So the gate's only consumer dispatches outside the scope it requires, the gate is silently no-op for the only triggers that need it, and `maxInFlightItems` is essentially unenforced for the entire PM-source path. User-visible impact: a human moving N work items into TODO simultaneously still produces N parallel implementation runs, exactly the scenario the gate was added to prevent.
+
+### Failure mode C — Progress-comment double-delete race produces 404 log spam
+
+72 occurrences in 24h. The router's post-agent success hook deletes the GitHub progress/ack comment for non-implementation agents. Separately, in-run gadgets (notably the create-PR-review gadget) delete the same comment mid-run when they have a more contextually-appropriate moment to clean it up, then clear the comment id from session state. The post-agent hook reads session state but falls back to the agent-input copy of the comment id when session state is empty — and "session state cleared by the gadget" is indistinguishable from "session state never populated", so the fallback fires and re-deletes the already-deleted comment. GitHub returns 404, `WARN: Failed to delete progress comment after agent success` is logged, and the operator triaging real failures has 72 false-positive entries to filter out per day. There is no functional impact (the comment IS deleted, just by the gadget rather than the hook), but the log noise dominates WARN volume on cascade-router and obscures the failures that DO matter.
+
+---
+
+## Goals
+
+1. PM-focused agents triggered from a GitHub webhook post their acknowledgment comment on the PM-side work item for every PM type registered in the manifest registry — Linear included, plus any future provider — without per-PM-type literal-string branching in the dispatch helper.
+2. The pipeline-capacity gate enforces `maxInFlightItems` for PM `status-changed` triggers exactly as it does for GitHub-source triggers today: when a human moves N cards into TODO simultaneously and the project's cap is M, no more than M implementation runs proceed.
+3. After an in-run gadget deletes the progress comment and signals consumption, the post-agent success hook does not issue a redundant DELETE against GitHub for the same comment id; 24h log volume of `Failed to delete progress comment after agent success` drops to near-zero under normal operation.
+4. Each of the three failure modes converts from "silent WARN that operators learn to ignore" to "loud Sentry-captured error that operators can act on" once the routine path is fixed, so the WARN-vs-real-failure ratio in cascade-router logs drops to a level where operator triage stays fast.
+5. A static guard or conformance-harness extension prevents future PM provider additions or future PM router-adapter additions from regressing any of the three invariants without a CI failure.
+
+---
+
+## Non-goals
+
+- Migrating any parallel-helper code paths beyond the two specifically identified in failure mode A. If a third-instance audit surfaces another duplicate dispatch helper, track separately.
+- Refactoring the GitHub router adapter's existing `dispatchWithCredentials` shape. The wrapping there is correct and load-bearing. The shared helper introduced for PM adapters is additive and does not reshape the GitHub side.
+- Changing the user-visible message content or formatting of PM-side ack comments. The fix is "the comment is posted at all on Linear" — message wording is unchanged.
+- Adding a dashboard view of router log noise or a generalized log-noise budget. Operator-side observability tooling is a separate effort.
+- Backfilling Linear-side ack comments for past PM-focused agent runs. Runs that already finished without their ack comment stay finished.
+- Reworking the capacity-gate threshold itself or the in-flight counting query. The gate's logic is correct; the bug is that it never runs in scope.
+- Tightening the warn-vs-error policy for unrelated WARN call sites in cascade-router. Only the three identified here are in scope.
+
+---
+
+## Constraints
+
+- The PM-ack consolidation must not change the wire shape of the manifest registry's `platformClientFactory` or any provider's adapter API. Dispatch consumes those interfaces; adapters do not change.
+- The capacity-gate adapter wrapping must not introduce a per-request HTTP round-trip to resolve the PM provider. Provider resolution happens in process via the manifest registry; the wrapping just establishes `AsyncLocalStorage` scope for the duration of trigger dispatch.
+- The progress-comment lifecycle change must be backward-compatible with paths that never populate session state — the legacy fallback to the agent-input copy of the comment id continues to work in those cases.
+- All three fixes ship as independent plans/PRs that can be merged in any order. None blocks another.
+- Sentry capture additions follow the existing tag-naming conventions on cascade-router (per the spec-015 `wedged_lock_canary` precedent). New tag names go through the same review the existing tags went through.
+- After all three fixes are deployed, 24h log volume on cascade-router for the three identified WARN messages drops below an operator-defined noise floor (target: < 1 occurrence per 24h under normal operation, with anything above representing a genuine anomaly worth investigating).
+
+---
+
+## Requirements
+
+Grouped by failure mode.
+
+### PM-ack coverage (failure mode A)
+
+A1. Every PM type registered in the manifest registry is reachable from the router-side PM-ack dispatch path that runs after PM-focused agents triggered by a GitHub webhook complete. Adding a new PM provider to the registry without editing the dispatch path must not regress this invariant.
+
+A2. The dispatch path that today exists in two near-identical copies (one in the router's GitHub adapter, one in the shared trigger helpers) consolidates into a single helper. The helper consumes the manifest registry directly and does not branch on `pmType` literal strings.
+
+A3. When the consolidated helper encounters a PM type that is genuinely not in the registry (configuration error or a project pinned to a deleted provider), the call site emits an error-level log, captures to Sentry under a stable tag, and skips. Silent warn-and-skip is removed from this path.
+
+### Capacity-gate scope (failure mode B)
+
+B1. Every PM router adapter (Trello, JIRA, Linear, plus any future PM router adapter) wraps trigger dispatch in both its credential `AsyncLocalStorage` scope AND the PM-provider `AsyncLocalStorage` scope. Adding a new PM router adapter without wrapping in PM-provider scope must produce a CI failure.
+
+B2. The capacity gate, when called from inside the wrapping, finds a PM provider in scope and runs its in-flight-count check. The conservative "allow when no provider" branch exists only for genuinely-unscoped contexts (e.g. a future caller from a different surface) and is treated as an error there too.
+
+B3. End-to-end behavior under the original incident scenario: a human moves N work items into TODO simultaneously against a project with `maxInFlightItems: M` (M < N). Exactly M implementation runs proceed; the rest are blocked at the gate with an info-level `pipeline-at-capacity` decision log.
+
+B4. After deployment, hitting the "PM provider unavailable" branch on the routine path produces a Sentry-captured error, not a steady-state warn. The operator alarm is real.
+
+### Progress-comment lifecycle (failure mode C)
+
+C1. After an in-run gadget deletes the progress/ack comment and signals consumption, the post-agent success hook does not issue a second DELETE against the GitHub API for the same comment id.
+
+C2. The legacy fallback chain — "use session state if populated, else use the agent-input copy of the comment id" — continues to work for paths that never populate session state. The fallback is gated explicitly on "the comment has not already been consumed" rather than "session state happens to be empty."
+
+C3. The post-agent hook is idempotent at the API layer too: if a 404 is returned (comment already deleted by any path, including external manual deletion), the response is logged at DEBUG and not WARN. Other HTTP errors (5xx, auth, throttling) continue to log at WARN.
+
+C4. After deployment, the 24h volume of `Failed to delete progress comment after agent success` on cascade-router drops below the operator noise floor for normal operation.
+
+---
+
+## Research Notes
+
+- The cascade codebase already establishes precedent for both prevention patterns. The PM manifest conformance harness (introduced in spec 009 as the sanctioned regression-prevention mechanism for parallel-path drift in PM dispatch) is the obvious extension point for failure mode A's static guard. The single-entrypoint cross-surface test is the sanctioned mechanism for "every router surface registers integrations consistently"; failure mode B's adapter-wrapping invariant is conceptually adjacent and may extend the same test or sit alongside it.
+- `AsyncLocalStorage` scope-leakage is a well-documented Node.js failure mode; the mitigation (always wrap dispatch in the same scope the inner function reads from) is standard and is already done correctly in the GitHub router adapter. The PM router adapters are the outliers.
+- Idempotency-on-DELETE for HTTP APIs is RFC-7231 baseline behavior; treating 404 on DELETE as success-equivalent is established practice across cloud SDKs (AWS SDK retry middleware, Octokit's own request retry behavior, Stripe's idempotency model). The DEBUG-not-WARN downgrade for 404 on DELETE in failure mode C aligns with that convention.
+- Spec 015 (router job dispatch failure recovery) introduced the convention that silent failures in cascade-router must be replaced with grep-stable structured log lines AND must escalate to Sentry where appropriate. All three fixes here follow that convention. The `wedged_lock_canary` tag from spec 015 is the model for the new Sentry tags introduced here (one per failure mode).
+- No academic prior art is cited because all three fixes are well-understood engineering hygiene applied to existing infrastructure. The relevant prior art is the cascade codebase's own precedents.
+
+---
+
+## Open Source Decisions
+
+| Tool | Solves | Decision | Reason |
+|------|--------|----------|--------|
+| _(none)_ | _(none)_ | _(none)_ | Three hardening fixes against existing infrastructure. The conformance-harness pattern, `AsyncLocalStorage`, and Sentry capture are all already in use. The work is using them correctly, not adopting new ones. |
+
+---
+
+## Strategic decisions
+
+1. **PM-ack consolidation over minimal patch.** Chose to merge the two duplicate dispatch helpers into a single registry-consuming path rather than just add the missing Linear branch. The duplication is what created the drift; same effort kills the bug class for any future PM provider. Alternative considered: minimal patch (faster to ship, leaves the second copy as a future-bug surface).
+
+2. **Conformance-harness extension over TypeScript exhaustive switch for the PM-ack invariant.** Chose to extend the existing PM manifest conformance harness to assert every registered manifest is reachable from the consolidated PM-ack dispatch path. Alternative considered: discriminated-union exhaustive switch on `PMType` literal. The harness is the established cascade pattern, catches "registry vs dispatch" drift without type-system gymnastics, and naturally accommodates future providers.
+
+3. **Shared adapter helper over per-adapter wrapping for capacity-gate scope.** Chose to lift the credential + PM-provider scope wrapping into a shared helper that PM router adapters consume, rather than asking each adapter to wrap independently. Same effort, makes the invariant self-documenting, and prevents future PM router adapters from making the same omission.
+
+4. **Fail-closed for capacity-gate on PM-provider miss.** Chose to block runs and emit error + Sentry capture when the gate cannot find a PM provider in scope, rather than continue allowing-with-warn for backward compat. Once the routine path establishes scope, hitting the miss branch is a real anomaly. The gate's purpose is capacity protection; failing open silently re-introduces the original incident class.
+
+5. **Explicit boolean flag for progress-comment consumption state.** Chose a named boolean on session state (e.g. `initialCommentIdConsumed: true`), separate from the comment-id field. Alternatives considered: sentinel value on the existing id field (null/undefined ambiguity), consume-once getter that atomically clears (more invasive change to session state API). The boolean is clearest, most testable, and lowest-risk.
+
+6. **Gate the legacy fallback on the consumed-flag, not remove it.** Chose to keep the existing fallback to the agent-input copy of the comment id but gate it on "not yet consumed". Removing the fallback entirely would force every code path that creates an ack comment to populate session state correctly — more invasive than the bug warrants and risks breaking older paths.
+
+7. **Defense in depth: 404-on-DELETE downgraded to DEBUG.** In addition to the state-machine fix in #5/#6, the API-layer call also treats 404 on DELETE as success-equivalent and logs at DEBUG. Belt-and-suspenders; if a future regression of similar shape recurs, the WARN log volume stays clean while a DEBUG breadcrumb still exists for audit. Other HTTP errors continue to log at WARN.
+
+8. **Three independent plans downstream.** Chose to decompose this spec into three plans corresponding to the three failure modes rather than bundle into one plan. Each plan can be reviewed, merged, and reverted independently; none blocks another. Sequencing is deferred to `/plan` rather than fixed in this spec.
+
+---
+
+## Acceptance Criteria (outcome-level)
+
+PM-ack coverage:
+
+1. A PM-focused agent (e.g. `backlog-manager`) triggered from a GitHub webhook on a Linear-based project produces a visible acknowledgment comment on the Linear work item with the same content shape that Trello and JIRA projects get today.
+
+2. Adding a new PM provider to the manifest registry without wiring it through the consolidated PM-ack dispatch path produces a CI failure with a message that names the missing provider and the dispatch path that needs updating.
+
+3. The `Unknown PM type for PM-focused agent ack, skipping` WARN message is no longer emitted on the routine path. If it does emit, it represents a genuine misconfiguration that operators should investigate, and is captured to Sentry under a stable tag.
+
+Capacity-gate scope:
+
+4. Under the canonical incident scenario (a human moves N work items into TODO simultaneously against a project with `maxInFlightItems: M < N`), exactly M implementation runs proceed and the remaining N-M trigger evaluations log an info-level `pipeline-at-capacity` decision.
+
+5. Adding a new PM router adapter to the codebase without establishing PM-provider scope around dispatch produces a CI failure that names the missing wrapping.
+
+6. The `pipeline-capacity-gate: PM provider unavailable, allowing run` WARN message is no longer emitted on the routine path. If it does emit, it represents a real scope leak and is captured to Sentry under a stable tag.
+
+Progress-comment lifecycle:
+
+7. After the create-PR-review gadget deletes the progress comment mid-run, the post-agent success hook does not call DELETE on the same comment id. No 404 from the GitHub comments API is generated by cascade-router on this path.
+
+8. A code path that creates a progress comment but never populates session state (legacy or future edge case) still has its progress comment deleted by the post-agent hook via the agent-input fallback.
+
+9. If the GitHub comments DELETE API returns 404 from any path (e.g. a user manually deleted the comment), the response logs at DEBUG, not WARN, and a single Sentry breadcrumb is preserved for audit without escalating.
+
+10. After deployment, the 24h volume of the three identified WARN messages on cascade-router drops below 1 occurrence per 24h under normal operation. Anything above that threshold is investigable as a real anomaly rather than steady-state noise.
+
+---
+
+## Documentation Impact (high-level)
+
+- `src/integrations/README.md` — add a "PM-type dispatch coverage invariant" callout in the section that explains how a new PM provider is registered, pointing at the conformance harness as the regression net for PM-ack dispatch.
+- `CLAUDE.md` — add a small subsection adjacent to the existing "PM Integration Architecture" pointer describing the capacity-gate invariant: "Every PM router adapter must wrap trigger dispatch in PM-provider `AsyncLocalStorage` scope, otherwise the in-flight cap is silently disabled. This is enforced by the capacity-gate scope test." This is a load-bearing operator-facing rule that does not derive from reading the code in isolation.
+
+---
+
+## Out of Scope
+
+- The stray org-level GitHub webhook traffic that the same audit also surfaced (~11 unprovisioned-repo PR webhooks in the sampled window). That is operator-side cleanup at the GitHub side, not a cascade code change.
+- The Claude-Code 401 `authentication_failed` errors observed during the audit (~3 in 24h). Token rotation / persona configuration is operator-side.
+- The Anthropic group usage cap of $0 observed during the audit. Account-side configuration is operator-side.
+- The 25-of-203 `review`-agent runs with NULL `agent_runs.work_item_id`. Likely a PR↔work-item linking race, separate spec when chased.
+- Watchdog timeouts observed during the audit (2 in 24h). Two long-running agents hit the watchdog and were force-exited; per-agent investigation is separate.

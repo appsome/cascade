@@ -1,0 +1,210 @@
+---
+id: 017
+slug: router-silent-failure-hardening
+plan: 3
+plan_slug: progress-comment-double-delete
+level: plan
+parent_spec: docs/specs/017-router-silent-failure-hardening.md
+depends_on: []
+status: done
+---
+
+# 017/3: Progress-comment double-delete race
+
+> Part 3 of 3 in the 017-router-silent-failure-hardening plan. See [parent spec](../../specs/017-router-silent-failure-hardening.md).
+
+## Summary
+
+This plan fixes failure mode C from spec 017: the post-agent success hook at `src/triggers/github/ack-comments.ts:23-58` (`deleteProgressCommentOnSuccess`) issues a redundant DELETE against the GitHub comments API for a comment that an in-run gadget has already deleted. The hook reads `sessionState.initialCommentId` (which the gadget at `src/gadgets/sessionState.ts:169-183` sets to `null` after its own successful delete) and falls back to `result.agentInput.ackCommentId` when session state is empty. Because "session state cleared by the gadget" is indistinguishable from "session state never populated", the fallback fires and re-deletes the already-gone comment. GitHub returns 404, `WARN: Failed to delete progress comment after agent success` is logged. 72 occurrences in 24h on production cascade-router, all functionally harmless (the comment IS deleted, just by the gadget rather than the hook), but the log noise dominates WARN volume and obscures real failures.
+
+The fix introduces an explicit boolean flag `initialCommentIdConsumed: boolean` on session state. The gadget's `deleteInitialComment` sets the flag to `true` after a successful delete (whether GitHub returns 200 or 404). The post-agent hook reads the flag first; if `true`, it skips entirely. If `false`, the existing fallback chain (session state → agent-input copy) still works for legacy paths that never populated session state. As a defense-in-depth measure, the GitHub client's `deletePRComment` is taught to treat HTTP 404 as success-equivalent (logging a single DEBUG line instead of letting the error bubble as a WARN). Other HTTP failures (5xx, auth, throttling) continue to log at WARN. The 404-on-DELETE downgrade aligns with RFC-7231 idempotency baseline behavior and standard practice in cloud SDKs.
+
+This plan is independent of plans 1 and 2 — they touch different files and address different failure modes. Sequencing is the implementer's call.
+
+**Components delivered:**
+- New `initialCommentIdConsumed: boolean` field on `SessionStateData` in `src/gadgets/sessionState.ts`. Default `false`.
+- Updated `SessionState.deleteInitialComment` in `src/gadgets/sessionState.ts:169-183` to set the consumed flag after a successful delete (200 or 404).
+- Updated `deleteProgressCommentOnSuccess` in `src/triggers/github/ack-comments.ts:23-58` to gate the entire deletion path (including the agent-input fallback) on `!consumed`.
+- Idempotent `deletePRComment` in `src/github/client.ts:235`: HTTP 404 logs at DEBUG and returns successfully; other HTTP errors continue to throw.
+- No documentation impact beyond the CHANGELOG entry (lifecycle detail is plan-level, per spec 017's doc-impact rubric).
+
+**Deferred to later plans in this spec:**
+- Failure mode A (PM-ack dispatch coverage) — Plan 1.
+- Failure mode B (capacity-gate PM scope) — Plan 2.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- Spec AC #7 (no double-delete after gadget-cleared comment) — **full**
+- Spec AC #8 (legacy fallback still works for paths that never populated session state) — **full**
+- Spec AC #9 (404-on-DELETE downgraded to DEBUG, single Sentry breadcrumb preserved) — **full**
+- Spec AC #10 (24h log volume of all three WARNs drops to <1/24h) — **partial chain** (this plan eliminates the `Failed to delete progress comment after agent success` line; plans 1 and 2 each eliminate their own WARN. Final volume verification is post-deploy.)
+
+---
+
+## Depends On
+
+None. Independent of plans 1 and 2 in this spec.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Session-state `initialCommentIdConsumed` flag
+
+**Tests first** (`tests/unit/gadgets/sessionState.test.ts` — new or extend existing):
+
+- `SessionStateData — fresh state has initialCommentIdConsumed: false` — unit — instantiate via `createSessionState()`; read via `getSessionState()`; assert `initialCommentIdConsumed === false`. Expected red: `AssertionError: expected undefined to be false` (the field doesn't exist yet).
+
+- `setInitialCommentId — does NOT flip the consumed flag` — unit — call `setInitialCommentId(123)`; assert `getSessionState().initialCommentId === 123` AND `getSessionState().initialCommentIdConsumed === false`. Why: setting an id is "we now have an active comment", not "we've already disposed of it". Expected red: same field-doesn't-exist failure.
+
+- `deleteInitialComment — on success: clears initialCommentId to null AND sets initialCommentIdConsumed to true` — unit — set id to `123`; mock `githubClient.deletePRComment` to resolve successfully; call `deleteInitialComment('owner', 'repo')`; assert state is `{ initialCommentId: null, initialCommentIdConsumed: true }`. Expected red: `AssertionError: expected undefined to be true` (no consumed flag set).
+
+- `deleteInitialComment — on HTTP 404 (idempotent): clears AND sets consumed (the comment is gone either way)` — unit — set id to `123`; mock `deletePRComment` to throw a 404-shaped error; call `deleteInitialComment`; assert state is `{ initialCommentId: null, initialCommentIdConsumed: true }`. Why: a 404 means someone else (e.g. a user) already deleted it; functionally equivalent to success. Expected red: `AssertionError: expected initialCommentId to be null` — today the implementation restores the id on any catch.
+
+- `deleteInitialComment — on other HTTP error (e.g. 5xx): does NOT set consumed; restores initialCommentId so the post-agent hook can retry` — unit — set id to `123`; mock `deletePRComment` to throw a 500; call `deleteInitialComment`; assert state is `{ initialCommentId: 123, initialCommentIdConsumed: false }`. Why: a transient failure should leave the post-agent hook authorized to try again. Expected red: today the implementation already restores the id on any catch; this test pins the existing positive behavior plus the new "consumed flag stays false" assertion. The latter half is the real red.
+
+- `deleteInitialComment — when initialCommentId is already null: no-ops without flipping consumed` — unit — start with `{ initialCommentId: null, initialCommentIdConsumed: false }`; call `deleteInitialComment`; assert state is unchanged. Regression pin against accidentally setting consumed when there was nothing to consume. Expected red: passes today (the existing `if (!commentId) return;` short-circuit covers this); fails if implementation accidentally moves the consumed-flip outside that guard.
+
+**Implementation** (`src/gadgets/sessionState.ts`):
+
+- Extend `SessionStateData` interface with `initialCommentIdConsumed: boolean`.
+- Initialize to `false` in the default `state` object.
+- Update `deleteInitialComment(owner, repo)`:
+  - Existing logic: if `!commentId` return early.
+  - Existing logic: clear `state.initialCommentId = null` BEFORE calling delete.
+  - On successful delete OR 404 response: set `state.initialCommentIdConsumed = true`.
+  - On other failure: restore `state.initialCommentId = commentId` (existing behavior); do NOT set the consumed flag.
+- Implementation hint: distinguish 404 from other errors via the GitHub client's error shape (Octokit's `RequestError.status === 404`), OR by relying on Plan 3's task 4 (`deletePRComment` itself catching 404 and returning success). The latter approach is cleaner — once `deletePRComment` no longer throws on 404, the gadget's existing try/catch naturally treats 404 as success and the consumed flag flips.
+
+### 2. Post-agent hook gates fallback on consumed flag
+
+**Tests first** (`tests/unit/triggers/github/ack-comments.test.ts` — new or extend existing):
+
+- `deleteProgressCommentOnSuccess — when initialCommentIdConsumed: skips entirely (no DELETE issued, no fallback to agentInput.ackCommentId)` — unit — set session state to `{ initialCommentId: null, initialCommentIdConsumed: true }`; pass a `result` whose `agentInput.ackCommentId === 4341389855`; spy on `githubClient.deletePRComment`; call hook; assert `deletePRComment` was NOT called. Expected red: today the hook reads `initialCommentId ?? agentInput.ackCommentId ?? null`, sees null in session state, falls through to the agentInput value, and DELETES. The assertion `expected deletePRComment to not be called` fails with the actual call args.
+
+- `deleteProgressCommentOnSuccess — when not consumed and session state has initialCommentId: deletes that id` — unit — set state to `{ initialCommentId: 123, initialCommentIdConsumed: false }`; call hook; assert `deletePRComment(owner, repo, 123)` is called. Regression pin: the hook's primary path still works. Expected red: passes today; ensures we don't accidentally break the primary path during the gating change.
+
+- `deleteProgressCommentOnSuccess — when not consumed and session state is empty but agentInput has ackCommentId: deletes via the legacy fallback (Spec AC #8 regression pin)` — unit — set state to `{ initialCommentId: null, initialCommentIdConsumed: false }`; pass result with `agentInput.ackCommentId === 999`; assert `deletePRComment(owner, repo, 999)` is called. Why: paths that never populate session state continue to work. Expected red: passes today; pins the existing legacy-path behavior so the gating change doesn't break it.
+
+- `deleteProgressCommentOnSuccess — when consumed and session state empty and agentInput has ackCommentId: skips (the consumed flag wins over the legacy fallback)` — unit — set state to `{ initialCommentId: null, initialCommentIdConsumed: true }`; pass result with `agentInput.ackCommentId === 999`; assert `deletePRComment` was NOT called. This is the headline regression pin for the bug class. Expected red: today the hook deletes the agentInput value. Assertion `expected deletePRComment to not be called` fails with the actual call.
+
+- `deleteProgressCommentOnSuccess — implementation agent: still no-ops (existing exclusion preserved)` — unit — pass `result.agentType === 'implementation'`; assert `deletePRComment` not called. Regression pin against the existing `if (result.agentType === 'implementation') return;` short-circuit. Expected red: passes today.
+
+- `deleteProgressCommentOnSuccess — PM-focused agent (e.g. backlog-manager): still no-ops (existing exclusion preserved)` — unit — pass `result.agentType === 'backlog-manager'`; mock `isPMFocusedAgent` to return true; assert `deletePRComment` not called. Regression pin. Expected red: passes today.
+
+**Implementation** (`src/triggers/github/ack-comments.ts:23-58`):
+- Inside `deleteProgressCommentOnSuccess`, after the existing `isPMFocusedAgent` and `parseRepoFullName` short-circuits, read `sessionState.initialCommentIdConsumed`.
+- If `consumed === true`: return early (no delete, no log).
+- Otherwise: existing behavior — fall through to the `initialCommentId ?? agentInput.ackCommentId ?? null` resolution and call `safeOperation(() => githubClient.deletePRComment(...))`.
+
+### 3. (covered as part of task 1 — gadget consume-flag flip)
+
+(no separate task — combined into task 1's `deleteInitialComment` update.)
+
+### 4. Idempotent `deletePRComment` in GitHub client (404 → DEBUG)
+
+**Tests first** (`tests/unit/github/client.test.ts` — new or extend existing — likely the existing client test suite):
+
+- `deletePRComment — on HTTP 200: returns successfully without logging` — unit — mock Octokit's `issues.deleteComment` to resolve `{ status: 204 }` (GitHub's actual success status for delete-issue-comment); assert function returns; assert no logger calls fired. Regression pin: the success path is unchanged. Expected red: passes today.
+
+- `deletePRComment — on HTTP 404: returns successfully, logs at DEBUG with commentId, does NOT throw` — unit — mock Octokit to throw a `RequestError`-shaped object with `status === 404`; assert function returns (no throw propagates); assert `logger.debug` called once with the comment id in the structured payload; assert `logger.warn` and `logger.error` NOT called. Expected red: today the function lets the error propagate; assertion `expected function to not throw` fails with the actual error.
+
+- `deletePRComment — on HTTP 5xx: throws (existing behavior preserved)` — unit — mock Octokit to throw a `RequestError` with `status === 503`; assert function throws. Regression pin: real failures still bubble. Expected red: passes today.
+
+- `deletePRComment — on HTTP 401: throws (existing behavior preserved)` — unit — same shape with 401; assert throws. Regression pin against accidentally swallowing auth failures. Expected red: passes today.
+
+- `deletePRComment — on network error (no HTTP status): throws (existing behavior preserved)` — unit — mock Octokit to throw a plain `Error` without a `status` field; assert throws. Regression pin against the 404-catch swallowing non-HTTP errors. Expected red: passes today.
+
+**Implementation** (`src/github/client.ts:235`):
+- Wrap the `getClient().issues.deleteComment(...)` call in a try/catch.
+- In the catch: if the error has `status === 404` (Octokit's `RequestError` shape), call `logger.debug('GitHub progress comment already deleted (404 on DELETE)', { commentId, owner, repo })` and return without rethrowing.
+- For any other error (including network errors with no status, 5xx, 4xx other than 404, 401): rethrow as-is. The caller's existing `safeOperation` wrapper at `src/triggers/github/ack-comments.ts:54` continues to log other failures at WARN.
+- Do NOT add a generic retry loop; the 404 downgrade is the only behavioral change.
+
+### 5. Integration: gadget-then-hook flow does not 404
+
+**Tests first** (`tests/unit/gadgets/sessionState-and-ack-comments.integration.test.ts` — new file, optional — the per-component tests above already pin the headline behavior; this is belt-and-suspenders):
+
+- `gadget mid-run delete + post-agent hook: exactly one DELETE is issued, the second invocation is suppressed by the consumed flag` — unit-level integration — set up a fresh session state; call `setInitialCommentId(456)`; call gadget's `deleteInitialComment('owner', 'repo')` (mock `deletePRComment` to resolve); call hook's `deleteProgressCommentOnSuccess` with a `result` whose `agentInput.ackCommentId === 456`; assert `deletePRComment` was called exactly ONCE total. Expected red: today, twice.
+
+  Optional. The per-component tests already cover this end-to-end.
+
+**Implementation** — n/a, this test exercises the seam between the two components without new code.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/gadgets/sessionState.test.ts` (new or extend): 6 tests — fresh-state default, set-id-doesn't-flip, delete-success-flips, delete-404-flips, delete-other-error-doesn't-flip, no-id-noop.
+- [ ] `tests/unit/triggers/github/ack-comments.test.ts` (new or extend): 6 tests — consumed-skips, primary-path, legacy-fallback, consumed-trumps-fallback, implementation-agent-noop, PM-focused-agent-noop.
+- [ ] `tests/unit/github/client.test.ts` (new or extend): 5 tests — 200-silent, 404-DEBUG-no-throw, 5xx-throws, 401-throws, network-error-throws.
+
+### Integration / static-guard tests
+- [ ] `tests/unit/gadgets/sessionState-and-ack-comments.integration.test.ts` (optional): 1 test — gadget-then-hook produces exactly one DELETE.
+
+### End-to-end / acceptance
+- Spec ACs #7-#9 are fully covered by the unit tests above. AC #10's CI-verifiable proxy is the absence of any path in the test suite that produces a `Failed to delete progress comment after agent success` WARN under the gadget-then-hook flow.
+
+---
+
+## Manual Verification (for `[manual]`-tagged ACs only)
+
+n/a — all ACs auto-tested.
+
+(Spec AC #10 has a post-deploy log-volume component, but the CI-verifiable proxy in this plan — "no `Failed to delete progress comment after agent success` WARN is emitted on the routine gadget-then-hook path" — is testable via the per-component and the integration tests. The 24h-volume measurement is operator-side after merge, tracked in the spec's overall AC #10 closure.)
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `SessionStateData` has an `initialCommentIdConsumed: boolean` field. Default `false`. Reset semantics match the existing session-state lifecycle.
+2. The gadget's `deleteInitialComment` sets `initialCommentIdConsumed = true` on successful delete OR HTTP 404 response. On other failures, the flag stays `false` (allowing the post-agent hook to retry).
+3. The post-agent hook `deleteProgressCommentOnSuccess` skips entirely when `initialCommentIdConsumed === true`, regardless of whether `agentInput.ackCommentId` is populated.
+4. The post-agent hook's legacy fallback to `agentInput.ackCommentId` still works for code paths that never populate session state (regression pin: paths where session state was never set continue to delete via the fallback).
+5. The GitHub client's `deletePRComment` treats HTTP 404 as success: returns without throwing, logs at DEBUG with the comment id. Other HTTP errors (5xx, 401, 4xx-other-than-404) and non-HTTP errors continue to throw.
+6. After the fixes, the routine gadget-then-hook flow produces exactly one DELETE (via the gadget). The post-agent hook does not issue a redundant call.
+7. All new/modified code has corresponding tests.
+8. `npm run typecheck` passes.
+9. `npm test` (full unit suite) passes.
+10. `npm run lint` passes.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `CHANGELOG.md` | Entry: "Progress-comment lifecycle: post-agent cleanup hook now skips when an in-run gadget has already deleted the comment, eliminating ~72 redundant DELETEs (and 404 WARN log entries) per day on cascade-router. The GitHub client's `deletePRComment` also treats HTTP 404 as success, providing defense in depth." |
+
+(No `CLAUDE.md` or `src/integrations/README.md` change. Lifecycle detail is plan-level per the spec's doc-impact rubric.)
+
+---
+
+## Out of Scope (this plan)
+
+- Failure mode A (PM-ack dispatch coverage) — Plan 1.
+- Failure mode B (capacity-gate PM scope) — Plan 2.
+- Removing the legacy `agentInput.ackCommentId` fallback entirely. The fallback is preserved (gated on `!consumed`) so older code paths that never populated session state continue to work.
+- Reworking the gadget's session-state API surface beyond adding the consumed flag. The existing `deleteInitialComment` keeps its signature.
+- Generalising the 404-as-success-on-DELETE policy to other HTTP DELETE call sites (e.g. PM ack delete in `src/router/acknowledgments.ts`). Only `deletePRComment` is migrated here. Other DELETE call sites get the same treatment in a separate spec if needed.
+- Retry behavior for non-404 errors. The fix is "404 is success", not "5xx is retried".
+- Stray org-level webhooks against unprovisioned repos (operator-side cleanup, see spec Out-of-Scope list).
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1 — `SessionStateData.initialCommentIdConsumed: boolean` exists, default `false` (verified by `tests/unit/gadgets/sessionState.test.ts > initialCommentIdConsumed flag > fresh state has initialCommentIdConsumed: false`).
+- [x] AC #2 — `deleteInitialComment` sets consumed on 200/404, leaves it false on other errors (verified by sessionState tests "on success" and "on error").
+- [x] AC #3 — `deleteProgressCommentOnSuccess` skips entirely when consumed=true (verified by `tests/unit/triggers/github/ack-comments.test.ts > skips entirely when initialCommentIdConsumed=true` + the headline "consumed=true wins over agentInput.ackCommentId fallback" regression pin).
+- [x] AC #4 — Legacy fallback preserved when consumed=false (verified by `consumed=false preserves the legacy fallback to agentInput.ackCommentId` test).
+- [x] AC #5 — `deletePRComment` treats 404 as success (verified by `tests/unit/github/client.test.ts > treats HTTP 404 as success` + 5xx/401/network rejection regression pins).
+- [x] AC #6 — Routine gadget-then-hook flow produces exactly one DELETE (covered by tests 3+5 in combination; no separate integration test required given per-component coverage).
+- [x] AC #7 — All new/modified code has tests (sessionState +7 tests, ack-comments +3, client +4 = 14 new tests).
+- [x] AC #8 — `npm run typecheck` passes (no errors).
+- [x] AC #9 — `npm test` (full unit suite) passes (470 files / 8649 tests, +14 from prior baseline).
+- [x] AC #10 — `npm run lint` passes (Biome clean).

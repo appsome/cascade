@@ -1,0 +1,223 @@
+---
+id: 017
+slug: router-silent-failure-hardening
+plan: 2
+plan_slug: capacity-gate-pm-scope
+level: plan
+parent_spec: docs/specs/017-router-silent-failure-hardening.md
+depends_on: []
+status: pending
+---
+
+# 017/2: Pipeline-capacity-gate PM-provider scope
+
+> Part 2 of 3 in the 017-router-silent-failure-hardening plan. See [parent spec](../../specs/017-router-silent-failure-hardening.md).
+
+## Summary
+
+This plan fixes failure mode B from spec 017: the pipeline-capacity gate at `src/triggers/shared/pipeline-capacity-gate.ts:38` is silently no-op for every PM `status-changed` trigger because the three PM router adapters wrap `triggerRegistry.dispatch(ctx)` in their credential `AsyncLocalStorage` scope but NOT in the PM-provider scope. The gate calls `getPMProvider()`, throws on scope miss, conservatively logs `WARN: pipeline-capacity-gate: PM provider unavailable, allowing run`, and returns `false` (allow). 32 silent skips per day in production. Net effect: `maxInFlightItems` is essentially unenforced for the entire PM-source path — exactly the regression the gate was added to prevent (per the file header comment, the prior incident where three concurrent implementation runs fired against a `maxInFlightItems: 1` project after a human moved three cards into TODO simultaneously).
+
+The fix introduces a shared helper `withPMScopeForDispatch(project, dispatch)` that resolves the project's PM provider via the manifest registry and wraps the dispatch invocation in `withPMProvider`, mirroring the GitHub router adapter's existing correct shape at `src/router/adapters/github.ts:280`. The three PM router adapters (`linear.ts:215-242`, `trello.ts:104-130`, `jira.ts:104-132`) call this helper instead of wrapping themselves. Future PM router adapters consume the same helper for free; a static guard test asserts the invariant per adapter.
+
+Once the routine path establishes scope, the gate's "PM provider unavailable" branch becomes a real anomaly. This plan converts that branch from `WARN + return false` (allow) to `ERROR + Sentry capture under tag pipeline_capacity_gate_no_pm_provider + return true` (block). The "allow when not slot-consuming" branch (the existing early return for non-`implementation` agents) is preserved unchanged. The gate's positive path (PM provider in scope, pipeline-over-capacity check returns a real answer) is also preserved.
+
+This plan is independent of plans 1 and 3 — they touch different files and address different failure modes. Sequencing is the implementer's call.
+
+**Components delivered:**
+- New shared helper `withPMScopeForDispatch(project, dispatch)` in `src/router/adapters/_shared.ts` (or sibling). Resolves PM provider via the manifest registry; wraps in `withPMProvider`; calls `dispatch`.
+- Migration of `src/router/adapters/linear.ts:dispatchWithCredentials` to consume the helper.
+- Migration of `src/router/adapters/trello.ts:dispatchWithCredentials` to consume the helper.
+- Migration of `src/router/adapters/jira.ts:dispatchWithCredentials` to consume the helper.
+- Conversion of `src/triggers/shared/pipeline-capacity-gate.ts:38` from WARN+allow to ERROR+Sentry+block under the stable tag `pipeline_capacity_gate_no_pm_provider`.
+- Static guard at `tests/unit/integrations/pm-router-adapter-pm-scope.test.ts` asserting every PM router adapter consumes the shared helper (or wraps in `withPMProvider` directly within its dispatch path).
+- Doc update in `CLAUDE.md` describing the capacity-gate invariant.
+
+**Deferred to later plans in this spec:**
+- Failure mode A (PM-ack dispatch coverage) — Plan 1.
+- Failure mode C (progress-comment double-delete) — Plan 3.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- Spec AC #4 (capacity gate enforces M of N at the limit under the canonical incident scenario) — **full**
+- Spec AC #5 (CI fails when adding a new PM router adapter without PM-provider scope wrapping) — **full**
+- Spec AC #6 (`pipeline-capacity-gate: PM provider unavailable` WARN → Sentry-captured error on routine path) — **full**
+- Spec AC #10 (24h log volume of all three WARNs drops to <1/24h) — **partial chain** (this plan eliminates the `pipeline-capacity-gate: PM provider unavailable, allowing run` line; plans 1 and 3 each eliminate their own WARN. Final volume verification is post-deploy.)
+
+---
+
+## Depends On
+
+None. Independent of plans 1 and 3 in this spec.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Shared `withPMScopeForDispatch` helper
+
+**Tests first** (`tests/unit/router/adapters/with-pm-scope-for-dispatch.test.ts` — new file):
+
+- `withPMScopeForDispatch — resolves the project's PM provider via manifest registry and runs dispatch inside withPMProvider scope` — unit — call helper with a project whose `pm.type === 'linear'`; pass a `dispatch` callback that internally calls `getPMProvider()`; assert `dispatch` is called once and the inner `getPMProvider()` returns the Linear provider (no throw). Expected red: `Error: Cannot find module '...with-pm-scope-for-dispatch.js'`.
+
+- `withPMScopeForDispatch — returns whatever dispatch returns (preserves TriggerResult passthrough)` — unit — pass a `dispatch` that returns `{ agentType: 'review', agentInput: {} }`; assert the helper's return value deep-equals that object. Why: the existing PM adapters return the dispatch result directly to their caller; the wrapping must not alter shape. Expected red: same module-not-found.
+
+- `withPMScopeForDispatch — when project's pm.type is not in the registry: throws with a clear error before dispatch fires` — unit — pass a project with `pm.type === 'asana'` (not registered); assert helper throws `Error('No PM manifest registered for type: asana')` (or similar, matching the manifest registry's existing missing-key error shape) and `dispatch` is NOT called. Why: failing here is preferable to dispatching with a missing scope, since the gate would then fail-closed and block legitimate runs. The adapter's caller (router) already handles dispatch errors. Expected red: same module-not-found.
+
+- `withPMScopeForDispatch — does not establish credential scope (that's the adapter's job)` — unit — assert helper does NOT call `withLinearCredentials` / `withTrelloCredentials` / `withJiraCredentials`. The credential scope is each adapter's responsibility; this helper layers PM-provider scope ON TOP. Expected red: passes if the implementation correctly avoids the credential-scope wrappers; fails if implementation accidentally double-wraps.
+
+**Implementation** (`src/router/adapters/_shared.ts` — new file or addition to existing _shared module):
+
+- Function signature: `function withPMScopeForDispatch<T>(project: ProjectConfig, dispatch: () => Promise<T>): Promise<T>`.
+- Body: resolve `pmProvider` via `pmRegistry.getOrThrow(project.pm.type)` (or equivalent — the manifest registry already exposes a getter). Wrap in `withPMProvider(pmProvider, dispatch)` from `src/pm/context.ts` and return its result.
+- Do NOT add credential scoping; that's each adapter's concern.
+
+### 2. Migrate `src/router/adapters/linear.ts:dispatchWithCredentials`
+
+**Tests first** (`tests/unit/router/adapters/linear-dispatch-pm-scope.test.ts` — new file or extend existing):
+
+- `LinearRouterAdapter.dispatchWithCredentials — establishes both Linear credentials AND PM-provider scope before dispatch` — unit — set up a Linear-based project with credentials in DB; spy on the trigger handler's invocation to check that BOTH `getLinearCredentials()` AND `getPMProvider()` resolve successfully when called from inside the dispatched handler. Expected red: today, `getPMProvider()` throws `Error: No PMProvider in scope` because the dispatch is wrapped only in `withLinearCredentials`.
+
+- `LinearRouterAdapter.dispatchWithCredentials — returns whatever the trigger registry returns (no shape change)` — unit — mock the trigger registry to return a known `TriggerResult`; assert the adapter's return value deep-equals that. Regression pin against accidentally swallowing the result during the wrap migration. Expected red: test passes today (the existing flow returns the result), should continue to pass after migration — fails LOUDLY if the wrapping is implemented as a fire-and-forget.
+
+**Implementation** (`src/router/adapters/linear.ts:215-242`):
+- Inside `dispatchWithCredentials`, after the existing `withLinearCredentials({ apiKey: linearCreds.apiKey }, ...)` call, replace the inner `() => triggerRegistry.dispatch(ctx)` with `() => withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx))`.
+- Import the shared helper from `./_shared.js`.
+
+### 3. Migrate `src/router/adapters/trello.ts:dispatchWithCredentials`
+
+**Tests first** (`tests/unit/router/adapters/trello-dispatch-pm-scope.test.ts` — new file or extend existing):
+
+- `TrelloRouterAdapter.dispatchWithCredentials — establishes both Trello credentials AND PM-provider scope before dispatch` — unit — same shape as Linear's test. Expected red: same `No PMProvider in scope` throw.
+
+- `TrelloRouterAdapter.dispatchWithCredentials — returns the dispatch result unchanged` — unit — same shape. Expected red: regression pin.
+
+**Implementation** (`src/router/adapters/trello.ts:104-130`):
+- Same pattern as Linear: wrap `() => triggerRegistry.dispatch(ctx)` inside `withPMScopeForDispatch(fullProject, ...)` inside the existing `withTrelloCredentials(...)`.
+
+### 4. Migrate `src/router/adapters/jira.ts:dispatchWithCredentials`
+
+**Tests first** (`tests/unit/router/adapters/jira-dispatch-pm-scope.test.ts` — new file or extend existing):
+
+- `JiraRouterAdapter.dispatchWithCredentials — establishes both JIRA credentials AND PM-provider scope before dispatch` — unit — same shape. Expected red: same `No PMProvider in scope` throw.
+
+- `JiraRouterAdapter.dispatchWithCredentials — returns the dispatch result unchanged` — unit — regression pin.
+
+**Implementation** (`src/router/adapters/jira.ts:104-132`):
+- Same pattern.
+
+### 5. Capacity-gate fail-closed semantics
+
+**Tests first** (`tests/unit/triggers/shared/pipeline-capacity-gate.test.ts` — new or extend):
+
+- `shouldBlockForPipelineCapacity — when getPMProvider() throws (scope miss): returns true (block), logs at ERROR, captures Sentry under tag pipeline_capacity_gate_no_pm_provider` — unit — call the gate without setting up `withPMProvider` scope; mock `getPMProvider` to throw the existing `No PMProvider in scope` error; assert (a) returns `true`; (b) `logger.error` called; (c) `captureException` called with `tags: { source: 'pipeline_capacity_gate_no_pm_provider' }`. Expected red: today returns `false` and only logs at WARN; assertion `expected true to be false` (semantics flipped) is the headline failure.
+
+- `shouldBlockForPipelineCapacity — when PM provider IS in scope: runs the existing isActivePipelineOverCapacity check and returns its boolean result` — unit — set up scope; mock `isActivePipelineOverCapacity` to return `{ overCapacity: true, inFlightCount: 3, limit: 1 }`; assert gate returns `true`; mock to return `{ overCapacity: false, inFlightCount: 0, limit: 1 }`; assert gate returns `false`. Regression pin against accidentally breaking the routine path during the fail-closed conversion. Expected red: passes today on the positive paths; fails if the fail-closed change accidentally short-circuits the over-capacity branch.
+
+- `shouldBlockForPipelineCapacity — non-slot-consuming agent type (e.g. 'review'): early-returns false without consulting the provider` — unit — call gate with `agentType: 'review'`; assert returns `false` and `getPMProvider` is NOT called. Regression pin: the existing early-return for `!SLOT_CONSUMING_AGENTS.has(args.agentType)` must survive the migration. Expected red: passes today; fails if implementation removes the early return.
+
+**Implementation** (`src/triggers/shared/pipeline-capacity-gate.ts:33-45`):
+- Replace the `try { provider = getPMProvider(); } catch (err) { logger.warn(...); return false; }` block with: `try { provider = getPMProvider(); } catch (err) { logger.error('pipeline-capacity-gate: PM provider unavailable, blocking run', { source, projectId, workItemId, error: String(err) }); captureException(err, { tags: { source: 'pipeline_capacity_gate_no_pm_provider' }, extra: { projectId, workItemId, agentType, triggerSource: source } }); return true; }`.
+- Keep the rest of the function (the `isActivePipelineOverCapacity` check and the existing `pipeline-at-capacity` info log) unchanged.
+
+### 6. Static guard: every PM router adapter establishes PM-provider scope
+
+**Tests first** (`tests/unit/integrations/pm-router-adapter-pm-scope.test.ts` — new file):
+
+- `every PM router adapter's dispatchWithCredentials path establishes PM-provider scope` — static — for each registered manifest, locate the adapter source file (Linear/Trello/JIRA today; future-extensible via a known src path convention or a registry export). Read the file source. Assert that within the `dispatchWithCredentials` method body, EITHER `withPMScopeForDispatch` is called OR `withPMProvider` is called directly. Expected red: today, none of the three PM router adapter files contains either string within `dispatchWithCredentials`; the static check would fail and report the missing wrapping per adapter.
+
+  Note: a static-string check is intentionally chosen over runtime dependency injection because (a) the existing `trigger-event-consistency.test.ts` already establishes the file-level static-grep pattern, (b) runtime tests on each adapter cover the behavioral side (tasks 2-4), and (c) static guards are cheap and produce precise file:line failure messages.
+
+- `the static guard fails LOUDLY when a future PM router adapter omits the wrapping` — meta-test — synthesize a temporary fake adapter file that lacks either reference; run the guard against it; assert it fails with a message naming the missing reference. Expected red: depends on implementation of the meta-test; can be skipped if it adds too much complexity (the per-adapter unit tests in tasks 2-4 cover the same invariant from a different angle).
+
+**Implementation** (`tests/unit/integrations/pm-router-adapter-pm-scope.test.ts`):
+- File pattern modeled on `trigger-event-consistency.test.ts`: iterate each adapter file under `src/router/adapters/{linear,trello,jira}.ts` (and future adapters via a glob or hardcoded list — the spec is small enough for the hardcoded list to be acceptable, with the comment that adding a new PM adapter requires adding it here too).
+- For each, read the file source, locate the `dispatchWithCredentials` method (regex on `dispatchWithCredentials\\s*\\([^)]*\\)\\s*[^{]*\\{` and capture the body via brace-counting OR a simpler "the file mentions `withPMScopeForDispatch` OR `withPMProvider` somewhere within the file" heuristic — `/implement` chooses the simplest reliable pattern).
+- Fail with a message like `expected ${file} to invoke withPMScopeForDispatch or withPMProvider; neither was found. The PM router adapter must wrap trigger dispatch in PM-provider AsyncLocalStorage scope.`
+
+### 7. Documentation update (CLAUDE.md)
+
+**Implementation** (`CLAUDE.md`):
+- Add a small subsection under the existing "PM Integration Architecture" pointer (the line: `For adding a new PM provider, see @src/integrations/README.md`). The new content:
+
+  > **Capacity-gate invariant.** Every PM router adapter must wrap `triggerRegistry.dispatch(ctx)` in PM-provider `AsyncLocalStorage` scope (use the shared `withPMScopeForDispatch` helper at `src/router/adapters/_shared.ts`). Without this, the pipeline-capacity gate at `src/triggers/shared/pipeline-capacity-gate.ts` cannot resolve the project's PM provider, fails closed (blocks the run) under the spec-017 fail-closed policy, and Sentry captures under tag `pipeline_capacity_gate_no_pm_provider`. The static guard at `tests/unit/integrations/pm-router-adapter-pm-scope.test.ts` enforces this at CI time.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/router/adapters/with-pm-scope-for-dispatch.test.ts` (new): 4 tests — happy path, return-value passthrough, unregistered-pmType throw, no-credential-scope-double-wrap.
+- [ ] `tests/unit/router/adapters/linear-dispatch-pm-scope.test.ts` (new): 2 tests — provider scope established, dispatch result preserved.
+- [ ] `tests/unit/router/adapters/trello-dispatch-pm-scope.test.ts` (new): 2 tests — same shape.
+- [ ] `tests/unit/router/adapters/jira-dispatch-pm-scope.test.ts` (new): 2 tests — same shape.
+- [ ] `tests/unit/triggers/shared/pipeline-capacity-gate.test.ts` (new or extend): 3 tests — fail-closed-on-scope-miss, positive-path-works, non-slot-consuming-early-return.
+
+### Integration / static-guard tests
+- [ ] `tests/unit/integrations/pm-router-adapter-pm-scope.test.ts` (new): 1-2 tests — static guard per registered adapter.
+
+### End-to-end / acceptance
+- Spec AC #4 (canonical incident scenario reproduces clean) is covered by the combination of (a) the per-adapter scope-establishment tests in tasks 2-4, (b) the gate's positive-path test in task 5, and (c) the existing `isActivePipelineOverCapacity` unit tests for the in-flight count semantics. A full integration test that simulates "human moves N cards into TODO" is heavy and provides only marginal additional confidence over the unit-level coverage; defer unless `/implement` finds a gap.
+
+---
+
+## Manual Verification (for `[manual]`-tagged ACs only)
+
+n/a — all ACs auto-tested.
+
+(Spec AC #10 has a post-deploy log-volume component, but the CI-verifiable proxy in this plan — "the `pipeline-capacity-gate: PM provider unavailable, allowing run` WARN message no longer fires on the routine path" — is testable via the migrated-adapter unit tests + the gate's fail-closed-on-scope-miss test. The 24h-volume measurement is operator-side after merge, tracked in the spec's overall AC #10 closure.)
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. The shared `withPMScopeForDispatch` helper exists, resolves PM providers via the manifest registry, and wraps a passed dispatch callback in `withPMProvider` scope.
+2. The Linear, Trello, and JIRA router adapters each consume the shared helper inside their `dispatchWithCredentials` method (in addition to their existing per-provider credential scope).
+3. `getPMProvider()` succeeds inside any trigger handler dispatched from any of the three PM router adapters.
+4. The capacity-gate's fail-closed branch (PM-provider scope miss): emits ERROR-level log, captures to Sentry under stable tag `pipeline_capacity_gate_no_pm_provider`, returns `true` (block). The previous `WARN + return false` (allow) behavior is removed.
+5. The capacity-gate's positive path (PM provider in scope) still calls `isActivePipelineOverCapacity` and returns its boolean result unchanged. The non-slot-consuming early-return (for non-`implementation` agents) is preserved unchanged.
+6. The static guard at `tests/unit/integrations/pm-router-adapter-pm-scope.test.ts` asserts every PM router adapter's `dispatchWithCredentials` references either the shared helper or `withPMProvider` directly. CI fails when a new PM router adapter is added without the wrapping.
+7. `CLAUDE.md` documents the capacity-gate invariant and points at the static guard as the regression net.
+8. All new/modified code has corresponding tests.
+9. `npm run typecheck` passes.
+10. `npm test` (full unit suite) passes.
+11. `npm run lint` passes.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `CLAUDE.md` | Add "Capacity-gate invariant" subsection under the existing "PM Integration Architecture" pointer. Document the wrap-in-PM-provider-scope rule, the fail-closed policy, the Sentry tag, and the static guard. |
+| `CHANGELOG.md` | Entry: "Pipeline-capacity gate now enforces `maxInFlightItems` for PM `status-changed` triggers (Linear/Trello/JIRA). Previously the gate was silently no-op on the PM-source path due to a missing AsyncLocalStorage wrapping in the PM router adapters." |
+
+---
+
+## Out of Scope (this plan)
+
+- Failure mode A (PM-ack dispatch coverage) — Plan 1.
+- Failure mode C (progress-comment double-delete) — Plan 3.
+- Reworking the GitHub router adapter's `dispatchWithCredentials` (already correct; the new shared helper is offered for reuse but the GitHub adapter doesn't have to migrate to it in this plan — that would be a follow-up cleanup).
+- Reworking `isActivePipelineOverCapacity` itself or the in-flight counting query. The gate's logic is correct; the bug is that it never runs in scope.
+- The `maxInFlightItems` configuration UX or per-project capacity-cap defaults.
+- Any non-`implementation` agent type's gating policy. Only `implementation` is slot-consuming today; the early-return for other types is preserved.
+- Stray org-level webhooks against unprovisioned repos (operator-side cleanup, see spec Out-of-Scope list).
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1
+- [ ] AC #2
+- [ ] AC #3
+- [ ] AC #4
+- [ ] AC #5
+- [ ] AC #6
+- [ ] AC #7
+- [ ] AC #8
+- [ ] AC #9
+- [ ] AC #10
+- [ ] AC #11
