@@ -6,7 +6,7 @@ plan_slug: progress-comment-double-delete
 level: plan
 parent_spec: docs/specs/017-router-silent-failure-hardening.md
 depends_on: []
-status: pending
+status: wip
 ---
 
 # 017/3: Progress-comment double-delete race
