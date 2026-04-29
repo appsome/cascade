@@ -237,10 +237,6 @@ export class LinearRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'linear', payload };
-		// Wrap dispatch in BOTH credential scope AND PM-provider scope.
-		// The PM-provider scope is what the pipeline-capacity gate
-		// (src/triggers/shared/pipeline-capacity-gate.ts) needs to resolve
-		// `getPMProvider()`. Without it the gate fails closed (spec 017).
 		return withLinearCredentials({ apiKey: linearCreds.apiKey }, () =>
 			withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),
 		);

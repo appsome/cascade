@@ -6,10 +6,17 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+// Bootstrap PM manifest registry so createPMProvider can resolve providers
+// inside withPMProvider scope wraps below. See spec 017 / plan 2.
+import '../../src/integrations/pm/index.js';
+
 import {
 	findProjectByBoardIdFromDb,
 	findProjectByRepoFromDb,
 } from '../../src/db/repositories/configRepository.js';
+import { withPMProvider } from '../../src/pm/context.js';
+import { createPMProvider } from '../../src/pm/index.js';
 import { createTriggerRegistry } from '../../src/triggers/registry.js';
 import { ReadyToProcessLabelTrigger } from '../../src/triggers/trello/label-added.js';
 import {
@@ -319,7 +326,14 @@ describe('Trigger Registry (integration)', () => {
 				}),
 			};
 
-			const result = await TrelloStatusChangedTodoTrigger.handle(ctx);
+			// Spec 017 / plan 2: the pipeline-capacity gate is fail-closed when no
+			// PM-provider AsyncLocalStorage scope is in effect. In production the
+			// PM router adapters wrap dispatch in `withPMScopeForDispatch`; this
+			// integration test mirrors that wrapping so the gate's
+			// implementation-only branch finds a provider and proceeds.
+			const result = await withPMProvider(createPMProvider(assertFound(project)), () =>
+				TrelloStatusChangedTodoTrigger.handle(ctx),
+			);
 			expect(result?.agentType).toBe('implementation');
 			expect(result?.agentInput.workItemId).toBe('card-xyz');
 			expect(result?.workItemId).toBe('card-xyz');
@@ -578,16 +592,20 @@ describe('Trigger Registry (integration)', () => {
 			const project = await findProjectByBoardIdFromDb('board-123');
 
 			expect(project).toBeDefined();
-			// Move to todo — should trigger implementation
-			const todoResult = await registry.dispatch({
-				project: assertFound(project),
-				source: 'trello',
-				payload: makeTrelloCardMovedPayload({
-					cardId: 'card-todo',
-					listAfterId: 'list-todo-123',
-					listBeforeId: 'list-plan-456',
+			// Move to todo — should trigger implementation. Spec 017 / plan 2:
+			// wrap in PM-provider scope so the capacity gate (fail-closed) finds
+			// a provider; mirrors production router-adapter wrapping.
+			const todoResult = await withPMProvider(createPMProvider(assertFound(project)), () =>
+				registry.dispatch({
+					project: assertFound(project),
+					source: 'trello',
+					payload: makeTrelloCardMovedPayload({
+						cardId: 'card-todo',
+						listAfterId: 'list-todo-123',
+						listBeforeId: 'list-plan-456',
+					}),
 				}),
-			});
+			);
 			expect(todoResult?.agentType).toBe('implementation');
 
 			// Move to splitting — should trigger splitting

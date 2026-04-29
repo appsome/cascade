@@ -19,6 +19,7 @@ import {
 	getIntegrationByProjectAndCategory,
 	upsertProjectIntegration,
 } from '../../src/db/repositories/settingsRepository.js';
+import { withPMProvider } from '../../src/pm/context.js';
 import { createPMProvider } from '../../src/pm/index.js';
 import { pmRegistry } from '../../src/pm/registry.js';
 import { JiraStatusChangedTrigger } from '../../src/triggers/jira/status-changed.js';
@@ -254,7 +255,12 @@ describe('PM Provider Switching (integration)', () => {
 			};
 
 			expect(TrelloStatusChangedTodoTrigger.matches(ctx)).toBe(true);
-			const result = await TrelloStatusChangedTodoTrigger.handle(ctx);
+			// Spec 017 / plan 2: capacity gate is fail-closed without PM scope.
+			// Mirror production wrapping (`withPMScopeForDispatch`) so the
+			// implementation-gating branch finds a provider and proceeds.
+			const result = await withPMProvider(createPMProvider(assertFound(project)), () =>
+				TrelloStatusChangedTodoTrigger.handle(ctx),
+			);
 			expect(result?.agentType).toBe('implementation');
 		});
 	});
@@ -289,7 +295,10 @@ describe('PM Provider Switching (integration)', () => {
 			};
 
 			expect(trigger.matches(ctx)).toBe(true);
-			const result = await trigger.handle(ctx);
+			// Spec 017 / plan 2: PM scope wrap so the capacity gate finds a provider.
+			const result = await withPMProvider(createPMProvider(assertFound(project)), () =>
+				trigger.handle(ctx),
+			);
 			expect(result?.agentType).toBe('implementation');
 			expect(result?.workItemId).toBe('IMPL-1');
 		});

@@ -126,9 +126,6 @@ export class JiraRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'jira', payload };
-		// Wrap dispatch in BOTH credential scope AND PM-provider scope so that
-		// the pipeline-capacity gate at `src/triggers/shared/pipeline-capacity-gate.ts`
-		// can resolve `getPMProvider()`. See spec 017 plan 2.
 		return withJiraCredentials(
 			{ email: jiraCreds.email, apiToken: jiraCreds.apiToken, baseUrl: jiraCreds.baseUrl },
 			() => withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),

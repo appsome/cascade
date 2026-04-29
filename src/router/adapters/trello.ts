@@ -126,9 +126,6 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'trello', payload };
-		// Wrap dispatch in BOTH credential scope AND PM-provider scope so that
-		// the pipeline-capacity gate at `src/triggers/shared/pipeline-capacity-gate.ts`
-		// can resolve `getPMProvider()`. See spec 017 plan 2.
 		return withTrelloCredentials(trelloCreds, () =>
 			withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),
 		);
