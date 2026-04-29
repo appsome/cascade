@@ -6,7 +6,7 @@ plan_slug: capacity-gate-pm-scope
 level: plan
 parent_spec: docs/specs/017-router-silent-failure-hardening.md
 depends_on: []
-status: pending
+status: done
 ---
 
 # 017/2: Pipeline-capacity-gate PM-provider scope
@@ -210,14 +210,14 @@ n/a — all ACs auto-tested.
 ## Progress
 
 <!-- /implement updates these as it works. Do not edit manually. -->
-- [ ] AC #1
-- [ ] AC #2
-- [ ] AC #3
-- [ ] AC #4
-- [ ] AC #5
-- [ ] AC #6
-- [ ] AC #7
-- [ ] AC #8
-- [ ] AC #9
-- [ ] AC #10
-- [ ] AC #11
+- [x] AC #1 — `withPMScopeForDispatch(project, dispatch)` exists at `src/router/adapters/_shared.ts`, resolves PM provider via `createPMProvider`, wraps in `withPMProvider` (verified by `tests/unit/router/adapters/with-pm-scope-for-dispatch.test.ts`'s 4 tests covering happy path, return passthrough, null result, error propagation).
+- [x] AC #2 — Linear, Trello, JIRA router adapters each consume the shared helper inside `dispatchWithCredentials` (verified by per-adapter regression tests + the static guard).
+- [x] AC #3 — `getPMProvider()` succeeds inside trigger handlers dispatched from any of the three PM router adapters (verified by the helper's positive-path test, which exercises `getPMProvider()` from inside the wrapped callback).
+- [x] AC #4 — Capacity-gate fail-closed branch: ERROR log + Sentry tag `pipeline_capacity_gate_no_pm_provider` + `return true` (verified by `pipeline-capacity-gate.test.ts > FAILS CLOSED (blocks) when no PM provider scope is available`).
+- [x] AC #5 — Positive path still returns `isActivePipelineOverCapacity`'s result; non-slot-consuming early-return preserved (verified by 2 new positive-path tests + the existing non-slot-consuming test).
+- [x] AC #6 — Static guard `tests/unit/integrations/pm-router-adapter-pm-scope.test.ts` asserts each PM router adapter source contains either `withPMScopeForDispatch` or `withPMProvider`; CI fails when missing.
+- [x] AC #7 — CLAUDE.md gains "Capacity-gate invariant" paragraph in the Architecture section.
+- [x] AC #8 — All new/modified code has tests (+4 helper, +3 capacity-gate, +3 static guard, plus passthrough mocks added to 3 PM-source trigger tests + 3 PM router adapter tests).
+- [x] AC #9 — `npm run typecheck` passes.
+- [x] AC #10 — `npm test` (full unit suite) passes (474 files / 8677 tests, +9 from baseline after Plan 1).
+- [x] AC #11 — `npm run lint` passes.

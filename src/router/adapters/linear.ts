@@ -19,6 +19,7 @@ import { loadProjectConfig, type RouterProjectConfig } from '../config.js';
 import type { AckResult, ParsedWebhookEvent, RouterPlatformAdapter } from '../platform-adapter.js';
 import { resolveLinearCredentials } from '../platformClients/index.js';
 import type { CascadeJob, LinearJob } from '../queue.js';
+import { withPMScopeForDispatch } from './_shared.js';
 
 // ============================================================================
 // Processable event combinations (action/type)
@@ -237,7 +238,7 @@ export class LinearRouterAdapter implements RouterPlatformAdapter {
 
 		const ctx: TriggerContext = { project: fullProject, source: 'linear', payload };
 		return withLinearCredentials({ apiKey: linearCreds.apiKey }, () =>
-			triggerRegistry.dispatch(ctx),
+			withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),
 		);
 	}
 

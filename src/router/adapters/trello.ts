@@ -25,6 +25,7 @@ import {
 	isReadyToProcessLabelAdded,
 	isSelfAuthoredTrelloComment,
 } from '../trello.js';
+import { withPMScopeForDispatch } from './_shared.js';
 
 export class TrelloRouterAdapter implements RouterPlatformAdapter {
 	readonly type = 'trello' as const;
@@ -125,7 +126,9 @@ export class TrelloRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'trello', payload };
-		return withTrelloCredentials(trelloCreds, () => triggerRegistry.dispatch(ctx));
+		return withTrelloCredentials(trelloCreds, () =>
+			withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx)),
+		);
 	}
 
 	async postAck(

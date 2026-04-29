@@ -183,16 +183,18 @@ export class SessionState {
 		const commentId = this.state.initialCommentId;
 		if (!commentId) return;
 
-		// Clear state first so the post-agent callback sees null and short-circuits
+		// Clear the id eagerly so concurrent reads can't observe a stale value.
+		// The post-agent callback's actual gate is the `initialCommentIdConsumed`
+		// flag set below — once that's true, the callback's legacy fallback to
+		// `agentInput.ackCommentId` is also short-circuited.
 		this.state.initialCommentId = null;
 
 		try {
 			const { githubClient } = await import('../github/client.js');
 			await githubClient.deletePRComment(owner, repo, commentId);
-			// Mark consumed so the post-agent callback's legacy fallback to
-			// `agentInput.ackCommentId` does not re-issue a DELETE for the
-			// same id. `deletePRComment` swallows 404 internally, so reaching
-			// here without throwing covers both 200/204 and 404 outcomes.
+			// `deletePRComment` swallows 404 internally, so reaching here without
+			// throwing covers both 200/204 (we deleted) and 404 (someone else
+			// already did) outcomes — both mean the comment is gone.
 			this.state.initialCommentIdConsumed = true;
 		} catch {
 			// Best-effort: restore the id so post-agent callback can retry.

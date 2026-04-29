@@ -162,14 +162,15 @@ describe('PM provider conformance (every registered provider)', () => {
 		// PM-side ack because the github router adapter's local `postPMAck`
 		// helper had only Trello + JIRA branches (no `linear`).
 		//
-		// Strategy: dispatch against the real registry. `postComment` may
-		// resolve credentials and return null when none are configured (the
-		// expected outcome in this test environment). What is NOT acceptable
-		// is the dispatch helper throwing or hitting its unknown-PM-type
-		// Sentry path — both indicate the provider is unreachable from the
-		// dispatch surface. We therefore assert the result is either undefined
-		// or has the AckResult shape, and that no exception propagates.
+		// Strategy: dispatch against the real registry and assert no exception
+		// propagates. `postComment` may legitimately return null in this test
+		// environment when credentials aren't seeded, so the result can be
+		// either `undefined` (null id) or an AckResult-shaped object — both
+		// outcomes prove the provider is reachable. What's NOT acceptable is
+		// dispatch throwing or hitting its unknown-PM-type Sentry path; both
+		// indicate the provider is unreachable from the dispatch surface.
 		it('dispatchPMAck reaches this provider without throwing', async () => {
+			expect.assertions(1);
 			const { dispatchPMAck } = await import('../../../src/router/pm-ack-dispatch.js');
 
 			const result = await dispatchPMAck({
@@ -180,14 +181,15 @@ describe('PM provider conformance (every registered provider)', () => {
 				agentType: 'backlog-manager',
 			});
 
-			if (result !== undefined) {
-				expect(result).toEqual(
-					expect.objectContaining({
-						commentId: expect.anything(),
-						message: 'conformance check',
-					}),
-				);
-			}
+			expect(
+				result === undefined ||
+					(typeof result === 'object' &&
+						result !== null &&
+						result.message === 'conformance check' &&
+						result.commentId !== undefined),
+				`dispatchPMAck must reach provider '${id}' and return undefined or a well-shaped AckResult; ` +
+					`got ${JSON.stringify(result)}`,
+			).toBe(true);
 		});
 
 		it('pmIntegration is wired (type matches id)', () => {

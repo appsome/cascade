@@ -41,6 +41,11 @@ vi.mock('../../../../src/utils/runLink.js', () => ({
 vi.mock('../../../../src/jira/client.js', () => ({
 	withJiraCredentials: vi.fn().mockImplementation((_creds: unknown, fn: () => unknown) => fn()),
 }));
+// Spec 017 / plan 2: PM router adapters wrap dispatch in `withPMScopeForDispatch`.
+// Mock as passthrough so the existing tests don't pull the real PM manifest registry.
+vi.mock('../../../../src/router/adapters/_shared.js', () => ({
+	withPMScopeForDispatch: vi.fn().mockImplementation((_p: unknown, fn: () => unknown) => fn()),
+}));
 
 import { postJiraAck, resolveJiraBotAccountId } from '../../../../src/router/acknowledgments.js';
 import { JiraRouterAdapter } from '../../../../src/router/adapters/jira.js';
