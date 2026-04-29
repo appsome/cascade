@@ -497,11 +497,21 @@ export async function runAgentExecutionPipeline(
 	// post-execution linkPRToWorkItem write.
 	const workItemId = await resolveWorkItemId(result.workItemId, project.id, result.prNumber);
 
-	// If we recovered a workItemId the trigger didn't have, patch agentInput so
-	// the corrected value flows into runAgent and into the agent_runs row that
-	// tryCreateRun (src/agents/shared/runTracking.ts) writes.
+	// Patch agentInput.workItemId whenever it diverges from the resolved value.
+	// Two cases this catches:
+	//   1. Re-resolution recovered a workItemId the trigger didn't have at
+	//      webhook-arrival time (the original motivation — see PROpenedTrigger).
+	//   2. The trigger set workItemId at the top level of its TriggerResult but
+	//      forgot to include it inside `agentInput` (live incident: respond-to-
+	//      review and respond-to-pr-comment, 2026-04-29 — 0/103 and 0/9 runs
+	//      had a non-null work_item_id, hiding them from the dashboard's
+	//      work-item page). The static guard at
+	//      tests/unit/triggers/trigger-work-item-id-consistency.test.ts
+	//      catches this at write-time; this runtime patch is the safety net.
+	// tryCreateRun (src/agents/shared/runTracking.ts) reads workItemId from
+	// agentInput when persisting agent_runs.work_item_id.
 	const agentInput =
-		workItemId && workItemId !== result.workItemId
+		workItemId && (result.agentInput.workItemId as string | undefined) !== workItemId
 			? { ...result.agentInput, workItemId }
 			: result.agentInput;
 
