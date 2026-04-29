@@ -291,6 +291,43 @@ describe('spawnWorker', () => {
 		resolveWait();
 	});
 
+	it('sanitizes Docker-invalid characters in jobId when building the container name', async () => {
+		// Live regression: PR #1226 introduced jobIds shaped `coalesce:${projectId}:${workItemId}`
+		// (e.g. `coalesce:ucho:MNG-413`). Docker container names allow only
+		// `[a-zA-Z0-9][a-zA-Z0-9_.-]`, so the colons crashed `createContainer`
+		// with HTTP 400 "bad parameter — Invalid container name". Every
+		// coalesced job that fired post-deploy failed to spawn its worker.
+		// Sanitization replaces the rejected chars (colons here, plus any future
+		// shape-shift) with underscores.
+		const { resolveWait } = setupMockContainer();
+
+		await spawnWorker(makeJob({ id: 'coalesce:ucho:MNG-413' }) as never);
+
+		expect(mockDockerCreateContainer).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: 'cascade-worker-coalesce_ucho_MNG-413',
+			}),
+		);
+
+		resolveWait();
+	});
+
+	it('passes through Docker-safe jobIds unchanged in the container name', async () => {
+		// Regression pin: ordinary jobIds (BullMQ default UUIDs, plain strings,
+		// hyphens, dots, underscores) must not be mangled by the sanitizer.
+		const { resolveWait } = setupMockContainer();
+
+		await spawnWorker(makeJob({ id: 'github-1234567890abcdef' }) as never);
+
+		expect(mockDockerCreateContainer).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: 'cascade-worker-github-1234567890abcdef',
+			}),
+		);
+
+		resolveWait();
+	});
+
 	it('cleans up worker after container exits', async () => {
 		const { resolveWait } = setupMockContainer();
 
