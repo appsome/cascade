@@ -6,7 +6,7 @@ plan_slug: capacity-gate-pm-scope
 level: plan
 parent_spec: docs/specs/017-router-silent-failure-hardening.md
 depends_on: []
-status: pending
+status: wip
 ---
 
 # 017/2: Pipeline-capacity-gate PM-provider scope
