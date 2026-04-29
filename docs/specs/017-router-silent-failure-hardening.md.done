@@ -4,7 +4,7 @@ slug: router-silent-failure-hardening
 level: spec
 title: Router-side silent-failure hardening
 created: 2026-04-29
-status: draft
+status: done
 ---
 
 # 017: Router-side silent-failure hardening
