@@ -152,8 +152,20 @@ All fields are optional; legacy manifests that don't declare them skip the corre
 - `triggerHandlers` have unique names
 - `platformClientFactory(projectId)` returns an object with `postComment` + `deleteComment`
 - `pmIntegration.type` is wired
+- `dispatchPMAck` (the consolidated PM-ack helper at `src/router/pm-ack-dispatch.ts`) reaches this provider without throwing — pinned by the per-provider assertion added in spec 017 plan 1
 
-A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal reference implementation — copy its shape when starting a new provider. The harness runs against TestProvider + Trello + JIRA + Linear (44 assertions total).
+A `TestProvider` fixture in `tests/helpers/testPMProvider.ts` is the minimal reference implementation — copy its shape when starting a new provider. The harness runs against TestProvider + Trello + JIRA + Linear.
+
+### PM-ack dispatch coverage invariant (spec 017 plan 1)
+
+Router-side PM acknowledgment posting (the comment that says "🔧 On it" on the PM card when a PM-focused agent like `backlog-manager` starts work, triggered from a GitHub webhook) goes through **one** code path: `dispatchPMAck` in `src/router/pm-ack-dispatch.ts`. That helper looks up the provider in the manifest registry and invokes `manifest.platformClientFactory(projectId).postComment(workItemId, message)` directly — **no `pmType` literal branching anywhere on the dispatch surface**.
+
+The consolidation closed a parallel-path drift incident verified live on 2026-04-29 (`ucho`): the router-adapter's local helper had Trello + JIRA branches but no Linear branch, so PM-focused agents triggered against Linear-based projects silently skipped their ack with `WARN: Unknown PM type for PM-focused agent ack, skipping` (24× per day in prod). A sibling helper at `src/triggers/shared/pm-ack.ts` had all three branches; both now delegate to `dispatchPMAck`.
+
+A new PM provider lands the dispatch path **for free** the moment its manifest is registered — no edits to `pm-ack-dispatch.ts` or to either of the call sites. Failure modes:
+- Provider's `platformClientFactory` returns a client whose `postComment` throws → conformance harness's `dispatchPMAck reaches this provider without throwing` assertion fails in CI with a precise per-provider message.
+- A future maintainer adds `if (pmType === 'asana')` branching to either call site → the static guard at `tests/unit/router/pm-ack-dispatch.test.ts` (PM-ack dispatch surface: no literal pm-type branching) fails loudly with a file:line citation.
+- Project pinned to a `pm.type` that's no longer in the registry (configuration error) → `dispatchPMAck` logs at ERROR + captures Sentry under tag `pm_ack_unknown_pm_type` (no longer a silent WARN).
 
 ### Provider migration status (plan 009 — PM integration hardening)
 

@@ -14,6 +14,11 @@ import { getIntegrationByProjectAndCategory } from '../db/repositories/integrati
 export interface SentryIntegrationConfig {
 	/** Sentry organization slug (e.g. "my-company") */
 	organizationSlug: string;
+	/**
+	 * PM container ID where the alerting agent creates investigation work items.
+	 * Maps to `backlogListId` in the prompt context when no PM backlog is configured.
+	 */
+	resultsContainerId?: string;
 }
 
 // ============================================================================
@@ -35,5 +40,8 @@ export async function getSentryIntegrationConfig(
 
 	return {
 		organizationSlug: config.organizationSlug,
+		...(typeof config.resultsContainerId === 'string'
+			? { resultsContainerId: config.resultsContainerId }
+			: {}),
 	};
 }

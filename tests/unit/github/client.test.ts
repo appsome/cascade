@@ -324,6 +324,61 @@ describe('githubClient', () => {
 				comment_id: 200,
 			});
 		});
+
+		// ---------------------------------------------------------------------
+		// 404 idempotency (spec 017 / plan 3 — progress-comment-double-delete)
+		// ---------------------------------------------------------------------
+
+		it('treats HTTP 404 as success: returns without throwing, logs at DEBUG with commentId', async () => {
+			const { logger } = await import('../../../src/utils/logging.js');
+			const debugSpy = vi.mocked(logger.debug);
+			const warnSpy = vi.mocked(logger.warn);
+			const errorSpy = vi.mocked(logger.error);
+
+			// Octokit's RequestError shape on 404
+			const notFoundErr = Object.assign(new Error('Not Found'), { status: 404 });
+			mockIssues.deleteComment.mockRejectedValueOnce(notFoundErr);
+
+			await expect(
+				withGitHubToken('test-token', () =>
+					githubClient.deletePRComment('owner', 'repo', 4341389855),
+				),
+			).resolves.toBeUndefined();
+
+			expect(debugSpy).toHaveBeenCalledWith(
+				expect.stringMatching(/already deleted|404/i),
+				expect.objectContaining({ commentId: 4341389855 }),
+			);
+			expect(warnSpy).not.toHaveBeenCalled();
+			expect(errorSpy).not.toHaveBeenCalled();
+		});
+
+		it('rethrows on HTTP 5xx (server error)', async () => {
+			const serverErr = Object.assign(new Error('Server Error'), { status: 503 });
+			mockIssues.deleteComment.mockRejectedValueOnce(serverErr);
+
+			await expect(
+				withGitHubToken('test-token', () => githubClient.deletePRComment('owner', 'repo', 200)),
+			).rejects.toThrow('Server Error');
+		});
+
+		it('rethrows on HTTP 401 (auth failure)', async () => {
+			const authErr = Object.assign(new Error('Bad credentials'), { status: 401 });
+			mockIssues.deleteComment.mockRejectedValueOnce(authErr);
+
+			await expect(
+				withGitHubToken('test-token', () => githubClient.deletePRComment('owner', 'repo', 200)),
+			).rejects.toThrow('Bad credentials');
+		});
+
+		it('rethrows non-HTTP errors (no status field)', async () => {
+			const networkErr = new Error('ECONNRESET');
+			mockIssues.deleteComment.mockRejectedValueOnce(networkErr);
+
+			await expect(
+				withGitHubToken('test-token', () => githubClient.deletePRComment('owner', 'repo', 200)),
+			).rejects.toThrow('ECONNRESET');
+		});
 	});
 
 	describe('getPRReviews', () => {

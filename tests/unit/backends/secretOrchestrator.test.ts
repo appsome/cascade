@@ -1,14 +1,75 @@
+/* biome-ignore lint/suspicious/noExplicitAny: test mocks */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../src/utils/runLink.js', () => ({
 	getDashboardUrl: vi.fn(),
 }));
 
-import { injectRunLinkSecrets } from '../../../src/backends/secretOrchestrator.js';
+// Mock everything that buildExecutionPlan might call
+vi.mock('../../../src/agents/shared/modelResolution.js', () => ({
+	resolveModelConfig: vi.fn().mockResolvedValue({
+		systemPrompt: 'system',
+		taskPrompt: 'task',
+		model: 'claude',
+		maxIterations: 10,
+	}),
+}));
+
+vi.mock('../../../src/agents/shared/promptContext.js', () => ({
+	buildPromptContext: vi.fn().mockReturnValue({}),
+}));
+
+vi.mock('../../../src/db/repositories/partialsRepository.js', () => ({
+	loadPartials: vi.fn().mockResolvedValue(new Map()),
+}));
+
+vi.mock('../../../src/sentry/integration.js', () => ({
+	getSentryIntegrationConfig: vi.fn(),
+}));
+
+vi.mock('../../../src/agents/definitions/profiles.js', () => ({
+	getAgentProfile: vi.fn().mockReturnValue({
+		fetchContext: vi.fn().mockResolvedValue({}),
+		finishHooks: {},
+		filterTools: vi.fn().mockReturnValue([]),
+	}),
+}));
+
+vi.mock('../../../src/agents/definitions/toolManifests.js', () => ({
+	getToolManifests: vi.fn().mockReturnValue([]),
+}));
+
+vi.mock('../../../src/backends/registry.js', () => ({
+	isNativeToolEngineDefinition: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock('../../../src/agents/definitions/index.js', () => ({
+	needsGitStateStopHooks: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock('../../../src/backends/secretBuilder.js', () => ({
+	augmentProjectSecrets: vi.fn().mockResolvedValue({}),
+	resolveGitHubToken: vi.fn(),
+	injectGitHubAckCommentId: vi.fn(),
+	injectProgressCommentId: vi.fn(),
+}));
+
+vi.mock('../../../src/backends/sidecarManager.js', () => ({
+	createCompletionArtifacts: vi.fn().mockReturnValue({}),
+}));
+
+import { buildPromptContext } from '../../../src/agents/shared/promptContext.js';
+import {
+	buildExecutionPlan,
+	injectRunLinkSecrets,
+} from '../../../src/backends/secretOrchestrator.js';
+import { getSentryIntegrationConfig } from '../../../src/sentry/integration.js';
 import type { ProjectConfig } from '../../../src/types/index.js';
 import { getDashboardUrl } from '../../../src/utils/runLink.js';
 
 const mockGetDashboardUrl = vi.mocked(getDashboardUrl);
+const mockGetSentryIntegrationConfig = vi.mocked(getSentryIntegrationConfig);
+const mockBuildPromptContext = vi.mocked(buildPromptContext);
 
 function makeProject(overrides?: Partial<ProjectConfig>): ProjectConfig {
 	return {
@@ -24,6 +85,91 @@ function makeProject(overrides?: Partial<ProjectConfig>): ProjectConfig {
 
 beforeEach(() => {
 	mockGetDashboardUrl.mockReturnValue(undefined);
+	vi.clearAllMocks();
+});
+
+describe('buildExecutionPlan', () => {
+	it('fetches sentry config for alerting agent', async () => {
+		mockGetSentryIntegrationConfig.mockResolvedValueOnce({
+			organizationSlug: 'org',
+			resultsContainerId: 'sentry-container-123',
+		});
+
+		const project = makeProject();
+		await buildExecutionPlan(
+			'alerting',
+			{ project, config: {}, triggerType: 'sentry:issue-created' } as unknown as any,
+			'/repo',
+			{} as unknown as any,
+			{} as unknown as any,
+			'token',
+			false,
+			'claude-code',
+			{} as unknown as any,
+		);
+
+		expect(mockGetSentryIntegrationConfig).toHaveBeenCalledWith('test-project');
+		expect(mockBuildPromptContext).toHaveBeenCalledWith(
+			undefined,
+			project,
+			'sentry:issue-created',
+			undefined,
+			undefined,
+			'sentry-container-123',
+		);
+	});
+
+	it('does not fetch sentry config for non-alerting agent', async () => {
+		const project = makeProject();
+		await buildExecutionPlan(
+			'implementation',
+			{ project, config: {}, triggerType: 'manual' } as unknown as any,
+			'/repo',
+			{} as unknown as any,
+			{} as unknown as any,
+			'token',
+			false,
+			'claude-code',
+			{} as unknown as any,
+		);
+
+		expect(mockGetSentryIntegrationConfig).not.toHaveBeenCalled();
+		expect(mockBuildPromptContext).toHaveBeenCalledWith(
+			undefined,
+			project,
+			'manual',
+			undefined,
+			undefined,
+			undefined,
+		);
+	});
+
+	it('handles sentry config failure gracefully', async () => {
+		mockGetSentryIntegrationConfig.mockRejectedValueOnce(new Error('DB failure'));
+
+		const project = makeProject();
+		await buildExecutionPlan(
+			'alerting',
+			{ project, config: {}, triggerType: 'sentry:issue-created' } as unknown as any,
+			'/repo',
+			{} as unknown as any,
+			{} as unknown as any,
+			'token',
+			false,
+			'claude-code',
+			{} as unknown as any,
+		);
+
+		expect(mockGetSentryIntegrationConfig).toHaveBeenCalledWith('test-project');
+		expect(mockBuildPromptContext).toHaveBeenCalledWith(
+			undefined,
+			project,
+			'sentry:issue-created',
+			undefined,
+			undefined,
+			undefined,
+		);
+	});
 });
 
 describe('injectRunLinkSecrets', () => {

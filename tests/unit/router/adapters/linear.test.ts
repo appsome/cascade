@@ -32,6 +32,13 @@ vi.mock('../../../../src/utils/runLink.js', () => ({
 	buildWorkItemRunsLink: vi.fn().mockReturnValue(null),
 	getDashboardUrl: vi.fn().mockReturnValue(null),
 }));
+// Spec 017 / plan 2: PM router adapters wrap dispatch in `withPMScopeForDispatch`
+// (PM-provider AsyncLocalStorage scope). Mock the helper as passthrough so the
+// existing tests don't pull the real PM manifest registry into the assertion.
+vi.mock('../../../../src/router/adapters/_shared.js', () => ({
+	withPMScopeForDispatch: vi.fn().mockImplementation((_p: unknown, fn: () => unknown) => fn()),
+}));
+
 vi.mock('../../../../src/linear/client.js', () => ({
 	linearClient: {
 		getIssueProjectId: vi.fn().mockResolvedValue(null),

@@ -36,6 +36,11 @@ vi.mock('../../../../src/utils/runLink.js', () => ({
 vi.mock('../../../../src/trello/client.js', () => ({
 	withTrelloCredentials: vi.fn().mockImplementation((_creds: unknown, fn: () => unknown) => fn()),
 }));
+// Spec 017 / plan 2: PM router adapters wrap dispatch in `withPMScopeForDispatch`.
+// Mock as passthrough so the existing tests don't pull the real PM manifest registry.
+vi.mock('../../../../src/router/adapters/_shared.js', () => ({
+	withPMScopeForDispatch: vi.fn().mockImplementation((_p: unknown, fn: () => unknown) => fn()),
+}));
 vi.mock('../../../../src/router/trello.js', () => ({
 	isAgentLogFilename: vi.fn().mockReturnValue(false),
 	isAgentLogAttachmentUploaded: vi.fn().mockReturnValue(false),

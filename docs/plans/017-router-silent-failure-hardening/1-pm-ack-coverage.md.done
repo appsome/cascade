@@ -1,0 +1,210 @@
+---
+id: 017
+slug: router-silent-failure-hardening
+plan: 1
+plan_slug: pm-ack-coverage
+level: plan
+parent_spec: docs/specs/017-router-silent-failure-hardening.md
+depends_on: []
+status: done
+---
+
+# 017/1: PM-ack dispatch coverage (Linear branch missing)
+
+> Part 1 of 3 in the 017-router-silent-failure-hardening plan. See [parent spec](../../specs/017-router-silent-failure-hardening.md).
+
+## Summary
+
+This plan fixes failure mode A from spec 017: PM-focused agents (e.g. `backlog-manager`) triggered from a GitHub webhook against a Linear-based project never get their PM-side acknowledgment comment posted, because the router-side dispatch helper `postPMAck` in `src/router/adapters/github.ts:48-66` branches on `pmType` literal strings and lacks the `linear` case. A near-identical helper at `src/triggers/shared/pm-ack.ts:35-49` (`postPMAckComment`) does have the linear branch — the bug is parallel-path drift between two helpers that should have been one. 24 silent skips per day in production (`WARN: Unknown PM type for PM-focused agent ack, skipping`), all from Linear-based projects (`ucho` being the most active).
+
+The fix consolidates both helpers into one path that consumes `PMProviderManifest.platformClientFactory` from `src/integrations/pm/registry.ts` directly, eliminating per-PM-type literal branching from the dispatch surface entirely. Both call sites (`postPMAck` in `github.ts`, `postPMAckComment` in `pm-ack.ts`) become thin wrappers that delegate to the new helper. Adding a future PM provider to the manifest registry will Just Work for ack dispatch — no edit needed in either call site.
+
+To prevent regression of the bug class, this plan extends the existing PM manifest conformance harness at `tests/unit/integrations/pm-conformance.test.ts` with one new `it()` per registered provider asserting the new helper successfully dispatches against that provider's `platformClientFactory`. Adding a future PM provider whose factory is misconfigured fails CI loudly.
+
+The "truly unknown PM type" branch (a project pinned to a PM type that's not in the registry — configuration error) converts from `WARN: Unknown PM type` (silent skip) to ERROR-level + Sentry capture under stable tag `pm_ack_unknown_pm_type`, mirroring the spec-015 `wedged_lock_canary` precedent.
+
+This plan is independent of plans 2 and 3 — they touch different files and address different failure modes. Sequencing is the implementer's call.
+
+**Components delivered:**
+- New consolidated PM-ack dispatch helper at `src/router/pm-ack-dispatch.ts` (or sibling — final path is `/implement`'s call within the spirit of the contract). Consumes the manifest registry; no `pmType` literal branching.
+- Migration of `src/router/adapters/github.ts:postPMAck` to call the new helper.
+- Migration of `src/triggers/shared/pm-ack.ts:postPMAckComment` to call the new helper.
+- Conversion of the "Unknown PM type" branch from WARN+skip to ERROR+Sentry capture under the stable tag `pm_ack_unknown_pm_type`.
+- Conformance-harness extension at `tests/unit/integrations/pm-conformance.test.ts` with one assertion per registered provider.
+- Doc update in `src/integrations/README.md` describing the "PM-type dispatch coverage invariant".
+
+**Deferred to later plans in this spec:**
+- Failure mode B (capacity-gate PM scope) — Plan 2.
+- Failure mode C (progress-comment double-delete) — Plan 3.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- Spec AC #1 (Linear-based PM-focused agent posts visible ack comment) — **full**
+- Spec AC #2 (CI fails when adding a new PM provider not wired through dispatch) — **full**
+- Spec AC #3 (`Unknown PM type` WARN → Sentry-captured error on routine path) — **full**
+- Spec AC #10 (24h log volume of all three WARNs drops to <1/24h) — **partial chain** (this plan eliminates the `Unknown PM type for PM-focused agent ack, skipping` line; plans 2 and 3 each eliminate their own WARN. Final volume verification is post-deploy.)
+
+---
+
+## Depends On
+
+None. Independent of plans 2 and 3 in this spec.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Consolidated PM-ack dispatch helper
+
+**Tests first** (`tests/unit/router/pm-ack-dispatch.test.ts` — new file):
+
+- `dispatchPMAck — Trello: invokes platformClientFactory(projectId).postComment(workItemId, message) and returns { commentId, message }` — unit — mock the Trello manifest's factory to return a fake client whose `postComment` returns `'comment-trello-123'`; assert the helper returns `{ commentId: 'comment-trello-123', message }`. Expected red: `Error: Cannot find module '../../../src/router/pm-ack-dispatch.js'`.
+
+- `dispatchPMAck — JIRA: same shape, returns numeric or string id from platformClientFactory` — unit — mock JIRA factory to return `'jira-789'`; assert helper returns `{ commentId: 'jira-789', message }`. Expected red: `Error: Cannot find module ...`.
+
+- `dispatchPMAck — Linear: same shape (the failure mode A regression pin)` — unit — mock Linear factory to return `'linear-id-uuid'`; assert helper returns `{ commentId: 'linear-id-uuid', message }`. Expected red: `Error: Cannot find module ...`. After implementation: this is the regression pin proving Linear is reachable from the consolidated helper, which the legacy `postPMAck` did not deliver.
+
+- `dispatchPMAck — returns undefined when platformClientFactory.postComment returns null` — unit — mock factory whose postComment returns `null` (the existing failure-shape contract per `PlatformCommentClient.postComment`); assert helper returns `undefined`. Expected red: `AssertionError: expected { commentId: null, ... } to be undefined`.
+
+- `dispatchPMAck — unknown pmType (not in registry): logs at ERROR, captures Sentry with tag pm_ack_unknown_pm_type, returns undefined` — unit — pass `pmType: 'asana'` (not registered); assert (a) `logger.error` called with the message `Unknown PM type for PM-focused agent ack`; (b) `captureException` called with options containing `tags: { source: 'pm_ack_unknown_pm_type' }`; (c) helper returns `undefined`. Expected red: `expected logger.error to have been called` (today only `logger.warn` is called).
+
+- `dispatchPMAck — does not branch on pmType literal strings` — static — read the helper's source file and assert the strings `=== 'trello'`, `=== 'jira'`, `=== 'linear'` do not appear within the body of the helper. Why: the structural invariant of this plan is "no per-PM-type code in dispatch". A future maintainer who adds an `if (pmType === 'asana')` branch should fail this test. Expected red: passes once the helper consumes the registry; would fail if implementation cheats and re-introduces literal branching.
+
+**Implementation** (`src/router/pm-ack-dispatch.ts` — new file):
+
+- Function signature: `dispatchPMAck(opts: { projectId: string; workItemId: string; pmType: string | undefined; message: string; agentType?: string }): Promise<{ commentId: string | number; message: string } | undefined>`.
+- Resolves the manifest via `getPMProvider(pmType)` from `src/integrations/pm/registry.ts` (or `listPMProviders().find((m) => m.id === pmType)` — final lookup shape is the implementer's call, but it must NOT branch on string literals).
+- If no manifest is found: `logger.error('Unknown PM type for PM-focused agent ack', { agentType, pmType })`, `captureException(new Error('Unknown PM type for PM-focused agent ack'), { tags: { source: 'pm_ack_unknown_pm_type' }, extra: { agentType, pmType } })`, return `undefined`.
+- Otherwise: `const client = manifest.platformClientFactory(projectId); const commentId = await client.postComment(workItemId, message); if (commentId == null) return undefined; return { commentId, message };`.
+- Sentry capture: import the existing `captureException` helper used by spec-015's `wedged_lock_canary` site at `src/router/active-workers.ts` to keep tag conventions aligned.
+
+### 2. Migrate `postPMAck` in `src/router/adapters/github.ts`
+
+**Tests first** (`tests/unit/router/adapters/github-postPMAck.test.ts` — new file, OR extend the existing github-adapter test if one covers postPMAck):
+
+- `postPMAck — delegates to dispatchPMAck for Linear projects (regression pin)` — unit — call `postPMAck('proj-1', 'MNG-100', 'linear', 'backlog-manager', 'Working...')`; assert `dispatchPMAck` was called once with matching args; assert the return value is the dispatch helper's return value passed through. Expected red: `expected dispatchPMAck to have been called` (today the function does not call it — it has its own local trello/jira branching).
+
+- `postPMAck — delegates for Trello and JIRA too (no regression)` — unit — both branches still produce expected `AckResult`. Expected red: same as above for the trello/jira parts after refactor.
+
+- `postPMAck — does not contain pmType literal branching after migration` — static — read `src/router/adapters/github.ts`, locate the `postPMAck` function body, assert the strings `=== 'trello'`, `=== 'jira'`, `=== 'linear'` do not appear within it. Expected red: passes today (it has trello/jira branching) — fails LOUDLY if future drift re-introduces it.
+
+**Implementation** (`src/router/adapters/github.ts:48-66`):
+- Replace the body of `postPMAck` with a call to `dispatchPMAck({ projectId, workItemId, pmType, message, agentType })` and return its result.
+- Remove the local `if (pmType === 'trello') ... else if (pmType === 'jira') ... else { logger.warn ... }` chain.
+- Remove the imports of `postTrelloAck`, `postJiraAck` if they become unused (verify nothing else in the file imports them).
+
+### 3. Migrate `postPMAckComment` in `src/triggers/shared/pm-ack.ts`
+
+**Tests first** (`tests/unit/triggers/shared/pm-ack.test.ts` — new file or extend existing):
+
+- `postPMAckComment — delegates to dispatchPMAck` — unit — assert it calls `dispatchPMAck` with the same arg shape and returns the unwrapped `commentId` (or `null` on undefined dispatch result, since the existing contract returns `string | null`). Expected red: same "expected to have been called" pattern.
+
+- `postPMAckComment — preserves the existing return contract (string | null)` — unit — when dispatch returns `{ commentId: 'X', message }`, postPMAckComment returns `'X'`; when dispatch returns `undefined`, postPMAckComment returns `null`. Why: existing callers in `src/triggers/github/webhook-handler.ts:maybePostPmAckComment` rely on this shape. Expected red: passes after the wrapper is correctly threaded.
+
+- `postPMAckComment — does not contain pmType literal branching after migration` — static — same shape as task 2's static test, applied to `pm-ack.ts`. Expected red: passes today (the file has trello/jira/linear branching) — fails on future regression.
+
+**Implementation** (`src/triggers/shared/pm-ack.ts:35-49`):
+- Replace the body of `postPMAckComment` with `const result = await dispatchPMAck({ projectId, workItemId, pmType, message, agentType }); return result?.commentId == null ? null : String(result.commentId);` — the `String(...)` wrap normalizes the union return type to the existing `string | null` contract.
+- Remove the literal-branching chain and the imports of `postTrelloAck`, `postJiraAck`, `postLinearAck` from `../../router/acknowledgments.js` if they become unused.
+
+### 4. Conformance-harness extension: every registered manifest is reachable from `dispatchPMAck`
+
+**Tests first** (`tests/unit/integrations/pm-conformance.test.ts` — extend the `describe.each((id, manifest))` block):
+
+- `dispatchPMAck — successfully dispatches against ${id}'s platformClientFactory` — unit — for each registered provider, mock the factory's `postComment` to return a deterministic id, then call `dispatchPMAck({ projectId: 'proj-test', workItemId: 'item-test', pmType: id, message: 'test' })`; assert the result is `{ commentId: <mocked>, message: 'test' }`. This test exists ONCE in the harness and runs for every provider via `describe.each`. Expected red: today, calling against `id: 'linear'` returns `undefined` because dispatch goes through the legacy postPMAck which lacks the linear branch.
+
+  Note: the harness today already iterates providers; this `it()` extends that loop. Mock the factory at the manifest level, not the underlying API client — the test asserts the dispatch path, not the API integration.
+
+- `dispatchPMAck — fails CI when a new provider is added to the registry without a working platformClientFactory` — unit — synthesize a stub manifest with `platformClientFactory: () => ({})` (missing methods); register it temporarily; assert `dispatchPMAck` either throws or fails the conformance check (the test is the assertion that conformance fires). Expected red: today the harness's `platformClientFactory returns a client with postComment + deleteComment methods` test already pins the shape — extend that to actually invoke postComment via dispatch.
+
+**Implementation** (`tests/unit/integrations/pm-conformance.test.ts`):
+- Inside the existing `describe.each(providers.map((p) => [p.id, p] as const))('%s', (id, manifest) => { ... })` block, after the existing `platformClientFactory returns a client with postComment + deleteComment methods` test, add the new `dispatchPMAck — successfully dispatches ...` test.
+- Stub the underlying API call surface (`platformClientFactory(projectId)` returns a mocked PlatformCommentClient with controllable `postComment`).
+- The test does NOT exercise the real underlying HTTP layer — that's the integration tests' job. The test exercises the dispatch contract.
+
+### 5. Documentation update
+
+**Implementation** (`src/integrations/README.md`):
+- Add a "PM-type dispatch coverage invariant" callout under the existing "Conformance harness — what CI enforces" section. One paragraph + one bullet:
+
+  > **PM-ack dispatch coverage.** Every PM provider registered in the manifest registry must be reachable from the router-side PM-ack dispatch helper at `src/router/pm-ack-dispatch.ts`. The conformance harness asserts this by invoking `dispatchPMAck` against each registered provider's `platformClientFactory.postComment`. Failing the assertion means a new provider was added without being wired through the dispatch path — fix by ensuring the provider's manifest declares a working `platformClientFactory`. The dispatch helper itself does NOT branch on `pmType` literal strings; it indexes the registry directly.
+
+- Update the per-provider migration-status section if applicable (no provider table edits — the invariant applies to all current and future providers).
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/router/pm-ack-dispatch.test.ts` (new): 6 tests — Trello/JIRA/Linear happy paths, null-from-postComment, unknown-pmType Sentry capture, no-literal-branching static check.
+- [ ] `tests/unit/router/adapters/github-postPMAck.test.ts` (new): 3 tests — delegation, regression for Trello/JIRA, no-literal-branching.
+- [ ] `tests/unit/triggers/shared/pm-ack.test.ts` (new or extend): 3 tests — delegation, return-contract preservation, no-literal-branching.
+
+### Integration / harness tests
+- [ ] `tests/unit/integrations/pm-conformance.test.ts` (extend): one new `it()` inside the existing `describe.each`, runs for every registered provider (today: 3 — Trello, JIRA, Linear; harness also runs against the test fixture provider).
+
+### End-to-end / acceptance
+- Out of plan scope. Spec AC #1 ("Linear-based PM-focused agent posts visible ack comment") is verified by the regression pin in `pm-ack-dispatch.test.ts` (the Linear happy-path test) plus the conformance harness assertion. Live verification is operator-side post-deploy — see Manual Verification.
+
+---
+
+## Manual Verification (for `[manual]`-tagged ACs only)
+
+n/a — all ACs auto-tested.
+
+(Spec AC #10 has a post-deploy log-volume component, but the CI-verifiable proxy in this plan — "the `Unknown PM type for PM-focused agent ack, skipping` WARN message no longer fires on the routine path" — is testable via the static no-literal-branching check + the dispatch helper's positive-path tests. The 24h-volume measurement is operator-side after merge, tracked in the spec's overall AC #10 closure.)
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. The consolidated `dispatchPMAck` helper exists, indexes the manifest registry, does not branch on `pmType` literal strings, and successfully dispatches against every provider whose manifest declares a working `platformClientFactory`.
+2. `postPMAck` in `src/router/adapters/github.ts` delegates to `dispatchPMAck` and contains no `pmType` literal branching after migration.
+3. `postPMAckComment` in `src/triggers/shared/pm-ack.ts` delegates to `dispatchPMAck`, preserves its existing `string | null` return contract, and contains no `pmType` literal branching after migration.
+4. PM-focused agents on Linear-based projects produce a visible PM-side ack comment via the dispatch helper (regression pin: the Linear happy-path test in `pm-ack-dispatch.test.ts`).
+5. Genuinely-unknown PM types (configuration error) emit ERROR-level logs and Sentry capture under the stable tag `pm_ack_unknown_pm_type`. The legacy WARN+skip path is removed.
+6. The PM manifest conformance harness asserts dispatch coverage for every registered provider; adding a future provider without a working `platformClientFactory` produces a CI failure.
+7. `src/integrations/README.md` documents the dispatch coverage invariant.
+8. All new/modified code has corresponding tests.
+9. `npm run typecheck` passes.
+10. `npm test` (full unit suite) passes.
+11. `npm run lint` passes.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/README.md` | Add "PM-ack dispatch coverage" subsection under the "Conformance harness — what CI enforces" section. Document: every registered manifest must be reachable from `dispatchPMAck`; dispatch must not branch on `pmType` literal strings. Reference the conformance harness as the regression net. |
+| `CHANGELOG.md` | Entry: "PM-ack dispatch consolidation: Linear-based PM-focused agents now post their PM-side ack comment via a registry-consuming helper. Eliminates the silent skip on Linear projects." |
+
+---
+
+## Out of Scope (this plan)
+
+- Failure mode B (capacity-gate PM scope) — Plan 2.
+- Failure mode C (progress-comment double-delete) — Plan 3.
+- Generalising the dispatch helper to non-PM ack flows (GitHub PR ack, alerting category, etc.). Only PM-focused agent ack dispatch from the router-after-GitHub-webhook path is migrated here.
+- Migrating the legacy underlying `postTrelloAck` / `postJiraAck` / `postLinearAck` helpers in `src/router/acknowledgments.ts` (they remain as the platformClientFactory implementations consumed indirectly via the manifest registry; consolidating those is a larger refactor for a future spec).
+- Any changes to the agent-side `PMIntegration.deleteAckComment` or to the gadgets that delete ack comments mid-run (those are in Plan 3's scope).
+- The dashboard UI's representation of PM-side ack comments. The UX is unchanged; the fix is "the comment is posted at all on Linear".
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [x] AC #1 — `dispatchPMAck` exists at `src/router/pm-ack-dispatch.ts`, indexes the manifest registry, no `pmType` literal branching (verified by `tests/unit/router/pm-ack-dispatch.test.ts > dispatchPMAck` happy-paths for all three PM types + the static no-literal-branching guard).
+- [x] AC #2 — `postPMAck` in `src/router/adapters/github.ts` delegates to `dispatchPMAck`; static guard rejects literal branching (verified by the static guard test in `pm-ack-dispatch.test.ts`).
+- [x] AC #3 — `postPMAckComment` in `src/triggers/shared/pm-ack.ts` delegates to `dispatchPMAck` and preserves the `string | null` return contract (verified by `tests/unit/triggers/shared/pm-ack.test.ts`).
+- [x] AC #4 — Linear-based PM-focused agents reach the dispatch helper (verified by the new `routes ack to PM tool for Linear-based projects (spec 017 plan 1 regression pin)` test in `tests/unit/router/adapters/github.test.ts` + the pm-ack-dispatch Linear happy-path).
+- [x] AC #5 — Unknown PM types log ERROR + Sentry capture under `pm_ack_unknown_pm_type` (verified by the dispatch helper's "unknown pmType" + "undefined pmType" tests).
+- [x] AC #6 — Conformance harness asserts dispatch coverage per registered provider (verified by the new per-provider `dispatchPMAck reaches this provider without throwing` assertion in `pm-conformance.test.ts`'s `describe.each` block).
+- [x] AC #7 — `src/integrations/README.md` documents the dispatch coverage invariant (new "PM-ack dispatch coverage invariant (spec 017 plan 1)" subsection added).
+- [x] AC #8 — All new/modified code has tests (+6 in pm-ack-dispatch, +4 in pm-ack, +1 per-provider in conformance harness, +1 Linear regression pin in github adapter test, plus 2 existing github adapter tests migrated from postTrelloAck to dispatchPMAck mocking).
+- [x] AC #9 — `npm run typecheck` passes.
+- [x] AC #10 — `npm test` (full unit suite) passes (472 files / 8668 tests, +19 from baseline).
+- [x] AC #11 — `npm run lint` passes (Biome clean).

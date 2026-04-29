@@ -2,7 +2,7 @@
  * Alerting (Sentry) integration tab component.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Trash2 } from 'lucide-react';
+import { Info, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { CopyButton } from '@/components/ui/copy-button.js';
 import { Input } from '@/components/ui/input.js';
@@ -12,20 +12,215 @@ import { trpc, trpcClient } from '@/lib/trpc.js';
 import { ProjectSecretField } from './project-secret-field.js';
 
 // ============================================================================
+// PM Container Picker
+// ============================================================================
+
+interface ContainerPickerProps {
+	projectId: string;
+	pmProvider: string;
+	/** The project's existing PM integration config (used to derive discovery args). */
+	pmConfig: Record<string, unknown>;
+	value: string;
+	onChange: (id: string) => void;
+}
+
+interface ProviderPickerConfig {
+	/** Discovery capability to call for fetching the right items. */
+	capability: 'states' | 'teams';
+	/** Build the `args` object for the discover call from the project's PM config. */
+	getArgs: (pmConfig: Record<string, unknown>) => Record<string, unknown>;
+	/**
+	 * Which property of the returned discovery item to save as `resultsContainerId`.
+	 * - JIRA `states` → `name` (status name — the adapter matches transitions by name).
+	 * - Linear `teams` → `id` (team UUID used directly as `backlogListId`).
+	 */
+	getOptionValue: (item: { id: string; name: string }) => string;
+}
+
+/**
+ * Returns discovery config for a PM provider, or `undefined` when no
+ * dropdown picker is supported for that provider.
+ *
+ * - JIRA: `states` capability, scoped to the configured project key.
+ *   `backlogListId` for JIRA = a status name (e.g. "Backlog"), so the picker
+ *   saves `item.name` not the numeric state ID.
+ * - Linear: `teams` capability; team ID is correct for `backlogListId`.
+ * - Trello: no `lists` discovery capability exists in the manifest
+ *   (`boards` capability returns boards, not lists within a board).
+ *   Trello users must enter the list ID manually.
+ */
+function providerPickerConfig(provider: string): ProviderPickerConfig | undefined {
+	switch (provider) {
+		case 'jira':
+			return {
+				capability: 'states',
+				// `containerId` must be the JIRA project key (e.g. "PROJ") so
+				// the states endpoint fetches statuses for the configured project.
+				getArgs: (pmConfig) => ({ containerId: (pmConfig.projectKey as string) ?? '' }),
+				// JIRA's adapter matches transitions by status NAME, not numeric ID.
+				getOptionValue: (item) => item.name,
+			};
+		case 'linear':
+			return {
+				capability: 'teams',
+				getArgs: () => ({}),
+				getOptionValue: (item) => item.id,
+			};
+		default:
+			// Trello (and any unknown provider): no lists-level capability.
+			return undefined;
+	}
+}
+
+function PMContainerPicker({
+	projectId,
+	pmProvider,
+	pmConfig,
+	value,
+	onChange,
+}: ContainerPickerProps) {
+	const pickerConfig = providerPickerConfig(pmProvider);
+
+	const containersMutation = useMutation({
+		mutationFn: async () => {
+			if (!pickerConfig) {
+				throw new Error(`No container discovery capability for provider "${pmProvider}"`);
+			}
+			return (await trpcClient.pm.discovery.discover.mutate({
+				providerId: pmProvider,
+				capability: pickerConfig.capability,
+				args: pickerConfig.getArgs(pmConfig),
+				projectId,
+			})) as Array<{ id: string; name: string }>;
+		},
+	});
+
+	return (
+		<div className="space-y-2">
+			<div className="flex gap-2">
+				<select
+					id="sentry-results-container"
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+					className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				>
+					<option value="">
+						{containersMutation.isPending
+							? 'Loading...'
+							: containersMutation.data
+								? '— Select —'
+								: '— Click Fetch to load options —'}
+					</option>
+					{containersMutation.data?.map((c) => {
+						const optionValue = pickerConfig?.getOptionValue(c) ?? c.id;
+						return (
+							<option key={optionValue} value={optionValue}>
+								{c.name}
+							</option>
+						);
+					})}
+				</select>
+				<button
+					type="button"
+					onClick={() => containersMutation.mutate()}
+					disabled={containersMutation.isPending || !pickerConfig}
+					title={
+						!pickerConfig
+							? `No list picker available for "${pmProvider}" — use the manual input below`
+							: undefined
+					}
+					className="inline-flex h-9 shrink-0 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+				>
+					{containersMutation.isPending ? 'Loading...' : 'Fetch'}
+				</button>
+			</div>
+			{containersMutation.isError && (
+				<p className="text-xs text-destructive">{containersMutation.error.message}</p>
+			)}
+			<p className="text-xs text-muted-foreground">
+				Or enter the ID manually:{' '}
+				<input
+					type="text"
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+					placeholder="list-id or status-name"
+					className="ml-1 inline-block h-6 rounded border border-input bg-background px-2 text-xs"
+				/>
+			</p>
+		</div>
+	);
+}
+
+/**
+ * Renders the Investigation Results container input.
+ * Shows a `PMContainerPicker` when the provider supports dropdown discovery,
+ * or falls back to a plain text `Input` for Trello and unconfigured projects.
+ * Extracted to keep `AlertingTab`'s cognitive complexity below the project limit.
+ */
+function ContainerInput({
+	projectId,
+	pmProvider,
+	pmConfig,
+	value,
+	onChange,
+}: {
+	projectId: string;
+	pmProvider: string | undefined;
+	pmConfig: Record<string, unknown> | undefined;
+	value: string;
+	onChange: (v: string) => void;
+}) {
+	if (pmProvider && providerPickerConfig(pmProvider)) {
+		return (
+			<PMContainerPicker
+				projectId={projectId}
+				pmProvider={pmProvider}
+				pmConfig={pmConfig ?? {}}
+				value={value}
+				onChange={onChange}
+			/>
+		);
+	}
+	const placeholder = pmProvider
+		? `Enter list ID manually (no picker available for ${pmProvider})`
+		: 'List ID or status name (configure PM integration to use a picker)';
+	return (
+		<Input
+			id="sentry-results-container"
+			value={value}
+			onChange={(e) => onChange(e.target.value)}
+			placeholder={placeholder}
+		/>
+	);
+}
+
+// ============================================================================
 // Alerting Tab (Sentry)
 // ============================================================================
 
 interface AlertingTabProps {
 	projectId: string;
 	alertingIntegration?: Record<string, unknown>;
+	/** PM provider slug (e.g. "trello", "jira", "linear") when a PM integration is configured. */
+	pmProvider?: string;
+	/** The project's existing PM integration config, used to drive the container picker. */
+	pmConfig?: Record<string, unknown>;
 }
 
-export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps) {
+export function AlertingTab({
+	projectId,
+	alertingIntegration,
+	pmProvider,
+	pmConfig,
+}: AlertingTabProps) {
 	const queryClient = useQueryClient();
 
 	const existingConfig = (alertingIntegration?.config as Record<string, unknown>) ?? {};
 	const [organizationSlug, setOrganizationSlug] = useState(
 		(existingConfig.organizationSlug as string) ?? '',
+	);
+	const [resultsContainerId, setResultsContainerId] = useState(
+		(existingConfig.resultsContainerId as string) ?? '',
 	);
 
 	const [verifyResult, setVerifyResult] = useState<{
@@ -80,7 +275,10 @@ export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps
 				projectId,
 				category: 'alerting',
 				provider: 'sentry',
-				config: { organizationSlug },
+				config: {
+					organizationSlug,
+					...(resultsContainerId ? { resultsContainerId } : {}),
+				},
 			});
 		},
 		onSuccess: () => {
@@ -106,6 +304,17 @@ export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps
 
 	return (
 		<div className="space-y-6">
+			{/* Agent enablement info box */}
+			<div className="flex gap-3 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
+				<Info className="mt-0.5 h-4 w-4 shrink-0" />
+				<div>
+					<span className="font-medium">Enable the Alerting Agent</span> — After saving this
+					integration, go to the <span className="font-medium">Agents</span> tab and enable the{' '}
+					<span className="font-mono text-xs">alerting</span> agent type so Sentry alerts trigger
+					investigation runs automatically.
+				</div>
+			</div>
+
 			{/* Organization Slug */}
 			<div className="space-y-2">
 				<Label htmlFor="sentry-org-slug">Organization Slug</Label>
@@ -118,6 +327,24 @@ export function AlertingTab({ projectId, alertingIntegration }: AlertingTabProps
 					value={organizationSlug}
 					onChange={(e) => setOrganizationSlug(e.target.value)}
 					placeholder="my-organization"
+				/>
+			</div>
+
+			<hr className="border-border" />
+
+			{/* Investigation Results List */}
+			<div className="space-y-2">
+				<Label htmlFor="sentry-results-container">Investigation Results List</Label>
+				<p className="text-xs text-muted-foreground">
+					The PM list or status where the alerting agent creates investigation work items. Used as
+					the target container when the agent creates bug fix cards.
+				</p>
+				<ContainerInput
+					projectId={projectId}
+					pmProvider={pmProvider}
+					pmConfig={pmConfig}
+					value={resultsContainerId}
+					onChange={setResultsContainerId}
 				/>
 			</div>
 

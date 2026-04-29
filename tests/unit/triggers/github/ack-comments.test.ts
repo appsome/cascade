@@ -168,6 +168,64 @@ describe('deleteProgressCommentOnSuccess', () => {
 			deleteProgressCommentOnSuccess(result, makeAgentResult()),
 		).resolves.toBeUndefined();
 	});
+
+	// -------------------------------------------------------------------------
+	// initialCommentIdConsumed gating (spec 017 / plan 3 — progress-comment-double-delete)
+	// -------------------------------------------------------------------------
+
+	it('skips entirely when initialCommentIdConsumed=true (no DELETE issued)', async () => {
+		// A gadget already deleted the comment mid-run and signalled consumption.
+		// The post-agent hook must not issue a redundant DELETE.
+		mockGetSessionState.mockReturnValue({
+			initialCommentId: null,
+			initialCommentIdConsumed: true,
+		} as ReturnType<typeof getSessionState>);
+
+		const result = makeResult();
+		await deleteProgressCommentOnSuccess(result, makeAgentResult());
+
+		expect(mockGithubClient.deletePRComment).not.toHaveBeenCalled();
+	});
+
+	it('consumed=true wins over agentInput.ackCommentId fallback (the headline regression pin)', async () => {
+		// Live incident shape: gadget cleared session state but agentInput still
+		// holds the original ackCommentId. Without the consumed gate, the hook
+		// re-deletes the already-gone comment and produces a 404 WARN.
+		mockGetSessionState.mockReturnValue({
+			initialCommentId: null,
+			initialCommentIdConsumed: true,
+		} as ReturnType<typeof getSessionState>);
+
+		const result = makeResult({
+			agentInput: {
+				repoFullName: 'acme/myapp',
+				ackCommentId: 4341389855, // a real comment id from the prod incident
+			},
+		} as Partial<TriggerResult>);
+
+		await deleteProgressCommentOnSuccess(result, makeAgentResult());
+
+		expect(mockGithubClient.deletePRComment).not.toHaveBeenCalled();
+	});
+
+	it('consumed=false preserves the legacy fallback to agentInput.ackCommentId (Spec AC #8)', async () => {
+		// Paths that never populate session state (older code paths) must still work.
+		mockGetSessionState.mockReturnValue({
+			initialCommentId: null,
+			initialCommentIdConsumed: false,
+		} as ReturnType<typeof getSessionState>);
+
+		const result = makeResult({
+			agentInput: {
+				repoFullName: 'acme/myapp',
+				ackCommentId: 999,
+			},
+		} as Partial<TriggerResult>);
+
+		await deleteProgressCommentOnSuccess(result, makeAgentResult());
+
+		expect(mockGithubClient.deletePRComment).toHaveBeenCalledWith('acme', 'myapp', 999);
+	});
 });
 
 describe('updateInitialCommentWithError', () => {

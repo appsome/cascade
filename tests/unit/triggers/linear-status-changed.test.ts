@@ -4,6 +4,14 @@ import { mockLogger, mockTriggerCheckModule } from '../../helpers/sharedMocks.js
 vi.mock('../../../src/utils/logging.js', () => ({ logger: mockLogger }));
 vi.mock('../../../src/triggers/shared/trigger-check.js', () => mockTriggerCheckModule);
 
+// Spec 017 / plan 2: the capacity gate is now fail-closed when no
+// PM-provider AsyncLocalStorage scope is in effect (which is the case in
+// these unit tests). Mock the gate to return false (don't block) so the
+// trigger-logic assertions still exercise the paths under test.
+vi.mock('../../../src/triggers/shared/pipeline-capacity-gate.js', () => ({
+	shouldBlockForPipelineCapacity: vi.fn().mockResolvedValue(false),
+}));
+
 const mockGetLinearConfig = vi.fn();
 vi.mock('../../../src/pm/config.js', () => ({
 	getLinearConfig: (...args: unknown[]) => mockGetLinearConfig(...args),

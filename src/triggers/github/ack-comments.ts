@@ -43,7 +43,14 @@ export async function deleteProgressCommentOnSuccess(
 
 	const { getSessionState } = await import('../../gadgets/sessionState.js');
 	const sessionState = getSessionState();
-	const { initialCommentId } = sessionState;
+	const { initialCommentId, initialCommentIdConsumed } = sessionState;
+
+	// If a gadget mid-run delete (or sidecar-driven clear) has already disposed
+	// of the initial ack comment, the post-agent hook must not re-issue a DELETE —
+	// even if `agentInput.ackCommentId` still carries the original id as a legacy
+	// fallback. Without this gate, the duplicate DELETE returns 404 and produced
+	// ~72 WARN entries per day on cascade-router (live audit, 2026-04-29).
+	if (initialCommentIdConsumed) return;
 
 	// Fall back to ackCommentId stored in agentInput if sessionState wasn't populated
 	const ackCommentId =

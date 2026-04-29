@@ -154,6 +154,44 @@ describe('PM provider conformance (every registered provider)', () => {
 			expect(typeof client.deleteComment).toBe('function');
 		});
 
+		// Spec 017 / plan 1: every registered manifest must be reachable from
+		// the consolidated PM-ack dispatch helper. Adding a future provider
+		// without a working `platformClientFactory` produces a CI failure here.
+		// This is the regression net for failure mode A from the 2026-04-29
+		// audit, where Linear-based PM-focused agents silently skipped their
+		// PM-side ack because the github router adapter's local `postPMAck`
+		// helper had only Trello + JIRA branches (no `linear`).
+		//
+		// Strategy: dispatch against the real registry and assert no exception
+		// propagates. `postComment` may legitimately return null in this test
+		// environment when credentials aren't seeded, so the result can be
+		// either `undefined` (null id) or an AckResult-shaped object — both
+		// outcomes prove the provider is reachable. What's NOT acceptable is
+		// dispatch throwing or hitting its unknown-PM-type Sentry path; both
+		// indicate the provider is unreachable from the dispatch surface.
+		it('dispatchPMAck reaches this provider without throwing', async () => {
+			expect.assertions(1);
+			const { dispatchPMAck } = await import('../../../src/router/pm-ack-dispatch.js');
+
+			const result = await dispatchPMAck({
+				projectId: 'proj-conformance',
+				workItemId: 'item-conformance',
+				pmType: id,
+				message: 'conformance check',
+				agentType: 'backlog-manager',
+			});
+
+			expect(
+				result === undefined ||
+					(typeof result === 'object' &&
+						result !== null &&
+						result.message === 'conformance check' &&
+						result.commentId !== undefined),
+				`dispatchPMAck must reach provider '${id}' and return undefined or a well-shaped AckResult; ` +
+					`got ${JSON.stringify(result)}`,
+			).toBe(true);
+		});
+
 		it('pmIntegration is wired (type matches id)', () => {
 			// Confirms the manifest plumbs the PMIntegration. Actual behavior of
 			// parseWebhookPayload on the integration is tested per-provider; the

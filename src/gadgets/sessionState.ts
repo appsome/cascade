@@ -47,6 +47,14 @@ interface SessionStateData {
 	reviewBody: string | null;
 	reviewEvent: string | null;
 	initialCommentId: number | null;
+	/**
+	 * Set to `true` after a gadget mid-run delete (or sidecar-driven clear) has
+	 * disposed of the initial ack comment. The post-agent cleanup hook reads
+	 * this and skips its DELETE entirely, including the legacy fallback to
+	 * `agentInput.ackCommentId`. Distinguishes "we never had a comment" (false)
+	 * from "we had one but it's already gone" (true).
+	 */
+	initialCommentIdConsumed: boolean;
 }
 
 /**
@@ -73,6 +81,7 @@ export class SessionState {
 		reviewBody: null,
 		reviewEvent: null,
 		initialCommentId: null,
+		initialCommentIdConsumed: false,
 	};
 
 	init(options: InitSessionStateOptions): void {
@@ -105,6 +114,7 @@ export class SessionState {
 			reviewBody: null,
 			reviewEvent: null,
 			initialCommentId: null,
+			initialCommentIdConsumed: false,
 		};
 	}
 
@@ -157,6 +167,9 @@ export class SessionState {
 	 */
 	clearInitialComment(): void {
 		this.state.initialCommentId = null;
+		// Mark consumed so the post-agent callback skips even if agentInput
+		// still carries the original ackCommentId as a legacy fallback.
+		this.state.initialCommentIdConsumed = true;
 	}
 
 	/**
@@ -170,14 +183,22 @@ export class SessionState {
 		const commentId = this.state.initialCommentId;
 		if (!commentId) return;
 
-		// Clear state first so the post-agent callback sees null and short-circuits
+		// Clear the id eagerly so concurrent reads can't observe a stale value.
+		// The post-agent callback's actual gate is the `initialCommentIdConsumed`
+		// flag set below — once that's true, the callback's legacy fallback to
+		// `agentInput.ackCommentId` is also short-circuited.
 		this.state.initialCommentId = null;
 
 		try {
 			const { githubClient } = await import('../github/client.js');
 			await githubClient.deletePRComment(owner, repo, commentId);
+			// `deletePRComment` swallows 404 internally, so reaching here without
+			// throwing covers both 200/204 (we deleted) and 404 (someone else
+			// already did) outcomes — both mean the comment is gone.
+			this.state.initialCommentIdConsumed = true;
 		} catch {
-			// Best-effort: restore the id so post-agent callback can retry
+			// Best-effort: restore the id so post-agent callback can retry.
+			// Consumed flag stays false — the comment may still be live.
 			this.state.initialCommentId = commentId;
 		}
 	}
