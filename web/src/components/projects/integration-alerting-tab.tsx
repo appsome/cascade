@@ -18,38 +18,78 @@ import { ProjectSecretField } from './project-secret-field.js';
 interface ContainerPickerProps {
 	projectId: string;
 	pmProvider: string;
+	/** The project's existing PM integration config (used to derive discovery args). */
+	pmConfig: Record<string, unknown>;
 	value: string;
 	onChange: (id: string) => void;
 }
 
-/**
- * Maps a PM provider slug to its discovery capability that returns container-like items.
- * Trello → "boards", JIRA → "projects", Linear → "teams".
- * Falls back to undefined (disabling the fetch button) for unknown providers.
- */
-function containerCapabilityForProvider(
-	provider: string,
-): 'boards' | 'projects' | 'teams' | undefined {
-	const map: Record<string, 'boards' | 'projects' | 'teams'> = {
-		trello: 'boards',
-		jira: 'projects',
-		linear: 'teams',
-	};
-	return map[provider];
+interface ProviderPickerConfig {
+	/** Discovery capability to call for fetching the right items. */
+	capability: 'states' | 'teams';
+	/** Build the `args` object for the discover call from the project's PM config. */
+	getArgs: (pmConfig: Record<string, unknown>) => Record<string, unknown>;
+	/**
+	 * Which property of the returned discovery item to save as `resultsContainerId`.
+	 * - JIRA `states` → `name` (status name — the adapter matches transitions by name).
+	 * - Linear `teams` → `id` (team UUID used directly as `backlogListId`).
+	 */
+	getOptionValue: (item: { id: string; name: string }) => string;
 }
 
-function PMContainerPicker({ projectId, pmProvider, value, onChange }: ContainerPickerProps) {
-	const capability = containerCapabilityForProvider(pmProvider);
+/**
+ * Returns discovery config for a PM provider, or `undefined` when no
+ * dropdown picker is supported for that provider.
+ *
+ * - JIRA: `states` capability, scoped to the configured project key.
+ *   `backlogListId` for JIRA = a status name (e.g. "Backlog"), so the picker
+ *   saves `item.name` not the numeric state ID.
+ * - Linear: `teams` capability; team ID is correct for `backlogListId`.
+ * - Trello: no `lists` discovery capability exists in the manifest
+ *   (`boards` capability returns boards, not lists within a board).
+ *   Trello users must enter the list ID manually.
+ */
+function providerPickerConfig(provider: string): ProviderPickerConfig | undefined {
+	switch (provider) {
+		case 'jira':
+			return {
+				capability: 'states',
+				// `containerId` must be the JIRA project key (e.g. "PROJ") so
+				// the states endpoint fetches statuses for the configured project.
+				getArgs: (pmConfig) => ({ containerId: (pmConfig.projectKey as string) ?? '' }),
+				// JIRA's adapter matches transitions by status NAME, not numeric ID.
+				getOptionValue: (item) => item.name,
+			};
+		case 'linear':
+			return {
+				capability: 'teams',
+				getArgs: () => ({}),
+				getOptionValue: (item) => item.id,
+			};
+		default:
+			// Trello (and any unknown provider): no lists-level capability.
+			return undefined;
+	}
+}
+
+function PMContainerPicker({
+	projectId,
+	pmProvider,
+	pmConfig,
+	value,
+	onChange,
+}: ContainerPickerProps) {
+	const pickerConfig = providerPickerConfig(pmProvider);
 
 	const containersMutation = useMutation({
 		mutationFn: async () => {
-			if (!capability) {
-				throw new Error(`No container discovery capability mapped for provider "${pmProvider}"`);
+			if (!pickerConfig) {
+				throw new Error(`No container discovery capability for provider "${pmProvider}"`);
 			}
 			return (await trpcClient.pm.discovery.discover.mutate({
 				providerId: pmProvider,
-				capability,
-				args: {},
+				capability: pickerConfig.capability,
+				args: pickerConfig.getArgs(pmConfig),
 				projectId,
 			})) as Array<{ id: string; name: string }>;
 		},
@@ -68,23 +108,30 @@ function PMContainerPicker({ projectId, pmProvider, value, onChange }: Container
 						{containersMutation.isPending
 							? 'Loading...'
 							: containersMutation.data
-								? '— Select a list —'
-								: '— Click Fetch to load lists —'}
+								? '— Select —'
+								: '— Click Fetch to load options —'}
 					</option>
-					{containersMutation.data?.map((c) => (
-						<option key={c.id} value={c.id}>
-							{c.name}
-						</option>
-					))}
+					{containersMutation.data?.map((c) => {
+						const optionValue = pickerConfig?.getOptionValue(c) ?? c.id;
+						return (
+							<option key={optionValue} value={optionValue}>
+								{c.name}
+							</option>
+						);
+					})}
 				</select>
 				<button
 					type="button"
 					onClick={() => containersMutation.mutate()}
-					disabled={containersMutation.isPending || !capability}
-					title={!capability ? `No list-fetch support for provider "${pmProvider}"` : undefined}
+					disabled={containersMutation.isPending || !pickerConfig}
+					title={
+						!pickerConfig
+							? `No list picker available for "${pmProvider}" — use the manual input below`
+							: undefined
+					}
 					className="inline-flex h-9 shrink-0 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
 				>
-					{containersMutation.isPending ? 'Loading...' : 'Fetch Lists'}
+					{containersMutation.isPending ? 'Loading...' : 'Fetch'}
 				</button>
 			</div>
 			{containersMutation.isError && (
@@ -96,11 +143,54 @@ function PMContainerPicker({ projectId, pmProvider, value, onChange }: Container
 					type="text"
 					value={value}
 					onChange={(e) => onChange(e.target.value)}
-					placeholder="container-id"
+					placeholder="list-id or status-name"
 					className="ml-1 inline-block h-6 rounded border border-input bg-background px-2 text-xs"
 				/>
 			</p>
 		</div>
+	);
+}
+
+/**
+ * Renders the Investigation Results container input.
+ * Shows a `PMContainerPicker` when the provider supports dropdown discovery,
+ * or falls back to a plain text `Input` for Trello and unconfigured projects.
+ * Extracted to keep `AlertingTab`'s cognitive complexity below the project limit.
+ */
+function ContainerInput({
+	projectId,
+	pmProvider,
+	pmConfig,
+	value,
+	onChange,
+}: {
+	projectId: string;
+	pmProvider: string | undefined;
+	pmConfig: Record<string, unknown> | undefined;
+	value: string;
+	onChange: (v: string) => void;
+}) {
+	if (pmProvider && providerPickerConfig(pmProvider)) {
+		return (
+			<PMContainerPicker
+				projectId={projectId}
+				pmProvider={pmProvider}
+				pmConfig={pmConfig ?? {}}
+				value={value}
+				onChange={onChange}
+			/>
+		);
+	}
+	const placeholder = pmProvider
+		? `Enter list ID manually (no picker available for ${pmProvider})`
+		: 'List ID or status name (configure PM integration to use a picker)';
+	return (
+		<Input
+			id="sentry-results-container"
+			value={value}
+			onChange={(e) => onChange(e.target.value)}
+			placeholder={placeholder}
+		/>
 	);
 }
 
@@ -113,9 +203,16 @@ interface AlertingTabProps {
 	alertingIntegration?: Record<string, unknown>;
 	/** PM provider slug (e.g. "trello", "jira", "linear") when a PM integration is configured. */
 	pmProvider?: string;
+	/** The project's existing PM integration config, used to drive the container picker. */
+	pmConfig?: Record<string, unknown>;
 }
 
-export function AlertingTab({ projectId, alertingIntegration, pmProvider }: AlertingTabProps) {
+export function AlertingTab({
+	projectId,
+	alertingIntegration,
+	pmProvider,
+	pmConfig,
+}: AlertingTabProps) {
 	const queryClient = useQueryClient();
 
 	const existingConfig = (alertingIntegration?.config as Record<string, unknown>) ?? {};
@@ -242,21 +339,13 @@ export function AlertingTab({ projectId, alertingIntegration, pmProvider }: Aler
 					The PM list or status where the alerting agent creates investigation work items. Used as
 					the target container when the agent creates bug fix cards.
 				</p>
-				{pmProvider ? (
-					<PMContainerPicker
-						projectId={projectId}
-						pmProvider={pmProvider}
-						value={resultsContainerId}
-						onChange={setResultsContainerId}
-					/>
-				) : (
-					<Input
-						id="sentry-results-container"
-						value={resultsContainerId}
-						onChange={(e) => setResultsContainerId(e.target.value)}
-						placeholder="List ID or status name (configure PM integration to use a picker)"
-					/>
-				)}
+				<ContainerInput
+					projectId={projectId}
+					pmProvider={pmProvider}
+					pmConfig={pmConfig}
+					value={resultsContainerId}
+					onChange={setResultsContainerId}
+				/>
 			</div>
 
 			<hr className="border-border" />

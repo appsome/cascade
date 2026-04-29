@@ -103,6 +103,7 @@ export function IntegrationForm({ projectId }: { projectId: string }) {
 					projectId={projectId}
 					alertingIntegration={alertingIntegration}
 					pmProvider={pmIntegration ? pmProvider : undefined}
+					pmConfig={pmIntegration ? (pmIntegration.config as Record<string, unknown>) : undefined}
 				/>
 			)}
 		</div>
