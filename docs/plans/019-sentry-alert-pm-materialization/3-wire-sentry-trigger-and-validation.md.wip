@@ -6,7 +6,7 @@ plan_slug: wire-sentry-trigger-and-validation
 level: plan
 parent_spec: docs/specs/019-sentry-alert-pm-materialization.md
 depends_on: [2-materializer-core.md]
-status: pending
+status: wip
 ---
 
 # 019/3: Wire Sentry trigger to materializer + validation + coalescing
