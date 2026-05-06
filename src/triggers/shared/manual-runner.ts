@@ -93,7 +93,7 @@ export async function triggerManualRun(
 	}
 
 	// Pre-flight integration validation
-	const validation = await validateIntegrations(input.projectId, input.agentType);
+	const validation = await validateIntegrations(input.projectId, input.agentType, project);
 	if (!validation.valid) {
 		throw new Error(formatValidationErrors(validation));
 	}

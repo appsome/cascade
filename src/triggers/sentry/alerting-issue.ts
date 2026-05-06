@@ -5,6 +5,9 @@
  * The payload includes the full event object (exception, stacktrace, breadcrumbs).
  */
 
+import { formatSentryCardBody } from '../../integrations/alerting/_shared/format.js';
+import { materializeAlertWorkItem } from '../../integrations/alerting/_shared/materialize.js';
+import { AlertSlotMissingError } from '../../integrations/alerting/_shared/types.js';
 import { getSentryIntegrationConfig } from '../../sentry/integration.js';
 import type { SentryAugmentedPayload, SentryIssueAlertPayload } from '../../sentry/types.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../../types/index.js';
@@ -71,15 +74,27 @@ export class SentryIssueAlertTrigger implements TriggerHandler {
 			orgId: sentryConfig.organizationSlug,
 		});
 
-		const workItemId = `sentry:issue:${issueId}`;
+		const hints = formatSentryCardBody(augmented);
+
+		let workItemId: string;
+		try {
+			workItemId = await materializeAlertWorkItem('sentry', issueId, ctx.project, hints);
+		} catch (err) {
+			if (err instanceof AlertSlotMissingError) {
+				logger.warn('SentryIssueAlertTrigger: alerts slot not configured, skipping dispatch', {
+					projectId: ctx.project.id,
+					source: 'sentry',
+					reason: 'alerts_slot_missing',
+				});
+				return null;
+			}
+			throw err;
+		}
 
 		return {
 			agentType: 'alerting',
 			agentInput: {
 				triggerEvent: 'alerting:issue-alert',
-				// Synthesized stable identifier — gives the dashboard work-item view
-				// a queryable handle and groups multiple investigations of the same
-				// Sentry issue. Spec 018, AC #12.
 				workItemId,
 				alertIssueId: issueId,
 				alertOrgId: sentryConfig.organizationSlug,
@@ -87,6 +102,7 @@ export class SentryIssueAlertTrigger implements TriggerHandler {
 				alertIssueUrl: issueUrl,
 			},
 			workItemId,
+			coalesceKey: `${ctx.project.id}:${workItemId}`,
 		};
 	}
 }

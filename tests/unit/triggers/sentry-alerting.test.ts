@@ -8,6 +8,18 @@ vi.mock('../../../src/sentry/integration.js', () => ({
 	getSentryIntegrationConfig: vi.fn(),
 }));
 
+const mockMaterializeAlertWorkItem = vi.fn();
+vi.mock('../../../src/integrations/alerting/_shared/materialize.js', () => ({
+	materializeAlertWorkItem: (...a: unknown[]) => mockMaterializeAlertWorkItem(...a),
+}));
+
+vi.mock('../../../src/integrations/alerting/_shared/format.js', () => ({
+	formatSentryCardBody: vi.fn().mockReturnValue({
+		title: '[Sentry] NullPointerException at PaymentService.charge',
+		descriptionMarkdown: '',
+	}),
+}));
+
 import { getSentryIntegrationConfig } from '../../../src/sentry/integration.js';
 import { SentryIssueAlertTrigger } from '../../../src/triggers/sentry/alerting-issue.js';
 import { SentryMetricAlertTrigger } from '../../../src/triggers/sentry/alerting-metric.js';
@@ -97,6 +109,7 @@ describe('SentryIssueAlertTrigger', () => {
 		vi.resetAllMocks();
 		vi.mocked(checkTriggerEnabledWithParams).mockResolvedValue({ enabled: true, parameters: {} });
 		vi.mocked(getSentryIntegrationConfig).mockResolvedValue(sentryConfig);
+		mockMaterializeAlertWorkItem.mockResolvedValue('card-materialized');
 		trigger = new SentryIssueAlertTrigger();
 	});
 
@@ -223,29 +236,13 @@ describe('SentryIssueAlertTrigger', () => {
 			expect(result?.agentInput?.alertIssueUrl).toBe(issueUrl);
 		});
 
-		// --- Spec 018 / plan 2: synthesized stable workItemId for sentry runs ---
+		// --- Spec 019: workItemId is the materialized PM-native card id ---
 
-		it('synthesizes a stable workItemId from alertIssueId (spec 018)', async () => {
+		it('returns the materialized PM-native id as workItemId (not a synthetic prefix)', async () => {
+			mockMaterializeAlertWorkItem.mockResolvedValue('card-native-42');
 			const result = await trigger.handle(makeSentryIssueAlertCtx());
-			expect(result?.agentInput?.workItemId).toBe('sentry:issue:issue-42');
-			expect(result?.workItemId).toBe('sentry:issue:issue-42');
-		});
-
-		it('produces the same workItemId for two dispatches against the same issue', async () => {
-			const a = await trigger.handle(makeSentryIssueAlertCtx());
-			const b = await trigger.handle(makeSentryIssueAlertCtx());
-			expect(a?.agentInput?.workItemId).toBe(b?.agentInput?.workItemId);
-			expect(a?.workItemId).toBe(b?.workItemId);
-			expect(a?.agentInput?.workItemId).toBe('sentry:issue:issue-42');
-			expect(a?.workItemId).toBe(a?.agentInput?.workItemId);
-		});
-
-		it('produces different workItemIds for different issues', async () => {
-			const a = await trigger.handle(makeSentryIssueAlertCtx());
-			const b = await trigger.handle(
-				makeSentryIssueAlertCtx({ eventOverrides: { issue_id: 'issue-7777' } }),
-			);
-			expect(a?.agentInput?.workItemId).not.toBe(b?.agentInput?.workItemId);
+			expect(result?.agentInput?.workItemId).toBe('card-native-42');
+			expect(result?.workItemId).toBe('card-native-42');
 		});
 	});
 });

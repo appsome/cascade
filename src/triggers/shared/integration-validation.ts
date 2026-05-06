@@ -8,9 +8,12 @@
 import { deriveIntegrations } from '../../agents/capabilities/index.js';
 import { resolveAgentDefinition } from '../../agents/definitions/loader.js';
 import type { IntegrationCategory } from '../../agents/definitions/schema.js';
+import { getTriggerConfigsByProjectAndAgent } from '../../db/repositories/agentTriggerConfigsRepository.js';
 import { getPersonaForAgentType } from '../../github/personas.js';
 import { integrationRegistry } from '../../integrations/registry.js';
 import type { SCMIntegration } from '../../integrations/scm.js';
+import { getAlertsStatusKey } from '../../pm/config.js';
+import type { ProjectConfig } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
 
 export interface ValidationError {
@@ -141,6 +144,37 @@ async function validateCategory(
 }
 
 // ============================================================================
+// PM-config validators
+// ============================================================================
+
+/**
+ * Validate that the project has an `alerts` slot configured when any alerting
+ * trigger is enabled. The slot is required for the materializer to create PM
+ * cards; without it every Sentry webhook silently skips dispatch.
+ *
+ * Only runs when `project` is supplied to `validateIntegrations`.
+ */
+async function validateAlertsSlot(
+	projectId: string,
+	project: ProjectConfig,
+): Promise<ValidationError | null> {
+	const configs = await getTriggerConfigsByProjectAndAgent(projectId, 'alerting');
+	const hasEnabledAlertingTrigger = configs.some((c) => c.enabled);
+	if (!hasEnabledAlertingTrigger) return null;
+
+	if (getAlertsStatusKey(project)) return null;
+
+	const pmType = project.pm?.type ?? 'unknown';
+	const slotHint = pmType === 'trello' ? 'lists.alerts' : 'statuses.alerts';
+	return {
+		category: 'pm',
+		message:
+			`Alerting trigger is enabled but no \`alerts\` slot is configured for ${pmType}. ` +
+			`Set ${slotHint} in the project's PM integration config.`,
+	};
+}
+
+// ============================================================================
 // Main validation function
 // ============================================================================
 
@@ -148,12 +182,16 @@ async function validateCategory(
  * Validate all required integrations are configured before agent runs.
  * Integrations are derived from the agent's required capabilities.
  *
+ * When `project` is provided, also validates PM-config requirements such as
+ * the alerts slot being set when an alerting trigger is enabled.
+ *
  * Uses the integrationRegistry to look up integration modules by category,
  * making validation automatically extensible to new integration categories.
  */
 export async function validateIntegrations(
 	projectId: string,
 	agentType: string,
+	project?: ProjectConfig,
 ): Promise<ValidationResult> {
 	const { required } = await getIntegrationRequirements(agentType);
 
@@ -164,6 +202,12 @@ export async function validateIntegrations(
 
 	const results = await Promise.all(validationPromises);
 	const errors = results.filter((e): e is ValidationError => e !== null);
+
+	// Additional PM-config check: alerts slot required when alerting trigger is enabled
+	if (project) {
+		const alertsSlotError = await validateAlertsSlot(projectId, project);
+		if (alertsSlotError) errors.push(alertsSlotError);
+	}
 
 	if (errors.length > 0) {
 		logger.warn('Integration validation failed', {

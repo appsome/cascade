@@ -474,7 +474,7 @@ export async function runAgentExecutionPipeline(
 	}
 
 	// Pre-flight integration validation
-	const validation = await validateIntegrations(project.id, agentType);
+	const validation = await validateIntegrations(project.id, agentType, project);
 	if (!validation.valid) {
 		await notifyValidationFailure(
 			result,
