@@ -6,7 +6,7 @@ plan_slug: materializer-core
 level: plan
 parent_spec: docs/specs/019-sentry-alert-pm-materialization.md
 depends_on: [1-schema-and-pm-config.md]
-status: pending
+status: wip
 ---
 
 # 019/2: Generic alert→PM materializer (race-free, lazy-heal)
