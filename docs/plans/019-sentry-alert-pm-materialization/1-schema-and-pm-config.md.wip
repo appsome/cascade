@@ -6,7 +6,7 @@ plan_slug: schema-and-pm-config
 level: plan
 parent_spec: docs/specs/019-sentry-alert-pm-materialization.md
 depends_on: []
-status: pending
+status: wip
 ---
 
 # 019/1: Schema migration + PM-config slot recognition (foundation)
