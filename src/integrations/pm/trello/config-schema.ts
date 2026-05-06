@@ -28,11 +28,13 @@ export const trelloConfigSchema = z
 		/**
 		 * Mapping from CASCADE status keys (backlog/todo/inProgress/done/...)
 		 * to Trello list IDs. Keys are provider-agnostic, values are provider-native.
+		 * Recognized key: `alerts` — the list for incoming alert work items (spec 019).
 		 */
 		lists: z.record(z.string(), z.string()),
 
 		/**
 		 * Mapping from CASCADE label keys (bug/feature/...) to Trello label IDs.
+		 * Recognized key: `cascade-alert` — the label applied to alert work items (spec 019).
 		 */
 		labels: z.record(z.string(), z.string()),
 

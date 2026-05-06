@@ -29,6 +29,8 @@ export interface JiraConfig {
 		error?: string;
 		readyToProcess?: string;
 		auto?: string;
+		/** JIRA label name applied to alert work items (spec 019). */
+		cascadeAlert?: string;
 	};
 }
 
@@ -65,6 +67,8 @@ export interface LinearConfig {
 		error?: string;
 		readyToProcess?: string;
 		auto?: string;
+		/** Linear label UUID applied to alert work items (spec 019). */
+		cascadeAlert?: string;
 	};
 	customFields?: { cost?: string };
 }
@@ -89,4 +93,77 @@ export function getCostFieldId(project: ProjectConfig): string | undefined {
 		return getLinearConfig(project)?.customFields?.cost;
 	}
 	return getTrelloConfig(project)?.customFields?.cost;
+}
+
+/**
+ * Returns the container ID the PM adapter's `createWorkItem.containerId` expects
+ * for placing alert work items:
+ *   - Trello → `lists.alerts` (the list ID the card will be created in)
+ *   - JIRA   → `projectKey` (JIRA issues are always scoped to a project; the
+ *              alerts *status* is applied afterwards via a lifecycle move)
+ *   - Linear → `teamId` (same asymmetry as JIRA: the team is the container;
+ *              the alerts state is applied via a follow-up move)
+ *
+ * Returns `undefined` when the project has no PM config or the alerts slot
+ * is not configured (Trello: `lists.alerts` absent; JIRA/Linear: always
+ * returns the project key / team ID when a config exists).
+ */
+export function getAlertsContainerId(project: ProjectConfig): string | undefined {
+	const pmType = project.pm?.type;
+	if (pmType === 'trello') {
+		return getTrelloConfig(project)?.lists?.alerts;
+	}
+	if (pmType === 'jira') {
+		return getJiraConfig(project)?.projectKey;
+	}
+	if (pmType === 'linear') {
+		return getLinearConfig(project)?.teamId;
+	}
+	return undefined;
+}
+
+/**
+ * Returns the label identifier to apply to an alert work item:
+ *   - Trello → `labels['cascade-alert']` (Trello label ID)
+ *   - JIRA   → `labels.cascadeAlert` (JIRA label name string)
+ *   - Linear → `labels.cascadeAlert` (Linear label UUID)
+ *
+ * Returns `undefined` when the label slot is not configured.
+ */
+export function getAlertLabelId(project: ProjectConfig): string | undefined {
+	const pmType = project.pm?.type;
+	if (pmType === 'trello') {
+		return getTrelloConfig(project)?.labels?.['cascade-alert'];
+	}
+	if (pmType === 'jira') {
+		return getJiraConfig(project)?.labels?.cascadeAlert;
+	}
+	if (pmType === 'linear') {
+		return getLinearConfig(project)?.labels?.cascadeAlert;
+	}
+	return undefined;
+}
+
+/**
+ * Returns the literal `'alerts'` status key when the project's PM config
+ * has the alerts slot populated, otherwise `undefined`.
+ *
+ * The materializer feeds this into `lifecycle.moveTo(statusKey)` to move
+ * the newly created work item into the configured alerts state.
+ *   - Trello  → truthy when `lists.alerts` is set
+ *   - JIRA    → truthy when `statuses.alerts` is set
+ *   - Linear  → truthy when `statuses.alerts` is set
+ */
+export function getAlertsStatusKey(project: ProjectConfig): 'alerts' | undefined {
+	const pmType = project.pm?.type;
+	if (pmType === 'trello') {
+		return getTrelloConfig(project)?.lists?.alerts ? 'alerts' : undefined;
+	}
+	if (pmType === 'jira') {
+		return getJiraConfig(project)?.statuses?.alerts ? 'alerts' : undefined;
+	}
+	if (pmType === 'linear') {
+		return getLinearConfig(project)?.statuses?.alerts ? 'alerts' : undefined;
+	}
+	return undefined;
 }
