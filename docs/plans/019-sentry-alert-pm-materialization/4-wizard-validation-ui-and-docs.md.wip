@@ -6,7 +6,7 @@ plan_slug: wizard-validation-ui-and-docs
 level: plan
 parent_spec: docs/specs/019-sentry-alert-pm-materialization.md
 depends_on: [3-wire-sentry-trigger-and-validation.md]
-status: pending
+status: wip
 ---
 
 # 019/4: Wizard UI for `alerts` slot + dashboard validation surfacing + docs + repo-wide regression pin
