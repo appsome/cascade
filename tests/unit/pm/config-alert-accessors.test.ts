@@ -71,6 +71,28 @@ describe('getAlertsContainerId', () => {
 		// Trello container IS the alerts list — if missing, return undefined
 		expect(getAlertsContainerId(project)).toBeUndefined();
 	});
+
+	it('returns undefined for JIRA projects when statuses.alerts is not configured', () => {
+		// Without statuses.alerts, creating an issue would land in the project default
+		// state and then fail pre-flight validation, leaving an alert card outside the
+		// required alerts slot. getAlertsContainerId must gate on statuses.alerts.
+		const project = makeJiraProject({
+			jira: {
+				projectKey: 'PROJ',
+				baseUrl: 'https://acme.atlassian.net',
+				statuses: { todo: 'To Do' },
+				labels: {},
+			},
+		});
+		expect(getAlertsContainerId(project)).toBeUndefined();
+	});
+
+	it('returns undefined for Linear projects when statuses.alerts is not configured', () => {
+		const project = makeLinearProject({
+			linear: { teamId: 'team-1', statuses: { todo: 'state-todo' } },
+		});
+		expect(getAlertsContainerId(project)).toBeUndefined();
+	});
 });
 
 describe('getAlertLabelId', () => {

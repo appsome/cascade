@@ -9,12 +9,14 @@ const mockFindByExternal = vi.fn();
 const mockClaimExternalMapping = vi.fn();
 const mockAttachWorkItemId = vi.fn();
 const mockReplaceWorkItemId = vi.fn();
+const mockDeleteExternalMappingClaim = vi.fn();
 
 vi.mock('../../../../src/db/repositories/prWorkItemsRepository.js', () => ({
 	findByExternal: (...a: unknown[]) => mockFindByExternal(...a),
 	claimExternalMapping: (...a: unknown[]) => mockClaimExternalMapping(...a),
 	attachWorkItemId: (...a: unknown[]) => mockAttachWorkItemId(...a),
 	replaceWorkItemId: (...a: unknown[]) => mockReplaceWorkItemId(...a),
+	deleteExternalMappingClaim: (...a: unknown[]) => mockDeleteExternalMappingClaim(...a),
 }));
 
 // ── mock the PM registry ──────────────────────────────────────────────────────
@@ -60,6 +62,7 @@ describe('materializeAlertWorkItem', () => {
 		vi.clearAllMocks();
 		mockAttachWorkItemId.mockResolvedValue(undefined);
 		mockReplaceWorkItemId.mockResolvedValue(true);
+		mockDeleteExternalMappingClaim.mockResolvedValue(undefined);
 		mockAddLabel.mockResolvedValue(undefined);
 		mockMoveWorkItem.mockResolvedValue(undefined);
 	});
@@ -171,6 +174,70 @@ describe('materializeAlertWorkItem', () => {
 			'PM 500',
 		);
 		expect(mockAttachWorkItemId).not.toHaveBeenCalled();
+		// Claim row must be cleaned up so the next delivery can reclaim it
+		expect(mockDeleteExternalMappingClaim).toHaveBeenCalledWith('row-1');
+	});
+
+	it('cleans up stale claim row when createWorkItem throws so the next delivery can reclaim', async () => {
+		const project = makeTrelloProject('list-alerts');
+		mockFindByExternal.mockResolvedValue(null);
+		mockClaimExternalMapping.mockResolvedValue({ ownedHere: true, rowId: 'row-stale' });
+		mockCreateWorkItem.mockRejectedValue(new Error('PM 503'));
+
+		await expect(materializeAlertWorkItem('sentry', 'S1', project, defaultHints)).rejects.toThrow(
+			'PM 503',
+		);
+		expect(mockDeleteExternalMappingClaim).toHaveBeenCalledWith('row-stale');
+	});
+
+	it('attachWorkItemId is called before addLabel and moveWorkItem', async () => {
+		const project = makeTrelloProject('list-alerts', 'lbl-cascade-alert');
+		mockFindByExternal.mockResolvedValue(null);
+		mockClaimExternalMapping.mockResolvedValue({ ownedHere: true, rowId: 'row-1' });
+		mockCreateWorkItem.mockResolvedValue({
+			id: 'card-new',
+			title: 'x',
+			description: '',
+			url: '',
+			labels: [],
+		});
+
+		const callOrder: string[] = [];
+		mockAttachWorkItemId.mockImplementation(async () => {
+			callOrder.push('attachWorkItemId');
+		});
+		mockAddLabel.mockImplementation(async () => {
+			callOrder.push('addLabel');
+		});
+		mockMoveWorkItem.mockImplementation(async () => {
+			callOrder.push('moveWorkItem');
+		});
+
+		await materializeAlertWorkItem('sentry', 'S1', project, defaultHints);
+		expect(callOrder).toEqual(['attachWorkItemId', 'addLabel', 'moveWorkItem']);
+	});
+
+	it('lazy-heal: returns canonical mapping id when replaceWorkItemId CAS fails (concurrent heal)', async () => {
+		const project = makeTrelloProject('list-alerts');
+		// Initial lookup finds stale card
+		mockFindByExternal
+			.mockResolvedValueOnce({ id: 'row-1', workItemId: 'card-stale' })
+			// Re-read after CAS loss returns the winner's canonical id
+			.mockResolvedValueOnce({ id: 'row-1', workItemId: 'card-canonical' });
+		mockGetWorkItem.mockRejectedValue(new Error('404 Not Found'));
+		mockCreateWorkItem.mockResolvedValue({
+			id: 'card-orphan',
+			title: 'x',
+			description: '',
+			url: '',
+			labels: [],
+		});
+		// CAS loses — another webhook already healed the row
+		mockReplaceWorkItemId.mockResolvedValue(false);
+
+		const result = await materializeAlertWorkItem('sentry', 'S1', project, defaultHints);
+		// Must return the persisted canonical id, not the orphan card we just created
+		expect(result).toBe('card-canonical');
 	});
 
 	it('applies the configured alert label when getAlertLabelId returns a value', async () => {

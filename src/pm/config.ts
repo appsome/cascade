@@ -105,8 +105,11 @@ export function getCostFieldId(project: ProjectConfig): string | undefined {
  *              the alerts state is applied via a follow-up move)
  *
  * Returns `undefined` when the project has no PM config or the alerts slot
- * is not configured (Trello: `lists.alerts` absent; JIRA/Linear: always
- * returns the project key / team ID when a config exists).
+ * is not configured:
+ *   - Trello: `lists.alerts` absent → undefined
+ *   - JIRA:   `statuses.alerts` absent → undefined (prevents creating issues in
+ *             the wrong state before validation fails)
+ *   - Linear: `statuses.alerts` absent → undefined (same reasoning as JIRA)
  */
 export function getAlertsContainerId(project: ProjectConfig): string | undefined {
 	const pmType = project.pm?.type;
@@ -114,10 +117,19 @@ export function getAlertsContainerId(project: ProjectConfig): string | undefined
 		return getTrelloConfig(project)?.lists?.alerts;
 	}
 	if (pmType === 'jira') {
-		return getJiraConfig(project)?.projectKey;
+		const jiraConfig = getJiraConfig(project);
+		// Require statuses.alerts to be configured: without it the issue would be
+		// created in the project's default state and fail pre-flight validation later,
+		// leaving an alert work item outside the required alerts slot.
+		if (!jiraConfig?.statuses?.alerts) return undefined;
+		return jiraConfig.projectKey;
 	}
 	if (pmType === 'linear') {
-		return getLinearConfig(project)?.teamId;
+		const linearConfig = getLinearConfig(project);
+		// Same guard as JIRA: the alerts workflow state must be configured before
+		// we allow issue creation.
+		if (!linearConfig?.statuses?.alerts) return undefined;
+		return linearConfig.teamId;
 	}
 	return undefined;
 }

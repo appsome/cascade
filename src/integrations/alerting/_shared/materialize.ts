@@ -17,6 +17,7 @@
 import {
 	attachWorkItemId,
 	claimExternalMapping,
+	deleteExternalMappingClaim,
 	findByExternal,
 	replaceWorkItemId,
 } from '../../../db/repositories/prWorkItemsRepository.js';
@@ -79,10 +80,26 @@ export async function materializeAlertWorkItem(
 	const claim = await claimExternalMapping(project.id, source, externalId);
 
 	if (claim.ownedHere) {
-		return await createAndAttach(project, source, externalId, containerId, hints, provider, {
-			lazyHeal: null,
-			rowId: claim.rowId,
-		});
+		try {
+			return await createAndAttach(project, source, externalId, containerId, hints, provider, {
+				lazyHeal: null,
+				rowId: claim.rowId,
+			});
+		} catch (err) {
+			// createAndAttach failed — the claim row may still have work_item_id=NULL.
+			// Delete it (guarded by isNull) so the next Sentry delivery can reclaim it
+			// instead of polling to MaterializationRetryExhausted.
+			await deleteExternalMappingClaim(claim.rowId).catch((deleteErr) => {
+				logger.warn('[alert-materializer] failed to clean up stale claim row', {
+					rowId: claim.rowId,
+					projectId: project.id,
+					source,
+					externalId,
+					error: String(deleteErr),
+				});
+			});
+			throw err;
+		}
 	}
 
 	// Lost to a concurrent winner — poll for its work_item_id
@@ -117,16 +134,10 @@ async function createAndAttach(
 		labels: [],
 	});
 
-	const labelId = getAlertLabelId(project);
-	if (labelId) {
-		await provider.addLabel(newCard.id, labelId);
-	}
-
-	const destination = getAlertsStatusDestination(project);
-	if (destination) {
-		await provider.moveWorkItem(newCard.id, destination);
-	}
-
+	// Persist the PM id immediately — before any optional operations — so that a
+	// failure in addLabel or moveWorkItem never leaves a NULL work_item_id row.
+	// Future retries will find the row via findByExternal → existing.workItemId →
+	// getWorkItem (alive) → return existing id, rather than polling to exhaustion.
 	if (opts.lazyHeal) {
 		const replaced = await replaceWorkItemId(
 			opts.lazyHeal.rowId,
@@ -141,9 +152,37 @@ async function createAndAttach(
 				prior: opts.lazyHeal.oldWorkItemId,
 				replacement: newCard.id,
 			});
+		} else {
+			// Another concurrent webhook already healed the stale row; our newly
+			// created card is an orphan. Re-read the canonical mapping and return
+			// that id so this dispatch proceeds against the persisted work item.
+			const current = await findByExternal(project.id, source, externalId);
+			if (current?.workItemId) {
+				logger.warn('[alert-materializer] lazy-heal CAS lost, returning canonical id', {
+					projectId: project.id,
+					source,
+					externalId,
+					orphanCard: newCard.id,
+					canonicalCard: current.workItemId,
+				});
+				return current.workItemId;
+			}
+			// Fallback: canonical mapping not readable — use the card we created.
 		}
 	} else {
 		await attachWorkItemId(opts.rowId, newCard.id);
+	}
+
+	// Optional post-create operations: run after the DB row is updated so that
+	// their failure cannot permanently wedge the NULL-work_item_id row.
+	const labelId = getAlertLabelId(project);
+	if (labelId) {
+		await provider.addLabel(newCard.id, labelId);
+	}
+
+	const destination = getAlertsStatusDestination(project);
+	if (destination) {
+		await provider.moveWorkItem(newCard.id, destination);
 	}
 
 	return newCard.id;

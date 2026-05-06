@@ -608,3 +608,22 @@ export async function replaceWorkItemId(
 		.returning({ id: prWorkItems.id });
 	return updated.length > 0;
 }
+
+/**
+ * Delete an alert-mapping claim row that still has a NULL work_item_id.
+ *
+ * Called when PM side effects (createWorkItem, attachWorkItemId) fail after
+ * `claimExternalMapping` inserted the row. Without cleanup, a NULL-work_item_id
+ * row permanently blocks future retries: `claimExternalMapping` loses the race
+ * to the stale row and polls until `MaterializationRetryExhausted`.
+ *
+ * The `isNull(workItemId)` guard makes this a no-op when another process has
+ * already successfully filled in the PM id — safe to call unconditionally in
+ * error handlers.
+ */
+export async function deleteExternalMappingClaim(rowId: string): Promise<void> {
+	const db = getDb();
+	await db
+		.delete(prWorkItems)
+		.where(and(eq(prWorkItems.id, rowId), isNull(prWorkItems.workItemId)));
+}
