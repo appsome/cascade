@@ -1,0 +1,215 @@
+---
+id: 019
+slug: sentry-alert-pm-materialization
+plan: 2
+plan_slug: materializer-core
+level: plan
+parent_spec: docs/specs/019-sentry-alert-pm-materialization.md
+depends_on: [1-schema-and-pm-config.md]
+status: pending
+---
+
+# 019/2: Generic alert→PM materializer (race-free, lazy-heal)
+
+> Part 2 of 4 in the 019-sentry-alert-pm-materialization plan. See [parent spec](../../specs/019-sentry-alert-pm-materialization.md).
+
+## Summary
+
+Build the generic, source-agnostic materializer that turns an `(source, externalId, project, hints)` tuple into a real PM work item id. The implementation:
+
+1. **Resolves the existing mapping**, if any, via `pr_work_items.external_source = $1 AND external_id = $2 AND project_id = $3`. If found, verifies the PM card still exists; on PM 404, lazy-heals by creating a fresh card and atomically updating the row in place.
+2. **Atomically gets-or-creates** a new mapping using Postgres `INSERT … ON CONFLICT (project_id, external_source, external_id) WHERE external_source IS NOT NULL DO NOTHING RETURNING id, work_item_id`. When the conflict path returns no row (concurrent insert won), re-selects to obtain the winner's `work_item_id`. This is the race-free primitive — no application-level lock.
+3. **Calls the project's PM provider** (`createWorkItem` against the `alerts` container with the formatted title, description, and optional alert label) and writes the resulting native id back into the row.
+4. **Posts a follow-up "move to alerts state"** through the existing `PMLifecycleManager` machinery if the provider's `createWorkItem` does not support an initial state argument (Linear: state set on create; Trello: list set on create; JIRA: status applied via transition after create).
+5. **Propagates PM errors** untouched — the trigger handler in plan 3 catches them and returns `null` so BullMQ retry semantics apply.
+
+This plan ships a unit-testable seam with no caller wired in yet. Plan 3 wires the Sentry trigger to it.
+
+**Components delivered:**
+- New module: `src/integrations/alerting/_shared/materialize.ts` — exports `materializeAlertWorkItem(source, externalId, project, hints): Promise<string>`.
+- New module: `src/integrations/alerting/_shared/types.ts` — exports the `AlertSource` union, `AlertHints` shape (title, descriptionMarkdown, labelKey).
+- New module: `src/integrations/alerting/_shared/format.ts` — exports `formatSentryCardBody(payload): { title, descriptionMarkdown }` (the only Sentry-specific helper this plan ships; consumed in plan 3). Trivially extensible to PagerDuty/Datadog later via separate format helpers.
+- New repository methods on `src/db/repositories/prWorkItemsRepository.ts`:
+  - `findByExternal(projectId, source, externalId): Promise<{ id, workItemId } | null>`
+  - `claimExternalMapping(projectId, source, externalId): Promise<{ ownedHere: true } | { ownedHere: false, existing: { id, workItemId } }>` — does the ON-CONFLICT-DO-NOTHING insert with a follow-up SELECT.
+  - `attachWorkItemId(rowId, workItemId): Promise<void>` — writes the native id back into the claimed row.
+  - `replaceWorkItemId(rowId, oldWorkItemId, newWorkItemId): Promise<void>` — used by the lazy-heal path; logs the orphan transition.
+- Tests: unit tests for the materializer with a fake PM provider (concurrency simulation, lazy-heal, terminal error propagation, hints translation); integration tests against a real Postgres for the repository methods.
+
+**Deferred to later plans in this spec:**
+- The Sentry trigger calling the materializer (plan 3).
+- `validateIntegrations` requiring the `alerts` slot when alerting is enabled (plan 3).
+- Coalescing wiring on the post-materialization workItemId (plan 3 — the materializer itself is one-shot; the coalesce window applies at job-dispatch time).
+- Wizard / dashboard / docs (plan 4).
+
+---
+
+## Spec ACs satisfied by this plan
+
+- Spec AC #2 (concurrent dedupe → 1 card) — **full** at the data layer; plan 3 wires the call site.
+- Spec AC #3 (per-project mapping) — **full**.
+- Spec AC #4 (orphan lazy-heal + log) — **full**.
+- Spec AC #9 (card title/description/label format) — **full** for the formatting helper; plan 3 ensures the trigger passes the right `hints`.
+- Spec AC #10 (new alert source pluggability) — **full** at the interface level; the materializer accepts any `source` literal, and `format.ts` shows the per-source formatter pattern.
+
+---
+
+## Depends On
+
+- Plan 1 (`1-schema-and-pm-config.md`) — provides the `external_source` + `external_id` columns, the partial UNIQUE index, and the `getAlertsContainerId` / `getAlertLabelId` / `getAlertsStatusKey` accessors.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. Repository: `findByExternal`, `claimExternalMapping`, `attachWorkItemId`, `replaceWorkItemId`
+
+**Tests first** (`tests/integration/db/pr-work-items-external-mapping.test.ts`):
+
+- `findByExternal returns null when no row matches` — integration. Expected red: `findByExternal is not a function` / `expected null, got <something>`.
+- `findByExternal returns { id, workItemId } when an exact match exists` — integration — seed a row with `(project='p', source='sentry', external_id='S1', work_item_id='trello-card-1')`; expect `{ id, workItemId: 'trello-card-1' }`. Expected red: `expected { id, workItemId: 'trello-card-1' }, got null`.
+- `claimExternalMapping inserts a new row when none exists, returns ownedHere=true` — integration — start with empty table; call with `(p, sentry, S1)`; verify the row is inserted with `work_item_id=NULL`. Expected red: `claimExternalMapping is not a function` / `expected ownedHere=true, got false`.
+- `claimExternalMapping returns ownedHere=false with existing row when conflict` — integration — seed a row first; call again; verify only one row exists in the DB and the returned `existing.workItemId` matches the seed. Expected red: `expected ownedHere=false with existing { id, workItemId }, got ownedHere=true`.
+- `claimExternalMapping is race-free under simulated concurrency` — integration — fire 5 parallel `Promise.all` calls; verify exactly one returns `ownedHere=true` and the other four return `ownedHere=false` pointing at the same row id, and that `SELECT count(*) FROM pr_work_items WHERE ... = 1`. Expected red: `expected exactly 1 ownedHere=true, got >1` (or `expected 1 row, got N`).
+- `attachWorkItemId writes work_item_id into the claimed row` — integration. Expected red: `attachWorkItemId is not a function` / `expected work_item_id='card-1', got NULL`.
+- `replaceWorkItemId atomically updates work_item_id only when old value matches` — integration — seed `work_item_id='card-old'`; call `replaceWorkItemId(rowId, 'card-old', 'card-new')`; expect success + row now has `work_item_id='card-new'`. Then call `replaceWorkItemId(rowId, 'card-old', 'card-newer')` again with a stale old value; expect a no-op (returns false) and row stays at `card-new`. Expected red: `expected stale-old to be rejected, got row updated`.
+
+**Implementation** (`src/db/repositories/prWorkItemsRepository.ts`):
+- `findByExternal(projectId, source, externalId)` — single SELECT with `WHERE project_id = $1 AND external_source = $2 AND external_id = $3 LIMIT 1`.
+- `claimExternalMapping(projectId, source, externalId)` — `INSERT INTO pr_work_items (project_id, external_source, external_id) VALUES (...) ON CONFLICT (project_id, external_source, external_id) WHERE external_source IS NOT NULL DO NOTHING RETURNING id, work_item_id`. If `RETURNING` produces a row → `{ ownedHere: true }`. If empty → follow-up SELECT to fetch the winning row → `{ ownedHere: false, existing: { id, workItemId } }`.
+- `attachWorkItemId(rowId, workItemId)` — `UPDATE pr_work_items SET work_item_id = $2, updated_at = now() WHERE id = $1`. (No optimistic-concurrency check needed — only the claimer reaches here.)
+- `replaceWorkItemId(rowId, oldWorkItemId, newWorkItemId)` — `UPDATE … SET work_item_id = $3, updated_at = now() WHERE id = $1 AND work_item_id = $2 RETURNING id`. Returns `true` when one row was updated, `false` when zero (stale or already replaced).
+
+### 2. The materializer entrypoint
+
+**Tests first** (`tests/unit/integrations/alerting/materialize.test.ts`):
+
+Use a fake PM provider that records `createWorkItem` calls and a fake repository that simulates the four DB methods.
+
+- `materializeAlertWorkItem returns existing native id when a healthy mapping is present` — unit — repo returns `{ id, workItemId: 'card-1' }`; PM `getWorkItem('card-1')` resolves; expect return value `'card-1'`; expect `createWorkItem` was NOT called. Expected red: `materializeAlertWorkItem is not a function` / `expected createWorkItem not called, got 1 call`.
+- `materializeAlertWorkItem creates and attaches when no mapping exists` — unit — repo returns `null` then `{ ownedHere: true, rowId }`; PM `createWorkItem` returns `{ id: 'card-new' }`; expect repo `attachWorkItemId(rowId, 'card-new')` called; expect return value `'card-new'`. Expected red: `expected createWorkItem to be called with containerId from getAlertsContainerId, got <wrong arg or no call>`.
+- `materializeAlertWorkItem awaits the winning concurrent claim's result when ownedHere=false` — unit — repo returns `null` from `findByExternal`, then `{ ownedHere: false, existing: { workItemId: 'card-winner' } }`; expect return value `'card-winner'`; expect `createWorkItem` was NOT called. Expected red: `expected return 'card-winner', got <something else or createWorkItem invoked>`.
+- `materializeAlertWorkItem awaits a concurrent winner whose row has work_item_id NOT YET set, then re-reads` — unit — repo returns `{ ownedHere: false, existing: { workItemId: null } }` once, then on a short retry returns `{ workItemId: 'card-winner' }`; expect a bounded retry with backoff (e.g. 50ms × 5 attempts) and a final return of `'card-winner'`. After the budget is exhausted, throw a structured `MaterializationRetryExhausted` error. Expected red: `expected bounded retry with eventual success, got immediate failure or infinite hang`.
+- `materializeAlertWorkItem lazy-heals on PM 404 by creating a new card and replacing the work_item_id` — unit — repo returns `{ workItemId: 'card-stale' }`; PM `getWorkItem('card-stale')` rejects with a 404; expect `createWorkItem` is called; expect repo `replaceWorkItemId(rowId, 'card-stale', <new>)` called; expect return value `<new>`; expect a log line at WARN with the literal prefix `[alert-materializer] orphan card detected` containing the prior id. Expected red: `expected lazy-heal flow, got error propagated` / `expected log line not found`.
+- `materializeAlertWorkItem propagates terminal PM errors untouched (auth/validation/5xx)` — unit — fake PM `createWorkItem` rejects with `Error('PM 500')`; expect the same error rejected from `materializeAlertWorkItem`; expect no `attachWorkItemId` call; expect the orphan claim row stays in DB with `work_item_id=NULL` for the next attempt to retry. Expected red: `expected error to propagate, got swallowed` / `expected work_item_id=NULL preserved on row, got attach called`.
+- `materializeAlertWorkItem applies the configured alert label when getAlertLabelId returns a value` — unit — fixture project with `getAlertLabelId() === 'lbl-cascade-alert'`; expect PM `addLabel(newCardId, 'lbl-cascade-alert')` called once. Expected red: `expected addLabel called, got 0 calls`.
+- `materializeAlertWorkItem skips label application when getAlertLabelId returns undefined` — unit — fixture project with the alert label slot unset; expect `addLabel` NOT called; expect no error. Expected red: `expected addLabel not called, got 1 call`.
+- `materializeAlertWorkItem moves to alerts state via lifecycle when getAlertsStatusKey === 'alerts'` — unit — assert the lifecycle's `moveTo('alerts')` is called for the new card after creation. Expected red: `expected lifecycle.moveTo('alerts'), got 0 calls`.
+- `materializeAlertWorkItem throws AlertSlotMissingError when getAlertsContainerId returns undefined` — unit — fixture project with no alerts slot configured; expect a structured `AlertSlotMissingError` (a typed class) to be thrown without any DB write or PM call. Expected red: `expected AlertSlotMissingError, got generic Error / no error`.
+- `format helper produces a title prefixed with [Sentry] and a description containing permalink, fingerprint, first-seen, alert rule, top stack frame` — unit — feed a fixture Sentry event payload (capture from the live webhook log id `e5c04eea` body, sanitised); assert each of the five fields appears in the output markdown. Expected red: per-field assertion failures.
+
+**Implementation:**
+
+`src/integrations/alerting/_shared/types.ts`:
+- `export type AlertSource = 'sentry' | 'pagerduty' | 'datadog' | 'github-alert';` (union widens as sources are added; today only `'sentry'` is used)
+- `export interface AlertHints { title: string; descriptionMarkdown: string; }`
+- `export class AlertSlotMissingError extends Error` (named so the trigger handler can rethrow with context)
+- `export class MaterializationRetryExhausted extends Error`
+
+`src/integrations/alerting/_shared/format.ts`:
+- `formatSentryCardBody(payload: SentryAugmentedPayload): AlertHints` — builds the title/description from the same payload shape consumed by the existing `SentryIssueAlertTrigger`.
+
+`src/integrations/alerting/_shared/materialize.ts`:
+```ts
+export async function materializeAlertWorkItem(
+  source: AlertSource,
+  externalId: string,
+  project: ProjectConfig,
+  hints: AlertHints,
+): Promise<string>;
+```
+Algorithm (sketch — implementation must match the contract; details left to the implementer):
+1. Resolve container id via `getAlertsContainerId(project)`. If undefined, throw `AlertSlotMissingError`.
+2. `findByExternal(project.id, source, externalId)` — if non-null and PM `getWorkItem(workItemId)` returns OK, return `workItemId`. If non-null and PM returns 404, branch to lazy-heal.
+3. `claimExternalMapping(project.id, source, externalId)`. If `ownedHere`, proceed to create. If not, poll the winner's row up to N times for `work_item_id` to be populated; return it; throw `MaterializationRetryExhausted` if poll budget exhausted.
+4. Create path: `provider.createWorkItem({ containerId, title, description, labels: [] })`; if `getAlertLabelId(project)` returns a value, `provider.addLabel(newCard.id, labelId)`; if `getAlertsStatusKey(project) === 'alerts'`, `lifecycle.moveTo(newCard.id, 'alerts')`. Then `attachWorkItemId(rowId, newCard.id)`. Return `newCard.id`.
+5. Lazy-heal path: same as create-path inner branch; then `replaceWorkItemId(rowId, oldWorkItemId, newCard.id)`; emit a single WARN log with literal prefix `[alert-materializer] orphan card detected` and include `{ projectId, source, externalId, prior: oldWorkItemId, replacement: newCard.id }` as structured fields. Return `newCard.id`.
+
+The "PM `getWorkItem` returned 404" detection should reuse whatever error-classification helper the codebase already uses for the equivalent flow elsewhere (see `src/integrations/pm/_shared/` and existing PM-error helpers); do not invent a new one. If no shared helper exists, add one in `_shared` and consume it here — preferred over per-PM `instanceof` checks.
+
+### 3. PMProvider conformance: assertion that `createWorkItem` accepts the alerts-slot container id
+
+**Tests first** (`tests/unit/integrations/pm-conformance.test.ts` — extend existing file):
+
+- For every registered PM manifest, run a per-provider behavioral assertion: with the provider's `createDiscoveryProvider` factory + a fixture container id, `createWorkItem({ containerId, title: '[Sentry] x', description: '...', labels: [] })` resolves to a `WorkItem` (using the existing `createFakePMProvider` lifecycle scenario as the harness). Expected red: `expected WorkItem from createWorkItem on alerts-slot container, got error / no support`.
+
+(This is a small extension of the existing harness, not a new file.)
+
+**Implementation**:
+- Extend `tests/unit/integrations/pm-conformance.test.ts` with the new assertion group.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/integrations/alerting/materialize.test.ts`: ~12 tests covering all branches of the materializer
+- [ ] `tests/unit/integrations/alerting/format-sentry.test.ts`: ~5 tests covering the title/description format helper
+- [ ] `tests/unit/integrations/pm-conformance.test.ts`: +1 assertion group across 4 providers (Trello, JIRA, Linear, fake)
+
+### Integration tests
+- [ ] `tests/integration/db/pr-work-items-external-mapping.test.ts`: ~7 tests including a parallel-claim concurrency test
+
+### Acceptance tests
+- [ ] (none — wired in plan 3)
+
+---
+
+## Manual Verification (for `[manual]`-tagged ACs only)
+
+n/a — all ACs auto-tested.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `materializeAlertWorkItem` returns the existing native id when a healthy mapping exists; never calls `createWorkItem` in that branch.
+2. `materializeAlertWorkItem` creates a new PM card, applies the configured label (when set), moves it to the alerts state (when `statuses.alerts` is set), and attaches the new id to the mapping row when no mapping exists.
+3. Concurrent invocations (≥5 parallel) of `materializeAlertWorkItem` for the same `(project, source, externalId)` produce exactly one `pr_work_items` row, exactly one `createWorkItem` call, and resolve to the same returned native id.
+4. When the existing mapping points to a PM card that returns 404, `materializeAlertWorkItem` creates a fresh card, atomically replaces the mapping row's `work_item_id`, and emits a WARN log with the literal prefix `[alert-materializer] orphan card detected` containing the prior id.
+5. Terminal PM errors (auth, validation, 5xx) propagate untouched. The mapping row is left with `work_item_id=NULL` so a retry can complete it.
+6. `materializeAlertWorkItem` throws `AlertSlotMissingError` (a typed exception class) when the project has no `alerts` slot configured. No DB write occurs, no PM call occurs.
+7. `formatSentryCardBody` produces a title prefixed `[Sentry] ` and a description containing the Sentry permalink, issue fingerprint, first-seen timestamp, alert rule that fired, and the top stack frame.
+8. The PM-provider conformance harness asserts each registered provider's `createWorkItem` accepts the alerts-slot container id pattern; a new PM provider added later must pass this without changes to the materializer.
+9. All new/modified code has corresponding tests.
+10. `npm run build`, `npm test`, `npm run test:integration`, `npm run lint`, and `npm run typecheck` all pass.
+
+**Partial-state criterion**: the materializer is reachable only via direct unit-test calls; no production trigger handler invokes it yet. Existing production behavior is unchanged.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/alerting/_shared/materialize.ts` | JSDoc on the public `materializeAlertWorkItem` signature explaining the contract (race-free, lazy-heal, terminal-error propagation) |
+| `src/integrations/alerting/_shared/types.ts` | JSDoc on `AlertSource`, `AlertSlotMissingError`, `MaterializationRetryExhausted` |
+
+(README + spec backlink land in plan 4.)
+
+---
+
+## Out of Scope (this plan)
+
+- Wiring the Sentry alerting trigger to call the materializer (plan 3).
+- `validateIntegrations` requiring the `alerts` slot when alerting is enabled (plan 3).
+- Coalescing on the post-materialization workItemId (plan 3).
+- Wizard UI / PM-tab validation rendering (plan 4).
+- Top-level docs (`src/integrations/README.md`, spec-018 backlink) — plan 4.
+- All items originally out of scope for the spec.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1
+- [ ] AC #2
+- [ ] AC #3
+- [ ] AC #4
+- [ ] AC #5
+- [ ] AC #6
+- [ ] AC #7
+- [ ] AC #8
+- [ ] AC #9
+- [ ] AC #10

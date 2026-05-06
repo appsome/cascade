@@ -1,0 +1,180 @@
+---
+id: 019
+slug: sentry-alert-pm-materialization
+level: spec
+title: Materialize Sentry alerts as real PM work items
+created: 2026-05-06
+status: draft
+---
+
+# 019: Materialize Sentry alerts as real PM work items
+
+## Problem & Motivation
+
+Spec 018 introduced the `alerting` agent, which fires when Sentry's `event_alert` webhook reaches a CASCADE project. The trigger handler synthesizes a workItemId of the form `sentry:issue:<id>` and hands it to the shared agent execution pipeline. That pipeline, in turn, calls every PM operation it normally would on a real card — including the **pre-run budget gate**, which reads the cost custom field via `provider.getCustomFieldNumber(workItemId, costFieldId)`.
+
+There is no Trello card with the id `sentry:issue:117972276`. Trello returns HTTP 400, the error throws unhandled, and the worker process dies before any `agent_runs` row is persisted. **Live incident 2026-05-06 21:03 CEST on the cascade project** (PM=Trello, Sentry alerting enabled, cost custom field configured): zero alerting runs have ever been persisted despite four+ webhooks queueing successfully. The same trace would fire on JIRA; only Linear's no-op `getCustomFieldNumber` would silently mask it. The bug is not "Trello is broken" — it is "the alerting pipeline assumes a workItemId is PM-native, and the synthetic id violates that assumption."
+
+The fix is not to teach every PM operation to skip non-native ids (a sprawling, untestable invariant). The fix is to make the workItemId **always PM-native**: when an alert fires, materialize a real card/issue/issue in the project's PM provider — Trello, JIRA, or Linear — and use its native id from that point forward. Subsequent alerts on the same Sentry issue land on the same card (idempotent). Operators see alerts on their PM board; the existing budget gate, lifecycle, comment posting, label routing, and dashboard work-item view all light up uniformly because there is no longer anything special about an alerting work item.
+
+The work also lays the seam for future alert sources — PagerDuty, GitHub Code Scanning, Datadog — by exposing a generic `materializeAlertWorkItem(source, externalId, project, hints)` interface that today only the Sentry trigger calls.
+
+---
+
+## Goals
+
+1. **Every Sentry alert that triggers the `alerting` agent has a real PM work item** (Trello card, JIRA issue, or Linear issue) before the agent run starts.
+2. **Idempotency per `(projectId, alertSourceType, alertSourceExternalId)`** — N alerts on the same Sentry issue, in any project, hit the same materialized card. No duplicates.
+3. **Race-free materialization** — concurrent webhooks for the same alert do not double-create. Enforced at the database level, not in application code.
+4. **The original failure trace cannot recur** — the synthetic `sentry:issue:` id codepath is **deleted**, not gated. There is no fallback that re-introduces a non-PM-native id.
+5. **Existing pipeline machinery works without special-casing** — budget gate, lifecycle, PM-ack, comments, dashboard work-item view, run records all behave for an alerting card the same way they do for a PM-native card.
+6. **Generic seam** — a single materializer entrypoint anticipates future alert sources without modifying the alerting agent or the trigger pipeline.
+7. **Visible in the operator's PM board** — alerts land in a dedicated, configurable `alerts` slot per provider, distinct from `todo` / `backlog`.
+8. **Configuration mistakes fail loudly at the integration-validation step**, not at runtime mid-pipeline. Enabling Sentry alerting without an `alerts` slot configured surfaces a clean error in the dashboard before any webhook arrives.
+
+---
+
+## Non-goals
+
+- Auto-closing or auto-archiving the materialized PM work item when Sentry marks the issue resolved. Separate concern; deferred to a future spec (likely 020).
+- Bidirectional sync between Sentry and the PM card (status, assignee, comments). One-way: Sentry → PM at materialization time.
+- Migrating historical synthetic-id work items. There are zero of them in the database (the bug prevented persistence). No data backfill.
+- Implementing alert sources other than Sentry. The generic materializer interface ships, but PagerDuty / Datadog / GitHub Alerts adapters are not built.
+- Mirroring the external alert id into a PM custom field as a disaster-recovery breadcrumb. Defer; reconsider after the first DB-loss incident where the in-DB mapping is the bottleneck.
+- Coalescing strategy beyond reusing the existing `PM_COALESCE_WINDOW_MS` machinery on the post-materialization workItemId. No new coalesce knob.
+
+---
+
+## Constraints
+
+- **All three production PM providers must be supported** out of the box: Trello, JIRA, Linear. No provider-specific carve-outs.
+- **The materializer must be safe under concurrent invocation** — two webhooks for the same Sentry issue arriving within milliseconds must not both create a PM card. Enforced via a database UNIQUE constraint and `INSERT … ON CONFLICT DO NOTHING RETURNING`, not via application-level locks.
+- **Materialization failure is a hard failure for the alert dispatch.** No silent fallback. If the PM API is unreachable or the credentials are revoked, the alerting dispatch fails through the existing BullMQ retry machinery (spec 015 dispatch-failure semantics still apply).
+- **The mapping table is the existing `pr_work_items` table, extended.** No new `external_work_items` table. (`pr_work_items` already double-duties as both the PR↔work-item link and the work-item-only row store; this extension fits its existing dual purpose.) The extension is two columns plus a partial UNIQUE index.
+- **No CLAUDE.md edit** unless the integration-validation contract for the `alerts` slot becomes load-bearing across multiple specs. By default this spec only updates `src/integrations/README.md`.
+- **Spec 015 retry semantics apply unchanged** — transient PM errors during materialization classify as transient; terminal errors (auth revoked, project archived) classify as terminal and fail fast.
+- **Spec 018 alerting-agent boot visibility applies unchanged** — the worker still emits its boot-readiness diagnostic; this spec changes what `workItemId` is, not what the worker logs.
+
+---
+
+## User stories / Requirements
+
+### Operator stories
+
+- **As an operator**, when a Sentry alert fires for my project, I see a new card on my PM board within seconds, in the configured `alerts` list/state, with a `[Sentry]` title prefix and a description containing a Sentry permalink + the alert rule that fired + the top stack frame. I can triage without leaving the PM tool.
+- **As an operator**, when the same Sentry issue fires repeatedly, I see exactly one card on my board, with multiple agent run records linked to it (visible in the dashboard work-item view).
+- **As an operator**, if I delete that PM card by hand, the next alert on the same Sentry issue **creates a new card** and updates the mapping. The deleted card stays deleted in the PM; nothing is auto-resurrected. The dashboard logs the orphan event so I can audit it.
+- **As an operator**, when I enable the Sentry alerting trigger on a project that has no `alerts` slot configured, the integration-validation step in the dashboard surfaces a clean, specific error before any webhook can arrive in production. I cannot accidentally ship a project with broken alerting.
+- **As an operator**, when Sentry's webhook arrives but my Trello/JIRA/Linear API is down, the alerting dispatch fails with a structured error (visible in the dashboard runs view) and BullMQ retries on the existing schedule. I am not silently dropped.
+
+### Functional requirements
+
+- **R1**: A new optional `alerts` slot is added to each PM provider's config schema (Trello `lists.alerts`, JIRA `statuses.alerts`, Linear `statuses.alerts`). Wizard UX surfaces it in each provider's PM-config flow.
+- **R2**: When the Sentry alerting trigger is enabled on a project, `validateIntegrations` requires the `alerts` slot to be set. Validation failure surfaces in the dashboard PM tab and blocks webhook dispatch.
+- **R3**: A generic materializer entrypoint accepts `(source, externalId, project, hints)` and returns a PM-native workItemId. The Sentry alerting trigger calls it before returning a `TriggerResult`. The synthetic `sentry:issue:` id is no longer minted anywhere.
+- **R4**: The materializer is idempotent at the database level via a partial UNIQUE constraint on `(projectId, externalSource, externalId)`. Concurrent invocations resolve to the same workItemId without double-creating.
+- **R5**: When the materializer's DB row points at a PM card that returns 404, the materializer creates a new PM card, updates the mapping row in place, and emits an "orphan card detected" log event with the prior PM id. Lazy heal; no operator intervention required.
+- **R6**: When the PM API is reachable but `createWorkItem` fails (auth, validation, 5xx), the materializer propagates the error untouched. The alerting trigger handler returns `null` (skip dispatch); BullMQ retry semantics from spec 015 take over.
+- **R7**: Coalescing of alerting agent runs reuses the existing `PM_COALESCE_WINDOW_MS` mechanism keyed on the post-materialization `(projectId, workItemId)` pair, identically to PM-source coalescing. The first alert in a window creates the card; subsequent alerts supersede the pending agent dispatch on the same card without re-creating it.
+- **R8**: The materialized card carries:
+  - **Title**: `[Sentry] <alertTitle>`.
+  - **Description**: markdown block including Sentry permalink, issue fingerprint, first-seen timestamp, the alert rule that fired, and the top stack frame.
+  - **Label**: the project's configured `cascade-alert` label slot (soft-required — if unset, no label is applied, no error). Provider-specific label slot lives alongside the existing `auto` / `error` / `processed` / `processing` / `readyToProcess` slots.
+  - **Initial state/list/status**: the project's configured `alerts` slot.
+- **R9**: The mapping is per-project: the same Sentry issue alerting two different cascade projects results in **two** separate materialized cards, one per project.
+- **R10**: The dashboard work-item view renders a materialized alerting card the same way as any PM-native card — including its agent run history, comments, and links — without any special UI affordance for the source.
+
+---
+
+## Research Notes
+
+- **Sentry's own first-party Jira/Linear/Trello integration owns the mapping** as an `ExternalIssue` row on the Sentry side; the PM card holds no Sentry-side ID by default. Strategic takeaway: **own the mapping in your own DB; don't depend on the PM provider to remember anything.** ([Sentry Jira docs](https://docs.sentry.io/organization/integrations/issue-tracking/jira/), [Sentry external-issue API](https://docs.sentry.io/api/integration/delete-an-external-issue/))
+- **Sentry's auto-create alert action is per-grouped-Sentry-Issue, not per-event.** The "perform actions once every N minutes" knob is frequency throttling, not idempotency. Two alert rules on the same Sentry Issue will each trigger materialization. **Dedupe key must be `(projectId, sentryIssueId)`, full stop — never the alert/event id.**
+- **PagerDuty's official Jira app stores the PagerDuty incident id as a custom field on the Jira side** in addition to keeping its own workflow mapping. Both sides hold the link to enable manual reconciliation and DB-loss recovery. We considered this and **deferred** (see Strategic decisions §4); revisit on the first DB-loss incident.
+- **Datadog's native Jira integration has no built-in dedupe**; community workarounds search Jira on every alert. This is the search-the-PM-side anti-pattern: slow, racy, breaks under PM search-index lag. **Don't rely on PM-side search.**
+- **No mature, generic, multi-tenant npm package exists** for alert→PM materialization. The space is dominated by closed-source iPaaS vendors. **Build it; don't shop.** Our existing PM adapter abstraction is the moat.
+- **DB-level UNIQUE + `INSERT … ON CONFLICT DO NOTHING RETURNING`** is the canonical race-free idempotent-create pattern. Stripe, Zendesk, Hatchet (PR #2077), and Apache Fineract (FINERACT-2096) all converge on this. Distributed locks are an anti-pattern — a unique constraint is simpler, faster, and correctness-equivalent.
+- **Stale-mapping (PM card archived/deleted)** is documented in PagerDuty's runbook and Sentry's `ExternalIssue` model: prefer create-a-new-card-and-link-as-supersedes over auto-resurrection. We adopt the lighter "create-new-and-update-mapping; log orphan" variant — no `supersedes` linkage in the first iteration.
+- **Two-way sync loops** are a known pitfall with bidirectional integrations. This spec is **one-way only** (Sentry → PM at materialize time); no risk in this iteration. If we ever add PM → Sentry comment sync, the "skip writes when target field already matches" rule must be baked in.
+
+---
+
+## Open Source Decisions
+
+| Tool | Solves | Decision | Reason |
+|------|--------|----------|--------|
+| `node-alert-to-ticket` / similar generic materializer libs | Alert → PM ticket fan-out | **Skip** — none mature; the closed-source iPaaS market dominates this space. Our PM adapter abstraction already provides what a library would. |
+| Postgres `INSERT … ON CONFLICT DO NOTHING RETURNING` (built-in) | Race-free idempotent insert | **Use** — the canonical pattern across Stripe / Zendesk / Hatchet / Apache Fineract. No application-level lock. |
+| Existing `PM_COALESCE_WINDOW_MS` mechanism (CASCADE) | Burst alert deduplication post-materialization | **Use** — keyed on `(projectId, materializedWorkItemId)`. No new knob. |
+| Existing `validateIntegrations` (CASCADE) | Pre-flight config check for the `alerts` slot | **Use** — surfaces config errors in the dashboard, not at runtime. |
+| Existing per-PM `createWorkItem` adapter method (CASCADE) | Trello/JIRA/Linear card creation | **Use** — already abstracts list-id / project-key / team-id container differences. |
+
+---
+
+## Strategic decisions
+
+1. **Mapping lives in CASCADE's DB, not the PM side.** Extend `pr_work_items` with `external_source` + `external_id` columns and a partial UNIQUE `(project_id, external_source, external_id) WHERE external_source IS NOT NULL`. Reasoning: Sentry's own model (`ExternalIssue` table) and the PagerDuty pattern both keep authoritative mapping in their own store. The PM side may forget.
+
+2. **Stale-mapping policy is "create-new + lazy heal".** When the mapped PM card returns 404 on next use, the materializer creates a fresh card, updates the mapping row in place, and logs the orphan event. No operator intervention. No `supersedes` linkage in this iteration. Reasoning: hardest-to-recover failure mode (stale mapping) becomes invisible to operators.
+
+3. **No backwards compatibility for synthetic `sentry:issue:` ids.** The codepath is deleted. There is no fallback when materialization fails — the dispatch fails loudly via existing BullMQ retry. Reasoning: a fallback would silently re-introduce the bug class this spec exists to fix; "fail loud" is consistent with spec 017's silent-failure-hardening principle.
+
+4. **`alerts` slot is required at runtime when Sentry alerting is enabled, validated by `validateIntegrations`.** No silent fallback to `todo` or `backlog`. Reasoning: silent fallbacks make incidents un-debuggable; explicit operator config keeps alert visibility under operator control.
+
+5. **External-id mirror in a PM custom field is deferred.** DR-only value; small, additive, non-blocking; revisit after the first DB-loss incident where the marginal value justifies a third config knob per provider.
+
+6. **Coalescing reuses `PM_COALESCE_WINDOW_MS` on the post-materialization workItemId.** First alert creates the card; subsequent alerts within the window supersede the pending agent dispatch on the same card without re-creating it. UNIQUE constraint enforces the no-re-create invariant regardless. No new coalesce knob.
+
+7. **Auto-close on Sentry resolution is out of scope.** Bidirectional lifecycle becomes a separate spec (likely 020). Reasoning: keeps this spec scope-tight and deliverable.
+
+8. **Generic materializer interface ships day one**, callable from any alerting trigger handler. Today only the Sentry trigger calls it. Reasoning: anticipates PagerDuty / Datadog / GitHub-Alerts adapters with zero rework; the seam costs nothing to declare now and avoids a refactor later. (Concrete location is plan-level detail.)
+
+9. **Card metadata is fixed for v1**: title `[Sentry] <alertTitle>`; description = Sentry permalink + fingerprint + first-seen + alert rule + top stack frame; label = the project's configured `cascade-alert` label slot (soft-required). Reasoning: enough for operator triage without leaving the PM tool; no provider-specific carve-outs.
+
+---
+
+## Acceptance Criteria (outcome-level)
+
+1. When a Sentry `event_alert` webhook arrives for a CASCADE project with an `alerts` slot configured, a real PM work item is created in the configured `alerts` list/state of the project's PM provider before the agent run starts. Verifiable end-to-end against each of Trello / JIRA / Linear.
+
+2. When two Sentry `event_alert` webhooks arrive for the same Sentry issue in the same project — concurrently or sequentially — exactly one PM work item exists at rest. The dashboard work-item view shows two agent run records linked to that single work item.
+
+3. When a Sentry `event_alert` webhook arrives for the same Sentry issue in two different CASCADE projects, two separate PM work items exist — one per project, each on the project's own PM board.
+
+4. When a CASCADE operator manually deletes the materialized PM card and the same Sentry issue alerts again, a new PM card is created, the mapping is updated in place, and an "orphan card detected" log event is emitted with the prior PM id. The deleted card stays deleted.
+
+5. When an operator enables the Sentry alerting trigger on a project that has no `alerts` slot configured, the dashboard's integration-validation surface presents a specific, actionable error and the trigger dispatch is blocked. No webhook can produce a runtime failure mid-pipeline due to the missing slot.
+
+6. When the project's PM API is unreachable at materialization time (Trello 5xx, JIRA timeout, Linear ECONNRESET), the alerting dispatch fails through the existing BullMQ retry budget exactly as spec 015 specifies. The webhook log records a structured failure with a Sentry capture; no synthetic-id workItemId is ever minted.
+
+7. The pre-run budget gate, lifecycle calls, PM-ack posting, comment posting, dashboard work-item view, and `agent_runs` write all operate on the materialized card with **zero** alerting-specific carve-outs in their code paths. The synthetic `sentry:issue:` id codepath is removed from the codebase.
+
+8. Bursts of Sentry alerts on the same issue within `PM_COALESCE_WINDOW_MS` produce one materialized card and one final agent run (the latest superseder), matching the existing PM-source coalescing semantics.
+
+9. The materialized card title starts with `[Sentry] ` and the description contains: a clickable Sentry permalink, the issue fingerprint, the first-seen timestamp, the alert rule that fired, and the top stack frame from the event payload.
+
+10. A new alert source can be added (e.g. PagerDuty) by writing a new alerting trigger that calls the same materializer with `source = 'pagerduty'`, **without modifying** the alerting agent, the shared agent execution pipeline, or the materializer interface.
+
+11. The PM-provider conformance harness — extended to cover the materializer surface — runs against every registered PM provider; a new PM provider added later passes alerting materialization for free at registration time.
+
+12. The original 2026-05-06 incident trace (`Trello API error 400 for /cards/sentry:issue:<id>/customFieldItems` from the budget gate) is impossible to reproduce. A regression pin asserts no code path constructs a workItemId starting with `sentry:issue:`.
+
+---
+
+## Documentation Impact (high-level)
+
+- `src/integrations/README.md` — new section on the alerting materializer contract, the generic `(source, externalId, project, hints) → workItemId` shape, and the per-provider expectations for the `alerts` slot.
+- `CLAUDE.md` — **only** if the materializer's idempotency invariant (DB UNIQUE + ON CONFLICT) becomes a load-bearing rule that future maintainers regress. Default: no edit; revisit if a regression ships.
+- `docs/specs/018-alerting-agent-and-worker-boot-visibility.md.done` — backreference forward-link added to call out that 019 supersedes the synthetic-id behavior introduced in 018.
+
+---
+
+## Out of Scope
+
+- Auto-closing or auto-archiving the materialized PM work item when Sentry marks the issue resolved (deferred to spec 020 candidate).
+- Bidirectional Sentry ↔ PM sync of any kind (status, assignee, comments, attachments).
+- PagerDuty, Datadog, GitHub Alerts, or any alerting source other than Sentry. The generic materializer ships and is callable, but no second source is wired in this spec.
+- Backfilling historical synthetic-id work items. None exist (the bug prevented persistence); no migration needed.
+- Mirroring the external alert id into a PM custom field as a DR breadcrumb (deferred until DB-loss incident justifies it).
+- Operator UX for manually relinking an orphaned mapping (lazy-heal handles the common case; manual relink is a future-spec concern if needed).
+- Diagnosing the secondary `EDBHANDLEREXITED` Sentry fatal from 2026-05-06 21:13 CEST — separate concern, requires the full stack trace which is currently truncated. Not blocked by this spec.

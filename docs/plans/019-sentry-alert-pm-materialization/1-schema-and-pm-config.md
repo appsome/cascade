@@ -1,0 +1,196 @@
+---
+id: 019
+slug: sentry-alert-pm-materialization
+plan: 1
+plan_slug: schema-and-pm-config
+level: plan
+parent_spec: docs/specs/019-sentry-alert-pm-materialization.md
+depends_on: []
+status: pending
+---
+
+# 019/1: Schema migration + PM-config slot recognition (foundation)
+
+> Part 1 of 4 in the 019-sentry-alert-pm-materialization plan. See [parent spec](../../specs/019-sentry-alert-pm-materialization.md).
+
+## Summary
+
+Land the dormant DB and config foundations for the alert-materialization feature. Two parallel pieces:
+
+1. A **DB migration** adds `external_source` + `external_id` columns to `pr_work_items` plus a partial UNIQUE index on `(project_id, external_source, external_id) WHERE external_source IS NOT NULL`. The columns are nullable; existing rows default to NULL; legacy reads/writes are unaffected. The index is the race-free idempotency primitive plan 2 will rely on.
+2. **PM-config recognition of the `alerts` slot** for all three providers. Trello/JIRA/Linear already store `lists` / `statuses` as open `Record<string, string>`, so `lists.alerts` (Trello) / `statuses.alerts` (JIRA, Linear) are valid today. This plan adds:
+   - A typed `cascadeAlert?: string` slot in JIRA's and Linear's `labels` object (Trello's `labels` is already open). The materializer in plan 2 reads from this slot to apply the alert label.
+   - JSDoc + Zod `.describe` annotations identifying `alerts` as a recognized status-key and `cascadeAlert` as a recognized label-key.
+   - A small typed accessor `getAlertsContainerId(project)` and `getAlertLabelId(project)` in `src/pm/config.ts` for the materializer to consume.
+
+This plan ships **dormant** code: the migration + accessors are unused until plan 2 wires them in. Reviewers can validate the migration semantics and the accessor contract independently of the materialization logic.
+
+**Components delivered:**
+- New migration file: `src/db/migrations/0051_pr_work_items_external_source.sql`
+- Updated `src/db/migrations/meta/_journal.json` (idx 51)
+- Updated `src/db/schema/prWorkItems.ts` (two new nullable text columns + a JSDoc note about the partial unique index)
+- Updated `src/integrations/pm/{trello,jira,linear}/config-schema.ts` (Zod `.describe` annotations + JIRA/Linear `cascadeAlert` label slot)
+- Updated `src/pm/config.ts` (`JiraConfig` / `LinearConfig` `cascadeAlert?: string` field + new `getAlertsContainerId` and `getAlertLabelId` accessors)
+- Tests: schema-round-trip pin per provider; accessor unit tests; migration smoke test
+
+**Deferred to later plans in this spec:**
+- The materializer that uses these accessors (plan 2)
+- Wiring the Sentry trigger to call the materializer (plan 3)
+- Wizard UI for configuring `alerts` and `cascadeAlert` (plan 4)
+- `validateIntegrations` requirement that `alerts` is set when alerting trigger is enabled (plan 3)
+
+---
+
+## Spec ACs satisfied by this plan
+
+- Spec AC #2 (concurrent dedupe → one card) — **partial**: this plan provides the partial UNIQUE index that enforces it; plan 2 provides the `INSERT … ON CONFLICT DO NOTHING RETURNING` query that uses it.
+- Spec AC #3 (per-project mapping) — **partial**: the UNIQUE includes `project_id`; plan 2 wires the lookup.
+- (Plan 1 carries no full-coverage spec ACs by itself — it ships dormant. This is expected and called out in the proposal.)
+
+---
+
+## Depends On
+
+- (none — foundation plan)
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. DB migration: add `external_source` + `external_id` to `pr_work_items` with partial UNIQUE
+
+**Tests first** (`tests/integration/db/pr-work-items-external-source.test.ts`):
+
+- `pr_work_items.external_source and external_id columns exist and accept NULL` — integration — set up the test DB with migrations applied; query `information_schema.columns`. Expected red: `expected to find 2 columns ('external_source', 'external_id') in pr_work_items, found 0`.
+- `partial UNIQUE index uq_pr_work_items_project_external blocks a duplicate (project_id, external_source, external_id) insert` — integration — insert one row with `(project_id='p1', external_source='sentry', external_id='S1')`, then attempt a second identical insert; expect a Postgres error with code `23505` (unique_violation). Expected red: `expected unique_violation (23505), got: rows inserted successfully`.
+- `partial UNIQUE index allows multiple rows where external_source IS NULL` — integration — insert three rows with `external_source=NULL` for the same `project_id`; all three succeed. Expected red: `expected 3 rows, got: insert failed with unique_violation`. (Confirms the index is partial.)
+- `partial UNIQUE index allows the same external_id across different projects` — integration — insert `(project_id='p1', external_source='sentry', external_id='S1')` and `(project_id='p2', external_source='sentry', external_id='S1')`; both succeed. Expected red: `expected 2 rows, got: unique_violation on second insert`.
+- `partial UNIQUE index allows the same external_id across different sources within a project` — integration — insert `(p1, sentry, S1)` and `(p1, pagerduty, S1)`; both succeed. Expected red: `unique_violation on second insert`.
+
+**Implementation** (`src/db/migrations/0051_pr_work_items_external_source.sql`):
+```sql
+ALTER TABLE pr_work_items ADD COLUMN external_source text;
+ALTER TABLE pr_work_items ADD COLUMN external_id text;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pr_work_items_project_external
+    ON pr_work_items (project_id, external_source, external_id)
+    WHERE external_source IS NOT NULL;
+```
+
+`src/db/migrations/meta/_journal.json` — append entry `{ idx: 51, version: '7', when: <next-ms>, tag: '0051_pr_work_items_external_source', breakpoints: false }`.
+
+`src/db/schema/prWorkItems.ts` — add two nullable text columns and a JSDoc note about the partial unique index (drizzle does not natively support partial unique indexes; the migration enforces it directly, mirroring the pattern at lines 22–25).
+
+### 2. Per-provider config-schema annotations + JIRA/Linear `cascadeAlert` label slot
+
+**Tests first** (`tests/unit/pm/config-alert-slot.test.ts`):
+
+- `trelloConfigSchema accepts lists.alerts and labels.cascade-alert without error` — unit — parse `{ boardId: 'b', lists: { alerts: 'list-id' }, labels: { 'cascade-alert': 'lbl-id' } }`. Expected red: `expected schema.parse to succeed, got ZodError`.
+- `jiraConfigSchema accepts statuses.alerts and labels.cascadeAlert` — unit — parse `{ projectKey: 'P', baseUrl: 'https://x', statuses: { alerts: 'In Triage' }, labels: { cascadeAlert: 'cascade-alert' } }`. Expected red: `ZodError: unrecognized key cascadeAlert`.
+- `linearConfigSchema accepts statuses.alerts and labels.cascadeAlert` — unit — analogous. Expected red: same ZodError.
+- `JiraConfig.labels has optional cascadeAlert field` — unit (typecheck via `expectTypeOf<JiraConfig['labels']>().toEqualTypeOf<{ ... cascadeAlert?: string }>()`). Expected red: typecheck failure: missing `cascadeAlert` property.
+- `LinearConfig.labels has optional cascadeAlert field` — unit (typecheck). Expected red: same.
+
+**Implementation:**
+
+- `src/integrations/pm/trello/config-schema.ts` — add `.describe` text on `lists` field calling out `alerts` as a recognized key. No type change (lists is already an open record).
+- `src/integrations/pm/jira/config-schema.ts` — extend the `labels` object to include `cascadeAlert: z.string().optional()`; add `.describe` on `statuses` calling out `alerts` as a recognized key.
+- `src/integrations/pm/linear/config-schema.ts` — same pattern as JIRA: add `cascadeAlert` to `labels`; document `alerts` on `statuses`.
+- `src/pm/config.ts` — add `cascadeAlert?: string` to `JiraConfig['labels']` and `LinearConfig['labels']`. Trello's `labels` is `Record<string, string>` and needs no type change; the materializer reads `labels['cascade-alert']` for Trello.
+
+### 3. Typed accessors for the alerts container and label
+
+**Tests first** (`tests/unit/pm/config-alert-accessors.test.ts`):
+
+- `getAlertsContainerId returns Trello list ID from project.trello.lists.alerts` — unit — fixture project with `pm.type='trello'` and `trello.lists.alerts='list-123'`. Expected red: `getAlertsContainerId is not a function` / `expected 'list-123', got undefined`.
+- `getAlertsContainerId returns JIRA project key from statuses.alerts` (note: JIRA's container is the project key from `projectKey`, NOT a status; for the materializer this means we return `projectKey` as the createWorkItem container, while `statuses.alerts` is what the lifecycle/move uses to put the issue in the alerts state). Document the asymmetry in the accessor's JSDoc; return `projectKey` for JIRA. Expected red: same.
+- `getAlertsContainerId returns Linear team ID for Linear projects` — unit — `pm.type='linear'`, `linear.teamId='team-1'`. The Linear materializer creates an issue in the team and moves it to `statuses.alerts`. Expected red: same.
+- `getAlertsContainerId returns undefined when no PM config is present` — unit. Expected red: `expected undefined, got <something else>`.
+- `getAlertLabelId returns Trello label ID from labels['cascade-alert']` — unit. Expected red: function not found.
+- `getAlertLabelId returns JIRA label string from labels.cascadeAlert` — unit.
+- `getAlertLabelId returns Linear label ID from labels.cascadeAlert` — unit.
+- `getAlertLabelId returns undefined when label slot is not configured` — unit (covers all three PM types).
+- `getAlertsStatusKey returns 'alerts' literal when statuses.alerts is configured` — unit. (Used by plan 3's lifecycle move.)
+- `getAlertsStatusKey returns undefined when statuses.alerts is not configured` — unit (Trello: lists.alerts; JIRA: statuses.alerts; Linear: statuses.alerts).
+
+**Implementation** (`src/pm/config.ts`):
+- `getAlertsContainerId(project: ProjectConfig): string | undefined` — returns the value the PM adapter's `createWorkItem.containerId` expects: Trello → `lists.alerts`, JIRA → `projectKey`, Linear → `teamId`. JSDoc explains why JIRA/Linear deviate from "look up alerts in lists/statuses" (their createWorkItem container is project/team-scoped, not status-scoped; the alerts state is applied via a follow-up move, see plan 2).
+- `getAlertLabelId(project: ProjectConfig): string | undefined` — returns Trello `labels['cascade-alert']` or JIRA/Linear `labels.cascadeAlert`.
+- `getAlertsStatusKey(project: ProjectConfig): 'alerts' | undefined` — returns the literal `'alerts'` if the project's PM config has the alerts slot populated (in `lists.alerts` for Trello, `statuses.alerts` for JIRA/Linear); otherwise undefined. Plan 2's materializer feeds this into the existing `lifecycle.moveTo(statusKey)` machinery.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/pm/config-alert-slot.test.ts`: 5 tests (Zod round-trip + typecheck pins per provider)
+- [ ] `tests/unit/pm/config-alert-accessors.test.ts`: ~10 tests (the three accessors across three PM types + missing-config branches)
+
+### Integration tests
+- [ ] `tests/integration/db/pr-work-items-external-source.test.ts`: 5 tests covering column existence, partial UNIQUE enforcement (positive + negative + cross-project + cross-source + null-allowed branches)
+
+### Acceptance tests
+- [ ] (none for this plan — dormant code; ACs roll up into plans 2/3/4)
+
+---
+
+## Manual Verification (for `[manual]`-tagged ACs only)
+
+n/a — all ACs auto-tested.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. `npm run db:migrate` applies `0051_pr_work_items_external_source.sql` cleanly against an integration DB seeded by prior migrations; the two columns and the partial unique index are present.
+2. The partial UNIQUE index blocks a duplicate insert with the same `(project_id, external_source, external_id)` and allows distinct rows across projects, distinct sources within a project, and any number of `external_source IS NULL` rows.
+3. All three PM config schemas parse the new keys (`lists.alerts` / `statuses.alerts`, `labels.cascade-alert` / `labels.cascadeAlert`) without error and reject unrelated unknown keys consistent with their existing strictness.
+4. `getAlertsContainerId`, `getAlertLabelId`, and `getAlertsStatusKey` return the documented values for each PM type and `undefined` when unconfigured.
+5. **Partial-state criterion**: the new columns exist with NULL defaults; no application code reads or writes them yet. Running the existing test suite is unaffected.
+6. All new/modified code has corresponding tests.
+7. `npm run build` passes.
+8. `npm test` (all 4 unit projects) passes.
+9. `npm run test:integration` passes (covers the migration test).
+10. `npm run lint` and `npm run typecheck` pass.
+11. All documentation listed in Documentation Impact has been updated.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/integrations/pm/trello/config-schema.ts` | JSDoc + Zod `.describe` annotations identifying `lists.alerts` and `labels['cascade-alert']` as recognized keys |
+| `src/integrations/pm/jira/config-schema.ts` | Same + adds `cascadeAlert` to typed `labels` block |
+| `src/integrations/pm/linear/config-schema.ts` | Same pattern as JIRA |
+| `src/pm/config.ts` | JSDoc on the three new accessors explaining the per-PM container asymmetry |
+
+(Top-level docs — README, spec backlink — land in plan 4.)
+
+---
+
+## Out of Scope (this plan)
+
+- The materializer entrypoint that uses the new schema columns and accessors (plan 2).
+- Wiring the Sentry alerting trigger handler to call the materializer (plan 3).
+- `validateIntegrations` requiring `alerts` to be set when the alerting trigger is enabled (plan 3).
+- Wizard UI for configuring the `alerts` slot and `cascade-alert` label (plan 4).
+- `src/integrations/README.md` updates (plan 4).
+- All items originally out of scope for the spec (auto-close on resolution, bidirectional sync, non-Sentry alert sources, DB-loss DR breadcrumb, etc.).
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1
+- [ ] AC #2
+- [ ] AC #3
+- [ ] AC #4
+- [ ] AC #5
+- [ ] AC #6
+- [ ] AC #7
+- [ ] AC #8
+- [ ] AC #9
+- [ ] AC #10
+- [ ] AC #11

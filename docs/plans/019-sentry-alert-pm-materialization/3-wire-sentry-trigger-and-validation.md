@@ -1,0 +1,220 @@
+---
+id: 019
+slug: sentry-alert-pm-materialization
+plan: 3
+plan_slug: wire-sentry-trigger-and-validation
+level: plan
+parent_spec: docs/specs/019-sentry-alert-pm-materialization.md
+depends_on: [2-materializer-core.md]
+status: pending
+---
+
+# 019/3: Wire Sentry trigger to materializer + validation + coalescing
+
+> Part 3 of 4 in the 019-sentry-alert-pm-materialization plan. See [parent spec](../../specs/019-sentry-alert-pm-materialization.md).
+
+## Summary
+
+Make the materializer live in production. Three coupled changes that must land together to avoid a "weird intermediate state":
+
+1. **The Sentry alerting trigger calls the materializer.** `SentryIssueAlertTrigger.handle` (currently at `src/triggers/sentry/alerting-issue.ts:74`) stops minting `workItemId = "sentry:issue:${issueId}"` and instead calls `materializeAlertWorkItem('sentry', issueId, project, formatSentryCardBody(payload))` to obtain a real PM-native id. The synthetic-id codepath is **deleted from the codebase**, not gated. PM errors from materialization cause the trigger to return `null` (skip dispatch) and propagate through BullMQ retry semantics from spec 015.
+2. **`validateIntegrations` requires the `alerts` slot when the Sentry alerting trigger is enabled.** A new validation rule under the `pm` category checks that the project's PM config has a populated alerts slot whenever any alerting trigger is enabled in `agent_trigger_configs`. The validation runs at the existing call sites (pre-flight before agent dispatch, dashboard PM tab integration check) — no new call sites needed.
+3. **Coalescing reuses `PM_COALESCE_WINDOW_MS` keyed on the post-materialization `(projectId, workItemId)`.** The router's existing PM-coalescing logic in `src/router/coalesce.ts` (or the equivalent — verify path) already keys jobs by that pair. Because materialization runs inside the trigger handler, the workItemId returned to the dispatcher IS the materialized native id — no router-side change required as long as the coalesce key is computed AFTER the trigger handler returns. Confirm the path; if the coalesce key is computed too early, fix at the seam (router-side, this plan).
+
+The static guard from spec 017 (`tests/unit/router/pm-ack-dispatch.test.ts` — "no literal pm-type branching") is unaffected; the materializer dispatches via the manifest registry from plan 2 already.
+
+**Components delivered:**
+- Modified `src/triggers/sentry/alerting-issue.ts` — calls materializer, deletes synthetic id branch, propagates errors as `null` return (logs at WARN with structured fields).
+- Modified `src/triggers/shared/integration-validation.ts` (or equivalent — verify path) — adds the alerts-slot rule.
+- Modified router coalesce path **only if** the existing key computation is upstream of trigger-handler return. Otherwise, no router code change.
+- Test fixtures + new tests for each of the three above.
+- Updated PM-provider conformance harness assertion (extends the addition from plan 2): every registered manifest's discovery + create + label + lifecycle move chain works against the alerts-slot container.
+
+**Deferred to later plans in this spec:**
+- Wizard UI for configuring the alerts slot (plan 4) — operators today configure via `cascade projects integration-set` CLI or by hand.
+- The dashboard's surfacing of the validation error in the PM tab (plan 4) — the validation rule emits the error; rendering it in the new UI is plan 4.
+- README + spec-018 backlink (plan 4).
+- The regression pin "no code path constructs `sentry:issue:`" (plan 4) — easier to write the static guard at the end once the codebase is fully clean.
+
+---
+
+## Spec ACs satisfied by this plan
+
+- Spec AC #1 (real card on alerts list) — **full** end-to-end, but flagged `[manual]` for the live-PM smoke test (see Manual Verification below).
+- Spec AC #5 (alerts-slot validation surfaces in dashboard) — **partial**: this plan adds the validation rule + emission; plan 4 adds the wizard UI rendering.
+- Spec AC #6 (PM unreachable → BullMQ retry, no synthetic id) — **full**.
+- Spec AC #7 (zero alerting carve-outs in shared pipeline; synthetic path deleted) — **full**.
+- Spec AC #8 (coalesce reuses `PM_COALESCE_WINDOW_MS`) — **full**.
+- Spec AC #11 (conformance harness covers materializer) — **full** (extension of plan 2's harness assertion to verify the full create-label-move chain works per provider).
+
+---
+
+## Depends On
+
+- Plan 2 (`2-materializer-core.md`) — provides `materializeAlertWorkItem`, `formatSentryCardBody`, and the typed error classes.
+
+---
+
+## Detailed Task List (TDD)
+
+### 1. SentryIssueAlertTrigger calls the materializer
+
+**Tests first** (`tests/unit/triggers/sentry/alerting-issue-materializer.test.ts`):
+
+- `SentryIssueAlertTrigger.handle returns a TriggerResult whose workItemId is the materialized native id, not a synthetic prefix` — unit — mock `materializeAlertWorkItem` to return `'card-real-1'`; expect the trigger's returned `TriggerResult.workItemId === 'card-real-1'` and `TriggerResult.agentInput.workItemId === 'card-real-1'`. Expected red: `expected workItemId='card-real-1', got 'sentry:issue:117972276'`.
+- `SentryIssueAlertTrigger.handle does not contain the literal 'sentry:issue:'` — unit (static, AST-level, OR a grep over the resulting handle output) — fixture payload + mocked materializer; expect no string in any field of the returned `TriggerResult` matches `/^sentry:issue:/`. Expected red: a synthetic id is found in the result.
+- `SentryIssueAlertTrigger.handle calls materializeAlertWorkItem with source='sentry' and externalId=<sentry-issue-id>` — unit — fixture payload with `event.issue_id='I-7'`; expect the materializer was called with exactly `('sentry', 'I-7', project, hints)` where `hints.title.startsWith('[Sentry]')` and `hints.descriptionMarkdown.includes('https://sentry.io')`. Expected red: `expected materializeAlertWorkItem call with ('sentry', 'I-7', ...), got <wrong args or 0 calls>`.
+- `SentryIssueAlertTrigger.handle returns null when materialization throws AlertSlotMissingError` — unit — materializer rejects with `AlertSlotMissingError`; expect the trigger to return `null` AND log a structured WARN with `{ projectId, source: 'sentry', reason: 'alerts_slot_missing' }`. Expected red: `expected null, got TriggerResult` / `expected log line not found`.
+- `SentryIssueAlertTrigger.handle propagates a transient PM error to the caller (does NOT return null silently)` — unit — materializer rejects with a synthetic `Error('PM 503')`; expect the trigger's `handle` REJECTS with the same error (not returns null) so the BullMQ retry budget engages. Expected red: `expected error propagated, got null returned (silent failure)`.
+- `SentryIssueAlertTrigger.handle skip-with-null still applies for known terminal misconfigurations (e.g. AlertSlotMissingError)` — same as 4 above; pinned separately because the silent-vs-loud distinction matters per spec 017's silent-failure-hardening principle. Misconfiguration is operator-actionable → null + WARN. Transient PM error is dispatch-retry-able → reject and let BullMQ handle it.
+- `Existing SentryIssueAlertTrigger tests for the trigger-disabled and missing-issue-id branches still pass` — unit — these are existing tests; this plan must not regress them. Expected red: regression in pre-existing assertions.
+
+**Implementation:**
+- `src/triggers/sentry/alerting-issue.ts`:
+  - Delete the line `const workItemId = \`sentry:issue:${issueId}\`;` and any reference to the synthetic-id constant.
+  - Replace with: `const hints = formatSentryCardBody(augmented); const workItemId = await materializeAlertWorkItem('sentry', issueId, ctx.project, hints);` wrapped in a try/catch where:
+    - `AlertSlotMissingError` → log WARN, return `null`.
+    - Other errors → re-throw (BullMQ retry).
+  - The returned `TriggerResult.workItemId` and `agentInput.workItemId` are the materialized native id verbatim.
+  - Remove the comment that references "Spec 018, AC #12" about the synthesized stable identifier — this plan supersedes that decision.
+
+### 2. Validation: alerts-slot required when alerting trigger enabled
+
+**Tests first** (`tests/unit/triggers/shared/integration-validation-alerts-slot.test.ts`):
+
+(Verify the actual file path of `validateIntegrations` and its test before writing — adjust filename if the existing module lives elsewhere.)
+
+- `validateIntegrations passes when no alerting trigger is enabled and alerts slot is unset` — unit — no regression to existing behavior. Expected red: spurious validation failure for the GitHub-only project.
+- `validateIntegrations fails with a structured error when alerting trigger is enabled and alerts slot is unset (Trello)` — unit — fixture project with `pm.type='trello'`, no `lists.alerts`, alerting trigger enabled in `agent_trigger_configs`; expect `valid===false` with an error of category `pm` and a code/message that mentions both `alerts` and the PM type. Expected red: `expected valid===false, got valid===true`.
+- Same fail-case for JIRA — `statuses.alerts` unset.
+- Same fail-case for Linear — `statuses.alerts` unset.
+- `validateIntegrations passes when alerting trigger is enabled AND alerts slot is set` — unit — happy path per PM type. Expected red: false-positive validation failure.
+- `validateIntegrations does NOT require the cascade-alert label slot to be set (it is soft-required)` — unit — alerting trigger enabled, `lists.alerts` set, `labels['cascade-alert']` unset; expect valid. Expected red: validation rejects on the optional slot.
+
+**Implementation:**
+- Locate the existing `validateIntegrations` module (likely `src/triggers/shared/integration-validation.ts` based on the imports in `src/triggers/shared/agent-execution.ts:31`).
+- Add a new check: when the project has any alerting-category trigger enabled (query `agent_trigger_configs` for `event LIKE 'alerting:%'` and `enabled=true`), the project's PM config must have `getAlertsContainerId(project) !== undefined`. On failure, push a `{ category: 'pm', message: \`Alerting trigger is enabled but no \\\`alerts\\\` slot is configured for ${pmType}. Set lists.alerts (Trello) / statuses.alerts (JIRA, Linear) in the project's PM config.\` }`.
+
+### 3. Coalescing key uses post-materialization workItemId (verify, fix only if broken)
+
+**Investigation task before writing tests** (read-only, in `/implement` Phase 1): trace the BullMQ `pm:status-changed` coalescing path in the router. Confirm whether the coalesce key is computed (a) inside the trigger handler return (good — automatically uses materialized id), (b) at the dispatcher in `src/router/` (must verify; may need to move computation later), or (c) at the BullMQ job-add layer (good if `workItemId` is read from `agentInput.workItemId` at add-time).
+
+If (a) or (c): no production code change; write a single regression-pin test that asserts coalescing with two near-simultaneous Sentry alerts on the same Sentry issue produces one final dispatch with the materialized workItemId.
+
+If (b): move the coalesce-key computation downstream of the trigger handler. Write the same regression-pin test, plus a unit test on the coalesce-key helper covering the post-materialization path.
+
+**Tests first** (`tests/integration/sentry-alert-coalescing.test.ts`):
+
+- `Two Sentry event_alert webhooks for the same Sentry issue, arriving 1s apart, produce one materialized card and one final dispatched job whose workItemId is the materialized native id` — integration — with `PM_COALESCE_WINDOW_MS=10000`; mock the PM client so `createWorkItem` returns a fixed id; observe BullMQ active job count + the final job's `agentInput.workItemId`. Expected red: `expected 1 final job, got 2` / `expected workItemId='card-1', got 'sentry:issue:I-7'`.
+- `Burst of 5 Sentry event_alert webhooks within the coalesce window for the same issue produces exactly 1 PM card created` — integration — assert `createWorkItem` was called exactly once across the burst. Expected red: `expected 1 createWorkItem call, got >1` (this is the spec AC #2 + AC #8 cross-pin).
+
+**Implementation:**
+- Path-dependent — see investigation task. If the coalesce key is already correct, this section is just the test.
+
+### 4. Conformance harness extension: full create-label-move chain per PM provider
+
+**Tests first** (extends `tests/unit/integrations/pm-conformance.test.ts`):
+
+- For every registered PM manifest, run a behavioral assertion that materialization end-to-end works against the provider's `createDiscoveryProvider`-produced adapter: given a fake `pr_work_items` repository, `materializeAlertWorkItem('sentry', 'I-test', fixtureProject, fixtureHints)` returns a non-empty native id, calls `createWorkItem` once, optionally `addLabel` and `lifecycle.moveTo('alerts')` once each. Expected red per provider: failure naming the provider that broke.
+
+**Implementation:**
+- Extend the harness file directly — no new file. Reuses fixtures from plan 2's per-provider lifecycle scenarios.
+
+### 5. Delete dead code paths and search for leftover synthetic-id references
+
+**Tests first** (`tests/unit/triggers/no-synthetic-sentry-id.test.ts` — anticipates plan 4's regression pin but with a smaller scope here, scoped to the trigger module):
+
+- `src/triggers/sentry/ contains no string literal or template starting with 'sentry:issue:'` — unit (static grep test, similar to the existing `tests/unit/integrations/entrypoint-usage.test.ts` pattern). Expected red: `'sentry:issue:' found at src/triggers/sentry/alerting-issue.ts:N`.
+
+(Plan 4 broadens this to the entire `src/`.)
+
+**Implementation:**
+- Removes any dead helpers / constants. Verify nothing else in the trigger or its tests references the synthetic id.
+
+---
+
+## Test Plan
+
+### Unit tests
+- [ ] `tests/unit/triggers/sentry/alerting-issue-materializer.test.ts`: ~7 tests
+- [ ] `tests/unit/triggers/shared/integration-validation-alerts-slot.test.ts`: ~6 tests
+- [ ] `tests/unit/triggers/no-synthetic-sentry-id.test.ts`: 1 static grep test
+- [ ] `tests/unit/integrations/pm-conformance.test.ts`: extension assertion across 4 providers
+
+### Integration tests
+- [ ] `tests/integration/sentry-alert-coalescing.test.ts`: 2 tests covering coalesce + create-once invariants
+
+### Acceptance tests
+- [ ] AC #1: live PM smoke (manual — see below)
+
+---
+
+## Manual Verification (for `[manual]`-tagged ACs only)
+
+- **AC**: Spec AC #1 (real PM card created in the configured `alerts` list/state for each of Trello / JIRA / Linear).
+- **Why manual**: end-to-end against live Trello / JIRA / Linear sandbox accounts. The integration tests already cover the contract with mocked PM clients; a live smoke is what catches credential/rate-limit/silent-payload-shape drift the mocks can't reproduce. Each of the three live integrations would need fixture sandbox accounts + tokens that aren't set up in CI.
+- **Verification protocol** (must be run for each PM type before marking the spec done):
+  1. Pre-conditions: a `cascade` test project per PM type with the alerting trigger enabled, the `alerts` slot configured, valid PM credentials, and a Sentry alert rule pointing at the project's webhook.
+  2. Trigger an alert from Sentry: open the Sentry dashboard → an issue page → "Send Test Notification" against the alert rule that targets the test project's CASCADE webhook. Capture the Sentry-side timestamp.
+  3. Within 30 s, observe a new card on the project's PM board: title starts `[Sentry] `, description contains a clickable Sentry permalink, the card is in the configured `alerts` list/state, and (if `cascade-alert` label slot is set) carries that label.
+  4. Run `cascade webhooklogs list --source sentry --limit 1` — confirm `decisionReason` includes `Job queued: alerting agent for work item <native PM id>` (NOT `sentry:issue:`).
+  5. Run `cascade runs list --project <project-id> --agent-type alerting --limit 1` — confirm a row exists with `status` advancing through the normal lifecycle.
+  6. Trigger the same Sentry alert a second time within 60s. Observe: no new PM card is created; a second agent run record appears, linked to the same `workItemId` as the first.
+  7. Manually delete the materialized PM card (Trello: archive; JIRA: delete; Linear: archive). Trigger the Sentry alert a third time. Observe: a NEW PM card is created with a fresh native id; the dashboard logs an `[alert-materializer] orphan card detected` WARN entry referencing the deleted prior id.
+- Pass condition: all 6 observations succeed for each of Trello, JIRA, and Linear.
+
+---
+
+## Acceptance Criteria (per-plan, testable)
+
+1. The `sentry:issue:` synthetic-id pattern does not appear anywhere in `src/triggers/sentry/`. The static grep test pins this.
+2. `SentryIssueAlertTrigger.handle` returns a `TriggerResult` whose `workItemId` is the value returned by `materializeAlertWorkItem`. No code path constructs the synthetic prefix.
+3. When `materializeAlertWorkItem` rejects with `AlertSlotMissingError`, `SentryIssueAlertTrigger.handle` returns `null` and emits a WARN log with structured fields including `projectId`, `source: 'sentry'`, and `reason: 'alerts_slot_missing'`.
+4. When `materializeAlertWorkItem` rejects with any other error, `SentryIssueAlertTrigger.handle` re-throws so BullMQ retry semantics from spec 015 engage.
+5. `validateIntegrations` fails with a category-`pm` error message naming the PM type and the missing `alerts` slot when the alerting trigger is enabled and the slot is not set.
+6. `validateIntegrations` does not require the `cascade-alert` label slot.
+7. Two Sentry `event_alert` webhooks for the same Sentry issue within `PM_COALESCE_WINDOW_MS` produce one PM card and one final agent dispatch whose `workItemId` is the materialized native id.
+8. The PM-provider conformance harness asserts the full create-label-move chain works for every registered manifest.
+9. The pre-run budget gate, lifecycle calls, PM-ack posting, comment posting, dashboard work-item view, and `agent_runs` write all operate on the materialized card with zero alerting-specific carve-outs introduced. (Verifiable by inspecting the diff: no new `if (workItemId.startsWith(...))` or `if (agentType === 'alerting')` branches in any of those modules.)
+10. AC #1 [manual] verified for Trello, JIRA, and Linear per the Manual Verification protocol above. (Pass criterion is the protocol's pass condition.)
+11. All new/modified code has corresponding tests.
+12. `npm run build`, `npm test`, `npm run test:integration`, `npm run lint`, and `npm run typecheck` all pass.
+
+---
+
+## Documentation Impact (this plan only)
+
+| File | Change |
+|---|---|
+| `src/triggers/sentry/alerting-issue.ts` | JSDoc updated: removes the "Spec 018 AC #12 synthesized identifier" reference; adds a one-liner pointing at the materializer for the new behavior |
+| `src/triggers/shared/integration-validation.ts` (or equivalent) | JSDoc on the new alerts-slot check rule |
+
+(README + spec-018 backlink + CHANGELOG land in plan 4.)
+
+---
+
+## Out of Scope (this plan)
+
+- Wizard UI for the alerts slot (plan 4).
+- Dashboard rendering of the validation error in the PM tab (plan 4).
+- README + spec-018 backlink + CHANGELOG (plan 4).
+- A repo-wide regression pin asserting no `sentry:issue:` literal anywhere in `src/` (plan 4 broadens this from the trigger-only pin in this plan).
+- All items originally out of scope for the spec.
+
+---
+
+## Progress
+
+<!-- /implement updates these as it works. Do not edit manually. -->
+- [ ] AC #1
+- [ ] AC #2
+- [ ] AC #3
+- [ ] AC #4
+- [ ] AC #5
+- [ ] AC #6
+- [ ] AC #7
+- [ ] AC #8
+- [ ] AC #9
+- [ ] AC #10
+- [ ] AC #11
+- [ ] AC #12
