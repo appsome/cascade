@@ -167,3 +167,27 @@ export function getAlertsStatusKey(project: ProjectConfig): 'alerts' | undefined
 	}
 	return undefined;
 }
+
+/**
+ * Returns the actual destination value to pass to `provider.moveWorkItem` for the
+ * alerts slot. This is different from `getAlertsContainerId`:
+ *   - Trello  → `lists.alerts` (list ID — same as containerId; card is placed there on create,
+ *              the moveWorkItem call is a no-op but kept for uniformity)
+ *   - JIRA    → `statuses.alerts` (transition name/ID; applied after issue creation)
+ *   - Linear  → `statuses.alerts` (workflow state UUID; applied after issue creation)
+ *
+ * Returns `undefined` when the alerts slot is not configured.
+ */
+export function getAlertsStatusDestination(project: ProjectConfig): string | undefined {
+	const pmType = project.pm?.type;
+	if (pmType === 'trello') {
+		return getTrelloConfig(project)?.lists?.alerts;
+	}
+	if (pmType === 'jira') {
+		return getJiraConfig(project)?.statuses?.alerts;
+	}
+	if (pmType === 'linear') {
+		return getLinearConfig(project)?.statuses?.alerts;
+	}
+	return undefined;
+}

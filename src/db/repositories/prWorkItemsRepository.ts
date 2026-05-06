@@ -11,6 +11,7 @@ import {
 	sql,
 	sum,
 } from 'drizzle-orm';
+import type { AlertSource } from '../../integrations/alerting/_shared/types.js';
 import { getDb } from '../client.js';
 import { agentRuns, projects, prWorkItems } from '../schema/index.js';
 import { buildAgentRunWorkItemJoin } from './joinHelpers.js';
@@ -515,4 +516,95 @@ export async function listUnifiedWorkWithDurations(
 	}));
 
 	return { items: itemsWithDurations, projectAvgDurationMs };
+}
+
+// ── Alert-materialization repository methods (spec 019) ──────────────────────
+
+/** Find an existing alert-mapping row by (projectId, source, externalId). */
+export async function findByExternal(
+	projectId: string,
+	source: AlertSource,
+	externalId: string,
+): Promise<{ id: string; workItemId: string | null } | null> {
+	const db = getDb();
+	const rows = await db
+		.select({ id: prWorkItems.id, workItemId: prWorkItems.workItemId })
+		.from(prWorkItems)
+		.where(
+			and(
+				eq(prWorkItems.projectId, projectId),
+				eq(prWorkItems.externalSource, source),
+				eq(prWorkItems.externalId, externalId),
+			),
+		)
+		.limit(1);
+	return rows[0] ?? null;
+}
+
+type ClaimResult =
+	| { ownedHere: true; rowId: string }
+	| { ownedHere: false; existing: { id: string; workItemId: string | null } };
+
+/**
+ * Atomically get-or-create an alert mapping row.
+ *
+ * Executes INSERT … ON CONFLICT (project_id, external_source, external_id)
+ * WHERE external_source IS NOT NULL DO NOTHING RETURNING id.
+ * If the insert wins (no conflict), returns ownedHere=true with the new row id.
+ * If the insert loses (conflict), follows up with a SELECT to find the winner.
+ */
+export async function claimExternalMapping(
+	projectId: string,
+	source: AlertSource,
+	externalId: string,
+): Promise<ClaimResult> {
+	const db = getDb();
+
+	const inserted = await db
+		.insert(prWorkItems)
+		.values({ projectId, externalSource: source, externalId })
+		.onConflictDoNothing()
+		.returning({ id: prWorkItems.id });
+
+	if (inserted.length > 0) {
+		return { ownedHere: true, rowId: inserted[0].id };
+	}
+
+	// Conflict path — find the winning row
+	const existing = await findByExternal(projectId, source, externalId);
+	if (!existing) {
+		// Should be unreachable: if insert was rejected on conflict there MUST be a winner
+		throw new Error(
+			`[claimExternalMapping] conflict but no row found for (${projectId}, ${source}, ${externalId})`,
+		);
+	}
+	return { ownedHere: false, existing };
+}
+
+/** Write the native PM work-item id into the claimed alert-mapping row. */
+export async function attachWorkItemId(rowId: string, workItemId: string): Promise<void> {
+	const db = getDb();
+	await db
+		.update(prWorkItems)
+		.set({ workItemId, updatedAt: new Date() })
+		.where(eq(prWorkItems.id, rowId));
+}
+
+/**
+ * Atomically replace the native PM work-item id (lazy-heal path).
+ * Only updates when the current value matches `oldWorkItemId`.
+ * Returns true when the row was updated, false when the value was stale.
+ */
+export async function replaceWorkItemId(
+	rowId: string,
+	oldWorkItemId: string,
+	newWorkItemId: string,
+): Promise<boolean> {
+	const db = getDb();
+	const updated = await db
+		.update(prWorkItems)
+		.set({ workItemId: newWorkItemId, updatedAt: new Date() })
+		.where(and(eq(prWorkItems.id, rowId), eq(prWorkItems.workItemId, oldWorkItemId)))
+		.returning({ id: prWorkItems.id });
+	return updated.length > 0;
 }
