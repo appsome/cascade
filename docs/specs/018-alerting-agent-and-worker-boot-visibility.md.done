@@ -203,3 +203,7 @@ B.7. The pre-existing silent swallows in the run-row creation path and the agent
 - Reworking unrelated silent-fail call sites in the worker beyond the boot-phase path.
 - A combined investigate-and-fix mode for the alerting agent.
 - Multi-tenant tuning of the alerting agent prompt for distinct project profiles.
+
+---
+
+> **Superseded by spec 019 (alert PM materialization):** The synthetic `sentry:issue:<id>` workItemId prefix introduced in this spec is no longer minted. Sentry alerts now materialize a real PM work item in the configured `alerts` slot. See [spec 019](019-sentry-alert-pm-materialization.md).

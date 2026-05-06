@@ -36,7 +36,7 @@ import { TrelloOAuthStep } from './oauth-step.js';
 import { TrelloWebhookAdapter } from './webhook-step.js';
 
 // CASCADE stage keys that map to Trello lists (one list per stage).
-const TRELLO_LIST_SLOTS = [
+export const TRELLO_LIST_SLOTS = [
 	{ key: 'backlog', label: 'Backlog' },
 	{ key: 'splitting', label: 'Splitting' },
 	{ key: 'planning', label: 'Planning' },
@@ -46,6 +46,7 @@ const TRELLO_LIST_SLOTS = [
 	{ key: 'done', label: 'Done' },
 	{ key: 'merged', label: 'Merged' },
 	{ key: 'debug', label: 'Debug' },
+	{ key: 'alerts', label: 'Alerts' },
 ] as const;
 
 // CASCADE labels that map to Trello labels. Defaults (name + color)
@@ -60,14 +61,16 @@ const TRELLO_LABEL_DEFAULTS: Readonly<
 	processed: { name: 'cascade-processed', color: 'green' },
 	error: { name: 'cascade-error', color: 'red' },
 	auto: { name: 'cascade-auto', color: 'purple' },
+	'cascade-alert': { name: 'cascade-alert', color: 'orange' },
 };
 
-const TRELLO_LABEL_SLOTS = [
+export const TRELLO_LABEL_SLOTS = [
 	{ key: 'readyToProcess', label: 'Ready to Process' },
 	{ key: 'processing', label: 'Processing' },
 	{ key: 'processed', label: 'Processed' },
 	{ key: 'error', label: 'Error' },
 	{ key: 'auto', label: 'Auto' },
+	{ key: 'cascade-alert', label: 'Cascade Alert' },
 ] as const;
 
 // Trello has one known custom-field slot: the cost estimate.

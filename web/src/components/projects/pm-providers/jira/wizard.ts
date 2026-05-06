@@ -33,7 +33,7 @@ import { JiraWebhookAdapter } from './webhook-step.js';
 
 // CASCADE stage keys that map to JIRA statuses (name-based, not id-based
 // — JIRA statuses are configured per project, name is the stable identity).
-const JIRA_STATUS_SLOTS = [
+export const JIRA_STATUS_SLOTS = [
 	{ key: 'backlog', label: 'Backlog' },
 	{ key: 'splitting', label: 'Splitting' },
 	{ key: 'planning', label: 'Planning' },
@@ -42,17 +42,19 @@ const JIRA_STATUS_SLOTS = [
 	{ key: 'inReview', label: 'In Review' },
 	{ key: 'done', label: 'Done' },
 	{ key: 'merged', label: 'Merged' },
+	{ key: 'alerts', label: 'Alerts' },
 ] as const;
 
 // CASCADE labels that map to JIRA labels. JIRA labels are free-form
 // strings (no curated enum), so the shared label-mapping step renders
 // in free-text mode automatically when providerLabels is empty.
-const JIRA_LABEL_SLOTS = [
+export const JIRA_LABEL_SLOTS = [
 	{ key: 'readyToProcess', label: 'Ready to Process' },
 	{ key: 'processing', label: 'Processing' },
 	{ key: 'processed', label: 'Processed' },
 	{ key: 'error', label: 'Error' },
 	{ key: 'auto', label: 'Auto' },
+	{ key: 'cascadeAlert', label: 'Cascade Alert' },
 ] as const;
 
 const JIRA_CUSTOM_FIELD_SLOTS = [{ key: 'cost', label: 'Cost' }] as const;

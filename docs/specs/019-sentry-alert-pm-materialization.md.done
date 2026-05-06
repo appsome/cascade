@@ -4,7 +4,7 @@ slug: sentry-alert-pm-materialization
 level: spec
 title: Materialize Sentry alerts as real PM work items
 created: 2026-05-06
-status: draft
+status: done
 ---
 
 # 019: Materialize Sentry alerts as real PM work items

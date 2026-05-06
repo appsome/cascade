@@ -38,7 +38,7 @@ import { LinearWebhookAdapter } from './webhook-step.js';
 // Linear's issue-update API requires state UUIDs, not names; the
 // status-changed trigger does strict-equality matching on state IDs
 // delivered in the webhook payload).
-const LINEAR_STATUS_SLOTS = [
+export const LINEAR_STATUS_SLOTS = [
 	{ key: 'backlog', label: 'Backlog' },
 	{ key: 'splitting', label: 'Splitting' },
 	{ key: 'planning', label: 'Planning' },
@@ -47,14 +47,16 @@ const LINEAR_STATUS_SLOTS = [
 	{ key: 'inReview', label: 'In Review' },
 	{ key: 'done', label: 'Done' },
 	{ key: 'merged', label: 'Merged' },
+	{ key: 'alerts', label: 'Alerts' },
 ] as const;
 
-const LINEAR_LABEL_SLOTS = [
+export const LINEAR_LABEL_SLOTS = [
 	{ key: 'readyToProcess', label: 'Ready to Process' },
 	{ key: 'processing', label: 'Processing' },
 	{ key: 'processed', label: 'Processed' },
 	{ key: 'error', label: 'Error' },
 	{ key: 'auto', label: 'Auto' },
+	{ key: 'cascadeAlert', label: 'Cascade Alert' },
 ] as const;
 
 // Default CASCADE label names + hex colors for the shared Create
@@ -69,6 +71,7 @@ const LINEAR_LABEL_DEFAULTS: Readonly<
 	processed: { name: 'cascade-processed', color: '#16A34A' },
 	error: { name: 'cascade-error', color: '#DC2626' },
 	auto: { name: 'cascade-auto', color: '#9333EA' },
+	cascadeAlert: { name: 'cascade-alert', color: '#F97316' },
 };
 
 const LINEAR_CREDENTIAL_ROLES = [{ role: 'api_key', label: 'API Key' }];
