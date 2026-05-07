@@ -1,3 +1,18 @@
+/**
+ * Tests for SentryIssueAlertTrigger.
+ *
+ * After spec 019 review feedback, PM card materialisation was moved from the
+ * router-side trigger handler to the worker-side processSentryWebhook so that
+ * transient PM failures surface as BullMQ retries (durable) rather than being
+ * swallowed as non-fatal dispatch errors by processRouterWebhook (which would
+ * return HTTP 200 to Sentry with no job ever enqueued).
+ *
+ * The trigger handler now only:
+ *   1. Checks the trigger is enabled.
+ *   2. Verifies the alerts slot is configured via getAlertsContainerId.
+ *   3. Returns a TriggerResult with alertIssueId in agentInput (no workItemId).
+ */
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockLogger, mockTriggerCheckModule } from '../../../helpers/sharedMocks.js';
 
@@ -7,16 +22,6 @@ vi.mock('../../../../src/sentry/integration.js', () => ({
 	getSentryIntegrationConfig: vi.fn(),
 }));
 
-const mockMaterializeAlertWorkItem = vi.fn();
-vi.mock('../../../../src/integrations/alerting/_shared/materialize.js', () => ({
-	materializeAlertWorkItem: (...a: unknown[]) => mockMaterializeAlertWorkItem(...a),
-}));
-
-const mockFormatSentryCardBody = vi.fn();
-vi.mock('../../../../src/integrations/alerting/_shared/format.js', () => ({
-	formatSentryCardBody: (...a: unknown[]) => mockFormatSentryCardBody(...a),
-}));
-
 import { AlertSlotMissingError } from '../../../../src/integrations/alerting/_shared/types.js';
 import { getSentryIntegrationConfig } from '../../../../src/sentry/integration.js';
 import { SentryIssueAlertTrigger } from '../../../../src/triggers/sentry/alerting-issue.js';
@@ -24,13 +29,29 @@ import { checkTriggerEnabledWithParams } from '../../../../src/triggers/shared/t
 import type { TriggerContext } from '../../../../src/types/index.js';
 import { createMockProject } from '../../../helpers/factories.js';
 
-const mockProject = createMockProject({ id: 'test-project' });
 const sentryConfig = { organizationSlug: 'my-org' };
-const defaultHints = { title: '[Sentry] Test Alert', descriptionMarkdown: 'sentry body' };
 
-function makeCtx(issueId = 'issue-42'): TriggerContext {
+// Project with alerts slot configured — required for dispatch
+const mockProjectWithAlerts = createMockProject({
+	id: 'test-project',
+	trello: {
+		boardId: 'board123',
+		lists: {
+			splitting: 'list-split',
+			planning: 'list-plan',
+			todo: 'list-todo',
+			alerts: 'list-alerts',
+		},
+		labels: {},
+	},
+});
+
+// Project without alerts slot — dispatch should be skipped
+const mockProjectWithoutAlerts = createMockProject({ id: 'test-project' });
+
+function makeCtx(issueId = 'issue-42', project = mockProjectWithAlerts): TriggerContext {
 	return {
-		project: mockProject,
+		project,
 		source: 'sentry',
 		payload: {
 			resource: 'event_alert',
@@ -45,93 +66,99 @@ function makeCtx(issueId = 'issue-42'): TriggerContext {
 					},
 				},
 			},
-			cascadeProjectId: 'test-project',
+			cascadeProjectId: project.id,
 		},
 	} as TriggerContext;
 }
 
-describe('SentryIssueAlertTrigger — materializer integration', () => {
+describe('SentryIssueAlertTrigger', () => {
 	let trigger: SentryIssueAlertTrigger;
 
 	beforeEach(() => {
 		vi.resetAllMocks();
 		vi.mocked(checkTriggerEnabledWithParams).mockResolvedValue({ enabled: true, parameters: {} });
 		vi.mocked(getSentryIntegrationConfig).mockResolvedValue(sentryConfig);
-		mockFormatSentryCardBody.mockReturnValue(defaultHints);
-		mockMaterializeAlertWorkItem.mockResolvedValue('card-real-1');
 		trigger = new SentryIssueAlertTrigger();
 	});
 
-	it('returns TriggerResult whose workItemId is the materialized native id', async () => {
-		const result = await trigger.handle(makeCtx());
-		expect(result?.workItemId).toBe('card-real-1');
-		expect(result?.agentInput?.workItemId).toBe('card-real-1');
+	describe('when alerts slot is configured', () => {
+		it('returns a TriggerResult with alertIssueId in agentInput', async () => {
+			const result = await trigger.handle(makeCtx('I-42'));
+			expect(result).not.toBeNull();
+			expect(result?.agentType).toBe('alerting');
+			expect(result?.agentInput.alertIssueId).toBe('I-42');
+		});
+
+		it('does NOT set workItemId — materialisation is deferred to the worker', async () => {
+			const result = await trigger.handle(makeCtx());
+			expect(result?.workItemId).toBeUndefined();
+			expect(result?.agentInput.workItemId).toBeUndefined();
+		});
+
+		it('sets coalesceKey using sentry issue ID for dedup without a PM card ID', async () => {
+			const result = await trigger.handle(makeCtx('issue-99'));
+			expect(result?.coalesceKey).toBe('test-project:sentry:issue-99');
+		});
+
+		it('result contains no string field matching sentry:issue: prefix', async () => {
+			const result = await trigger.handle(makeCtx());
+			expect(result).not.toBeNull();
+			expect(JSON.stringify(result)).not.toMatch(/sentry:issue:/);
+		});
+
+		it('includes orgId, alertTitle, and alertIssueUrl from the payload', async () => {
+			const result = await trigger.handle(makeCtx());
+			expect(result?.agentInput.alertOrgId).toBe('my-org');
+			expect(result?.agentInput.alertIssueUrl).toMatch(/sentry\.io/);
+		});
 	});
 
-	it('result contains no string field matching sentry:issue: prefix', async () => {
-		const result = await trigger.handle(makeCtx());
-		expect(result).not.toBeNull();
-		expect(JSON.stringify(result)).not.toMatch(/sentry:issue:/);
+	describe('when alerts slot is NOT configured', () => {
+		it('returns null and emits structured WARN', async () => {
+			const result = await trigger.handle(makeCtx('I-1', mockProjectWithoutAlerts));
+			expect(result).toBeNull();
+			expect(mockLogger.warn).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({
+					projectId: 'test-project',
+					source: 'sentry',
+					reason: 'alerts_slot_missing',
+				}),
+			);
+		});
 	});
 
-	it('calls materializeAlertWorkItem with source=sentry, externalId, project, formatted hints', async () => {
-		await trigger.handle(makeCtx('I-7'));
-		expect(mockMaterializeAlertWorkItem).toHaveBeenCalledWith(
-			'sentry',
-			'I-7',
-			mockProject,
-			expect.objectContaining({ title: '[Sentry] Test Alert' }),
-		);
+	describe('when trigger is disabled', () => {
+		it('returns null without accessing the alerts slot config', async () => {
+			vi.mocked(checkTriggerEnabledWithParams).mockResolvedValue({
+				enabled: false,
+				parameters: {},
+			});
+			const result = await trigger.handle(makeCtx());
+			expect(result).toBeNull();
+			// No WARN about missing slot — trigger check fires first
+			expect(mockLogger.warn).not.toHaveBeenCalled();
+		});
 	});
 
-	it('returns null and emits structured WARN when materialization throws AlertSlotMissingError', async () => {
-		mockMaterializeAlertWorkItem.mockRejectedValue(
-			new AlertSlotMissingError('test-project', 'trello'),
-		);
-		const result = await trigger.handle(makeCtx());
-		expect(result).toBeNull();
-		expect(mockLogger.warn).toHaveBeenCalledWith(
-			expect.any(String),
-			expect.objectContaining({
-				projectId: 'test-project',
-				source: 'sentry',
-				reason: 'alerts_slot_missing',
-			}),
-		);
+	describe('when issue ID cannot be determined', () => {
+		it('returns null', async () => {
+			const ctx = makeCtx();
+			(ctx.payload as Record<string, unknown>).payload = {
+				action: 'triggered',
+				data: { event: { event_id: 'evt-x' } },
+			};
+			const result = await trigger.handle(ctx);
+			expect(result).toBeNull();
+		});
 	});
+});
 
-	it('re-throws transient PM error so BullMQ retry budget engages', async () => {
-		const pmError = new Error('PM 503 Service Unavailable');
-		mockMaterializeAlertWorkItem.mockRejectedValue(pmError);
-		await expect(trigger.handle(makeCtx())).rejects.toThrow('PM 503');
-	});
-
-	it('AlertSlotMissingError returns null (not re-thrown), transient error re-throws', async () => {
-		mockMaterializeAlertWorkItem.mockRejectedValue(
-			new AlertSlotMissingError('test-project', 'trello'),
-		);
-		const slotResult = await trigger.handle(makeCtx());
-		expect(slotResult).toBeNull();
-
-		mockMaterializeAlertWorkItem.mockRejectedValue(new Error('PM 500'));
-		await expect(trigger.handle(makeCtx())).rejects.toThrow('PM 500');
-	});
-
-	it('returns null when trigger is disabled without calling materializer', async () => {
-		vi.mocked(checkTriggerEnabledWithParams).mockResolvedValue({ enabled: false, parameters: {} });
-		const result = await trigger.handle(makeCtx());
-		expect(result).toBeNull();
-		expect(mockMaterializeAlertWorkItem).not.toHaveBeenCalled();
-	});
-
-	it('returns null when issue ID cannot be determined without calling materializer', async () => {
-		const ctx = makeCtx();
-		(ctx.payload as Record<string, unknown>).payload = {
-			action: 'triggered',
-			data: { event: { event_id: 'evt-x' } },
-		};
-		const result = await trigger.handle(ctx);
-		expect(result).toBeNull();
-		expect(mockMaterializeAlertWorkItem).not.toHaveBeenCalled();
+// Verify AlertSlotMissingError is still exported and used correctly by callers
+describe('AlertSlotMissingError (used by processSentryWebhook)', () => {
+	it('is constructable with projectId and pm type', () => {
+		const err = new AlertSlotMissingError('project-1', 'trello');
+		expect(err).toBeInstanceOf(AlertSlotMissingError);
+		expect(err).toBeInstanceOf(Error);
 	});
 });

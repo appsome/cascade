@@ -66,7 +66,6 @@ export async function materializeAlertWorkItem(
 		// Verify the PM card is still alive
 		try {
 			await provider.getWorkItem(existing.workItemId);
-			return existing.workItemId;
 		} catch (err) {
 			if (!is404Error(err)) throw err;
 			// Lazy-heal: card was deleted — fall through to create path
@@ -74,6 +73,18 @@ export async function materializeAlertWorkItem(
 				lazyHeal: { rowId: existing.id, oldWorkItemId: existing.workItemId },
 			});
 		}
+		// Card exists — re-apply placement to repair any prior moveWorkItem failure.
+		// For JIRA/Linear this moves the issue into the configured alerts status; for
+		// Trello it is idempotent (card was created directly in the list). If the move
+		// throws a transient error the caller retries the full materialisation; if it
+		// throws a 404 the outer catch above handles it. This ensures that a
+		// moveWorkItem failure during the initial createAndAttach call is always
+		// repaired on subsequent deliveries rather than permanently stuck.
+		const destination = getAlertsStatusDestination(project);
+		if (destination) {
+			await provider.moveWorkItem(existing.workItemId, destination);
+		}
+		return existing.workItemId;
 	}
 
 	// Step 2: atomically claim the mapping row

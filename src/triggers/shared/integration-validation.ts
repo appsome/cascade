@@ -203,8 +203,11 @@ export async function validateIntegrations(
 	const results = await Promise.all(validationPromises);
 	const errors = results.filter((e): e is ValidationError => e !== null);
 
-	// Additional PM-config check: alerts slot required when alerting trigger is enabled
-	if (project) {
+	// Additional PM-config check: alerts slot required when alerting trigger is enabled.
+	// Only run for the alerting agent — this slot is irrelevant to implementation/review/manual
+	// agents, and the Sentry webhook path catches AlertSlotMissingError in the trigger handler
+	// before this worker-side validation ever runs.
+	if (project && agentType === 'alerting') {
 		const alertsSlotError = await validateAlertsSlot(projectId, project);
 		if (alertsSlotError) errors.push(alertsSlotError);
 	}

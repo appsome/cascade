@@ -6,12 +6,20 @@
  * After resolving the trigger result, runs the matched agent via the
  * shared execution pipeline.
  *
+ * PM card materialisation happens here (worker side), not in the trigger
+ * handler (router side). This ensures transient PM failures (5xx, DB
+ * errors, polling exhaustion) surface as BullMQ retries on the worker
+ * instead of being swallowed as non-fatal by processRouterWebhook, which
+ * would return HTTP 200 to Sentry with no durable job enqueued.
+ *
  * Shared utilities used:
  * - Trigger resolution → ../shared/trigger-resolution.ts
  * - Agent-type concurrency → ../shared/concurrency.ts
  * - PM credential scope → ../shared/credential-scope.ts
  */
 
+import { AlertSlotMissingError } from '../../integrations/alerting/_shared/types.js';
+import type { SentryAugmentedPayload } from '../../sentry/types.js';
 import type { TriggerResult } from '../../types/index.js';
 import { startWatchdog } from '../../utils/lifecycle.js';
 import { logger } from '../../utils/logging.js';
@@ -69,13 +77,58 @@ export async function processSentryWebhook(
 			// Starting it before the check risks a spurious process.exit(1) if the container
 			// is still alive after a concurrency-blocked job finishes.
 			startWatchdog(pc.project.watchdogTimeoutMs);
-			return withPMScope(pc.project, () =>
-				runAgentExecutionPipeline(result, pc.project, pc.config, {
+			return withPMScope(pc.project, async () => {
+				// Materialise the PM work item on the worker side so that transient PM
+				// failures (Trello/JIRA/Linear 5xx, DB errors, polling exhaustion) surface
+				// as BullMQ retries instead of being swallowed as non-fatal dispatch errors
+				// by processRouterWebhook (which returns HTTP 200 to Sentry, preventing retries).
+				//
+				// The trigger handler (SentryIssueAlertTrigger) only pre-checks that the
+				// alerts slot is configured; actual PM card creation happens here where the
+				// error propagates to BullMQ's retry budget.
+				let resolvedResult = result;
+				if (!result.workItemId && typeof result.agentInput.alertIssueId === 'string') {
+					const { materializeAlertWorkItem } = await import(
+						'../../integrations/alerting/_shared/materialize.js'
+					);
+					const { formatSentryCardBody } = await import(
+						'../../integrations/alerting/_shared/format.js'
+					);
+					try {
+						const hints = formatSentryCardBody(payload as SentryAugmentedPayload);
+						const workItemId = await materializeAlertWorkItem(
+							'sentry',
+							result.agentInput.alertIssueId as string,
+							pc.project,
+							hints,
+						);
+						resolvedResult = {
+							...result,
+							workItemId,
+							agentInput: { ...result.agentInput, workItemId },
+						};
+					} catch (err) {
+						if (err instanceof AlertSlotMissingError) {
+							// Slot was unconfigured between router dispatch and worker execution.
+							// Treat as a graceful skip (don't retry — the operator must reconfigure).
+							logger.warn(
+								'processSentryWebhook: alerts slot no longer configured, skipping agent run',
+								{ projectId, reason: 'alerts_slot_missing' },
+							);
+							return;
+						}
+						// Transient PM failure (5xx, DB error, polling exhaustion): re-throw so
+						// BullMQ retries the job rather than silently dropping the alert.
+						throw err;
+					}
+				}
+
+				return runAgentExecutionPipeline(resolvedResult, pc.project, pc.config, {
 					logLabel: 'Sentry agent',
 					skipPrepareForAgent: true,
 					skipHandleFailure: true,
-				}),
-			);
+				});
+			});
 		},
 		'processSentryWebhook',
 	);

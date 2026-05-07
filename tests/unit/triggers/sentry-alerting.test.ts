@@ -8,18 +8,6 @@ vi.mock('../../../src/sentry/integration.js', () => ({
 	getSentryIntegrationConfig: vi.fn(),
 }));
 
-const mockMaterializeAlertWorkItem = vi.fn();
-vi.mock('../../../src/integrations/alerting/_shared/materialize.js', () => ({
-	materializeAlertWorkItem: (...a: unknown[]) => mockMaterializeAlertWorkItem(...a),
-}));
-
-vi.mock('../../../src/integrations/alerting/_shared/format.js', () => ({
-	formatSentryCardBody: vi.fn().mockReturnValue({
-		title: '[Sentry] NullPointerException at PaymentService.charge',
-		descriptionMarkdown: '',
-	}),
-}));
-
 import { getSentryIntegrationConfig } from '../../../src/sentry/integration.js';
 import { SentryIssueAlertTrigger } from '../../../src/triggers/sentry/alerting-issue.js';
 import { SentryMetricAlertTrigger } from '../../../src/triggers/sentry/alerting-metric.js';
@@ -27,7 +15,21 @@ import { checkTriggerEnabledWithParams } from '../../../src/triggers/shared/trig
 import type { TriggerContext } from '../../../src/types/index.js';
 import { createMockProject } from '../../helpers/factories.js';
 
-const mockProject = createMockProject();
+// Materialisation is deferred to the worker (processSentryWebhook) — the trigger no
+// longer calls materializeAlertWorkItem. Project must have lists.alerts configured so
+// the pre-flight getAlertsContainerId check passes.
+const mockProject = createMockProject({
+	trello: {
+		boardId: 'board123',
+		lists: {
+			splitting: 'split-list',
+			planning: 'plan-list',
+			todo: 'todo-list',
+			alerts: 'alerts-list',
+		},
+		labels: {},
+	},
+});
 
 const sentryConfig = { organizationSlug: 'my-org' };
 
@@ -109,7 +111,6 @@ describe('SentryIssueAlertTrigger', () => {
 		vi.resetAllMocks();
 		vi.mocked(checkTriggerEnabledWithParams).mockResolvedValue({ enabled: true, parameters: {} });
 		vi.mocked(getSentryIntegrationConfig).mockResolvedValue(sentryConfig);
-		mockMaterializeAlertWorkItem.mockResolvedValue('card-materialized');
 		trigger = new SentryIssueAlertTrigger();
 	});
 
@@ -236,13 +237,17 @@ describe('SentryIssueAlertTrigger', () => {
 			expect(result?.agentInput?.alertIssueUrl).toBe(issueUrl);
 		});
 
-		// --- Spec 019: workItemId is the materialized PM-native card id ---
+		// --- Spec 019 (review feedback): workItemId is deferred to the worker ---
 
-		it('returns the materialized PM-native id as workItemId (not a synthetic prefix)', async () => {
-			mockMaterializeAlertWorkItem.mockResolvedValue('card-native-42');
+		it('does NOT set workItemId — materialisation is deferred to processSentryWebhook', async () => {
 			const result = await trigger.handle(makeSentryIssueAlertCtx());
-			expect(result?.agentInput?.workItemId).toBe('card-native-42');
-			expect(result?.workItemId).toBe('card-native-42');
+			expect(result?.workItemId).toBeUndefined();
+			expect(result?.agentInput?.workItemId).toBeUndefined();
+		});
+
+		it('sets coalesceKey using sentry issue ID for BullMQ dedup without a PM card ID', async () => {
+			const result = await trigger.handle(makeSentryIssueAlertCtx());
+			expect(result?.coalesceKey).toBe(`${mockProject.id}:sentry:issue-42`);
 		});
 	});
 });

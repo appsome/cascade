@@ -147,4 +147,21 @@ describe('validateIntegrations — alerts-slot check', () => {
 		expect(result.valid).toBe(true);
 		expect(mockGetTriggerConfigsByProjectAndAgent).not.toHaveBeenCalled();
 	});
+
+	it('does not run alerts-slot check for non-alerting agents (implementation/review/manual)', async () => {
+		// Simulate an alerting trigger being enabled with no alerts slot configured.
+		// For non-alerting agents this should NOT trigger the alerts-slot validation.
+		mockGetTriggerConfigsByProjectAndAgent.mockResolvedValue([
+			enabledAlertingTrigger('test-project'),
+		]);
+
+		// Call for 'implementation' (agentType !== 'alerting') with no slot set
+		await validateIntegrations('test-project', 'implementation', trelloNoAlerts).catch(() => {
+			// Implementation agent may fail PM/SCM validation — that is irrelevant to this test
+		});
+
+		// The alerts-slot check queries trigger configs for 'alerting' — must NOT be called
+		// for non-alerting agent types.
+		expect(mockGetTriggerConfigsByProjectAndAgent).not.toHaveBeenCalled();
+	});
 });
