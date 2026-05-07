@@ -18,7 +18,7 @@
  */
 
 /** All supported alert source identifiers. Extend this union as new sources are added. */
-export type AlertSource = 'sentry' | 'pagerduty' | 'datadog' | 'github-alert';
+export type AlertSource = 'sentry' | 'sentry-metric' | 'pagerduty' | 'datadog' | 'github-alert';
 
 /** Formatted card content produced by a per-source format helper. */
 export interface AlertHints {

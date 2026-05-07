@@ -100,6 +100,11 @@ describe('SentryIssueAlertTrigger', () => {
 			expect(result?.coalesceKey).toBe('test-project:sentry:issue-99');
 		});
 
+		it('sets lockKey for router-level work-item concurrency without a PM card ID', async () => {
+			const result = await trigger.handle(makeCtx('issue-42'));
+			expect(result?.lockKey).toBe('sentry:issue-42');
+		});
+
 		it('result contains no string field matching sentry:issue: prefix', async () => {
 			const result = await trigger.handle(makeCtx());
 			expect(result).not.toBeNull();

@@ -36,9 +36,17 @@ vi.mock('../../../src/integrations/alerting/_shared/format.js', () => ({
 	formatSentryCardBody: vi
 		.fn()
 		.mockReturnValue({ title: '[Sentry] Test', descriptionMarkdown: 'desc' }),
+	formatSentryMetricCardBody: vi.fn().mockReturnValue({
+		title: '[Sentry Metric] Error Rate High',
+		descriptionMarkdown: 'metric desc',
+	}),
 }));
 
 import { loadProjectConfigById } from '../../../src/config/provider.js';
+import {
+	formatSentryCardBody,
+	formatSentryMetricCardBody,
+} from '../../../src/integrations/alerting/_shared/format.js';
 import { materializeAlertWorkItem } from '../../../src/integrations/alerting/_shared/materialize.js';
 import { AlertSlotMissingError } from '../../../src/integrations/alerting/_shared/types.js';
 import { processSentryWebhook } from '../../../src/triggers/sentry/webhook-handler.js';
@@ -68,6 +76,15 @@ describe('processSentryWebhook', () => {
 		vi.mocked(withPMScope).mockImplementation((_project, fn) => fn());
 		// resolveTriggerResult defaults to null (no trigger matched)
 		vi.mocked(resolveTriggerResult).mockResolvedValue(null);
+		// Re-apply format helper return values after resetAllMocks clears them
+		vi.mocked(formatSentryCardBody).mockReturnValue({
+			title: '[Sentry] Test',
+			descriptionMarkdown: 'desc',
+		});
+		vi.mocked(formatSentryMetricCardBody).mockReturnValue({
+			title: '[Sentry Metric] Error Rate High',
+			descriptionMarkdown: 'metric desc',
+		});
 	});
 
 	it('loads project config by projectId and calls resolveTriggerResult with sentry source', async () => {
@@ -288,6 +305,94 @@ describe('processSentryWebhook', () => {
 		await expect(
 			processSentryWebhook(payload, 'proj-sentry', mockRegistry as never),
 		).rejects.toThrow('PM 503 Service Unavailable');
+
+		expect(runAgentExecutionPipeline).not.toHaveBeenCalled();
+	});
+
+	// ── Metric alert PM card materialisation (spec 019 review feedback) ──────
+
+	it('materialises a PM work item for metric alerts when alertMetricKey is set', async () => {
+		const payload = { resource: 'metric_alert', cascadeProjectId: 'proj-sentry' };
+		const triggerResult = {
+			agentType: 'alerting',
+			agentInput: { alertMetricKey: 'my-org:Error Rate High' },
+			lockKey: 'sentry-metric:my-org:Error Rate High',
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+		vi.mocked(materializeAlertWorkItem).mockResolvedValue('metric-card-1');
+
+		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never);
+
+		expect(materializeAlertWorkItem).toHaveBeenCalledWith(
+			'sentry-metric',
+			'my-org:Error Rate High',
+			mockProject,
+			expect.objectContaining({ title: '[Sentry Metric] Error Rate High' }),
+		);
+		expect(formatSentryMetricCardBody).toHaveBeenCalledWith(payload);
+		expect(runAgentExecutionPipeline).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: 'metric-card-1',
+				agentInput: expect.objectContaining({ workItemId: 'metric-card-1' }),
+			}),
+			mockProject,
+			expect.any(Object),
+			expect.objectContaining({ logLabel: 'Sentry agent' }),
+		);
+	});
+
+	it('skips metric alert materialisation when workItemId is already set', async () => {
+		const payload = { resource: 'metric_alert' };
+		const triggerResult = {
+			agentType: 'alerting',
+			workItemId: 'metric-card-already',
+			agentInput: { alertMetricKey: 'my-org:Error Rate High', workItemId: 'metric-card-already' },
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+
+		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never);
+
+		expect(materializeAlertWorkItem).not.toHaveBeenCalled();
+		expect(runAgentExecutionPipeline).toHaveBeenCalledWith(
+			triggerResult,
+			mockProject,
+			expect.any(Object),
+			expect.any(Object),
+		);
+	});
+
+	it('skips agent and warns when metric alert materialisation throws AlertSlotMissingError', async () => {
+		const payload = { resource: 'metric_alert' };
+		const triggerResult = {
+			agentType: 'alerting',
+			agentInput: { alertMetricKey: 'my-org:Error Rate High' },
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+		vi.mocked(materializeAlertWorkItem).mockRejectedValue(
+			new AlertSlotMissingError('proj-sentry', 'trello'),
+		);
+
+		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never);
+
+		expect(mockLogger.warn).toHaveBeenCalledWith(
+			expect.stringContaining('alerts slot no longer configured'),
+			expect.objectContaining({ reason: 'alerts_slot_missing' }),
+		);
+		expect(runAgentExecutionPipeline).not.toHaveBeenCalled();
+	});
+
+	it('re-throws transient PM errors for metric alerts so BullMQ can retry', async () => {
+		const payload = { resource: 'metric_alert' };
+		const triggerResult = {
+			agentType: 'alerting',
+			agentInput: { alertMetricKey: 'my-org:Error Rate High' },
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+		vi.mocked(materializeAlertWorkItem).mockRejectedValue(new Error('PM 503'));
+
+		await expect(
+			processSentryWebhook(payload, 'proj-sentry', mockRegistry as never),
+		).rejects.toThrow('PM 503');
 
 		expect(runAgentExecutionPipeline).not.toHaveBeenCalled();
 	});

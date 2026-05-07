@@ -103,6 +103,10 @@ export class SentryIssueAlertTrigger implements TriggerHandler {
 				alertIssueUrl: issueUrl,
 			},
 			// workItemId omitted — worker sets it after materialisation.
+			// lockKey provides router-level work-item concurrency protection while the
+			// PM card ID is not yet known. Ensures a second Sentry delivery for the same
+			// issue cannot enqueue while the first worker is still active.
+			lockKey: `sentry:${issueId}`,
 			// coalesceKey uses the Sentry issue ID so rapid re-fires of the same alert
 			// are coalesced without needing a PM card ID.
 			coalesceKey: `${ctx.project.id}:sentry:${issueId}`,

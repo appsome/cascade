@@ -9,6 +9,7 @@
 import type {
 	SentryAugmentedPayload,
 	SentryIssueAlertPayload,
+	SentryMetricAlertPayload,
 	SentryStackFrame,
 } from '../../../sentry/types.js';
 import type { AlertHints } from './types.js';
@@ -54,4 +55,30 @@ function findTopInAppFrame(frames?: SentryStackFrame[]): SentryStackFrame | unde
 		if (frames[i].in_app) return frames[i];
 	}
 	return frames[frames.length - 1];
+}
+
+/** Build the PM card title and description body from a Sentry metric_alert payload. */
+export function formatSentryMetricCardBody(augmented: SentryAugmentedPayload): AlertHints {
+	const payload = augmented.payload as SentryMetricAlertPayload;
+
+	const alertTitle =
+		payload.data?.description_title ??
+		payload.data?.metric_alert?.alert_rule?.aggregate ??
+		`Metric Alert (${payload.action})`;
+
+	const webUrl = payload.data?.web_url ?? '';
+	const action = payload.action;
+	const query = payload.data?.metric_alert?.alert_rule?.query;
+	const aggregate = payload.data?.metric_alert?.alert_rule?.aggregate;
+
+	const lines: string[] = [];
+	if (webUrl) lines.push(`**Sentry alert:** ${webUrl}`);
+	if (action) lines.push(`**Status:** ${action}`);
+	if (aggregate) lines.push(`**Metric:** ${aggregate}`);
+	if (query) lines.push(`**Query:** \`${query}\``);
+
+	return {
+		title: `[Sentry Metric] ${alertTitle}`,
+		descriptionMarkdown: lines.join('\n'),
+	};
 }

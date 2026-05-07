@@ -83,25 +83,46 @@ export async function processSentryWebhook(
 				// as BullMQ retries instead of being swallowed as non-fatal dispatch errors
 				// by processRouterWebhook (which returns HTTP 200 to Sentry, preventing retries).
 				//
-				// The trigger handler (SentryIssueAlertTrigger) only pre-checks that the
-				// alerts slot is configured; actual PM card creation happens here where the
-				// error propagates to BullMQ's retry budget.
+				// Both SentryIssueAlertTrigger (alertIssueId) and SentryMetricAlertTrigger
+				// (alertMetricKey) defer PM card creation to here. The trigger handlers only
+				// pre-check that the alerts slot is configured; actual PM card creation happens
+				// here where the error propagates to BullMQ's retry budget.
 				let resolvedResult = result;
-				if (!result.workItemId && typeof result.agentInput.alertIssueId === 'string') {
+				const alertIssueId =
+					typeof result.agentInput.alertIssueId === 'string'
+						? result.agentInput.alertIssueId
+						: null;
+				const alertMetricKey =
+					typeof result.agentInput.alertMetricKey === 'string'
+						? result.agentInput.alertMetricKey
+						: null;
+				if (!result.workItemId && (alertIssueId || alertMetricKey)) {
 					const { materializeAlertWorkItem } = await import(
 						'../../integrations/alerting/_shared/materialize.js'
 					);
-					const { formatSentryCardBody } = await import(
+					const { formatSentryCardBody, formatSentryMetricCardBody } = await import(
 						'../../integrations/alerting/_shared/format.js'
 					);
 					try {
-						const hints = formatSentryCardBody(payload as SentryAugmentedPayload);
-						const workItemId = await materializeAlertWorkItem(
-							'sentry',
-							result.agentInput.alertIssueId as string,
-							pc.project,
-							hints,
-						);
+						let workItemId: string;
+						if (alertIssueId) {
+							const hints = formatSentryCardBody(payload as SentryAugmentedPayload);
+							workItemId = await materializeAlertWorkItem(
+								'sentry',
+								alertIssueId,
+								pc.project,
+								hints,
+							);
+						} else {
+							// alertMetricKey is guaranteed non-null here (checked above)
+							const hints = formatSentryMetricCardBody(payload as SentryAugmentedPayload);
+							workItemId = await materializeAlertWorkItem(
+								'sentry-metric',
+								alertMetricKey as string,
+								pc.project,
+								hints,
+							);
+						}
 						resolvedResult = {
 							...result,
 							workItemId,
