@@ -161,19 +161,28 @@ export async function buildWorkerEnvWithProjectId(
 /**
  * Extract work-item ID from job data for concurrency lock tracking.
  * Returns the PM work item identifier (workItemId, issueKey, or triggerResult.workItemId).
+ *
+ * For Sentry jobs that deferred PM card materialisation to the worker, the
+ * trigger result may have `lockKey` set instead of `workItemId`. The lock was
+ * registered in the router using `lockKey ?? workItemId`, so the compensator
+ * must clear the same key.
  */
 export function extractWorkItemId(data: CascadeJob): string | undefined {
 	const jobData = data as unknown as {
 		type: string;
 		workItemId?: string;
 		issueKey?: string;
-		triggerResult?: { workItemId?: string };
+		triggerResult?: { workItemId?: string; lockKey?: string };
 	};
 
 	if (jobData.type === 'trello' && jobData.workItemId) return jobData.workItemId;
 	if (jobData.type === 'jira' && jobData.issueKey) return jobData.issueKey;
 	if (jobData.type === 'github') return jobData.triggerResult?.workItemId;
 	if (jobData.type === 'linear') return jobData.triggerResult?.workItemId ?? jobData.workItemId;
+	// Sentry jobs: lockKey takes priority (set when workItemId is deferred to the worker)
+	if (jobData.type === 'sentry') {
+		return jobData.triggerResult?.lockKey ?? jobData.triggerResult?.workItemId;
+	}
 	// Dashboard jobs (manual-run, retry-run, debug-analysis)
 	if (jobData.workItemId) return jobData.workItemId;
 	return undefined;

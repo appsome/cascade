@@ -230,13 +230,22 @@ export async function processRouterWebhook(
 					// Manually undo the lock marks from the previous webhook invocation.
 					if (supersededJobData && supersededJobData.type !== 'github') {
 						const oldAgentType = supersededJobData.triggerResult?.agentType;
-						const oldWorkItemId = supersededJobData.triggerResult?.workItemId;
+						// Use lockKey as a fallback for lock clearing — mirrors the logic at
+						// Step 8 above so that Sentry alert coalesced jobs (which set lockKey
+						// but omit workItemId) are properly unlocked on supersede.
+						const oldLockKey =
+							supersededJobData.triggerResult?.lockKey ??
+							supersededJobData.triggerResult?.workItemId;
 						if (oldAgentType) {
-							if (oldWorkItemId) {
-								clearWorkItemEnqueued(supersededJobData.projectId, oldWorkItemId, oldAgentType);
+							if (oldLockKey) {
+								clearWorkItemEnqueued(supersededJobData.projectId, oldLockKey, oldAgentType);
 							}
 							clearAgentTypeEnqueued(supersededJobData.projectId, oldAgentType);
-							clearRecentlyDispatched(supersededJobData.projectId, oldAgentType, oldWorkItemId);
+							clearRecentlyDispatched(
+								supersededJobData.projectId,
+								oldAgentType,
+								supersededJobData.triggerResult?.workItemId,
+							);
 						}
 					}
 				} else {
@@ -281,8 +290,11 @@ export async function processRouterWebhook(
 			// Mark locks for the newly-scheduled job exactly as the non-coalesced
 			// path does. (The activeExists early-return above ensures we only reach
 			// this point when a real new job was added to the queue.)
-			if (result.workItemId) {
-				markWorkItemEnqueued(project.id, result.workItemId, result.agentType);
+			// Use lockKey as a fallback — mirrors Step 8 so Sentry alert coalesced jobs
+			// (which set lockKey but omit workItemId) get proper lock tracking.
+			const coalescedLockKey = result.lockKey ?? result.workItemId;
+			if (coalescedLockKey) {
+				markWorkItemEnqueued(project.id, coalescedLockKey, result.agentType);
 			}
 			markRecentlyDispatched(project.id, result.agentType, result.workItemId);
 			markAgentTypeEnqueued(project.id, result.agentType);
@@ -306,15 +318,20 @@ export async function processRouterWebhook(
 		};
 	}
 
-	// Step 8: Work-item concurrency lock
-	if (result.workItemId) {
-		const lockStatus = await isWorkItemLocked(project.id, result.workItemId, result.agentType);
+	// Step 8: Work-item concurrency lock.
+	// Use lockKey as a fallback when workItemId is absent. Trigger handlers that
+	// defer PM card materialisation to the worker (e.g. Sentry issue/metric alerts)
+	// set lockKey to a stable synthetic key (e.g. `sentry:${issueId}`) so that
+	// duplicate webhook deliveries are blocked even before the real PM card ID is known.
+	const effectiveLockKey = result.lockKey ?? result.workItemId;
+	if (effectiveLockKey) {
+		const lockStatus = await isWorkItemLocked(project.id, effectiveLockKey, result.agentType);
 		if (lockStatus.locked) {
 			result.onBlocked?.();
 			logger.info(`Skipping ${adapter.type} job — work item already locked`, {
 				source: adapter.type,
 				projectId: project.id,
-				workItemId: result.workItemId,
+				workItemId: effectiveLockKey,
 				blockedAgentType: result.agentType,
 				reason: lockStatus.reason,
 			});
@@ -324,7 +341,7 @@ export async function processRouterWebhook(
 			// canary.
 			const classification = await classifyLockState({
 				projectId: project.id,
-				workItemId: result.workItemId,
+				workItemId: effectiveLockKey,
 				agentType: result.agentType,
 			});
 			const reasonSuffix = lockStatus.reason ?? 'active run exists';
@@ -334,13 +351,13 @@ export async function processRouterWebhook(
 				// observable in production.
 				captureException(
 					new Error(
-						`wedged work-item lock: projectId=${project.id} workItemId=${result.workItemId} agentType=${result.agentType}`,
+						`wedged work-item lock: projectId=${project.id} workItemId=${effectiveLockKey} agentType=${result.agentType}`,
 					),
 					{
 						tags: { source: 'wedged_lock_canary' },
 						extra: {
 							projectId: project.id,
-							workItemId: result.workItemId,
+							workItemId: effectiveLockKey,
 							agentType: result.agentType,
 							reason: lockStatus.reason,
 						},
@@ -407,8 +424,8 @@ export async function processRouterWebhook(
 
 		// Step 12: Enqueue — job is now durable in Redis
 		const jobId = await addJob(job);
-		if (result.workItemId) {
-			markWorkItemEnqueued(project.id, result.workItemId, result.agentType);
+		if (effectiveLockKey) {
+			markWorkItemEnqueued(project.id, effectiveLockKey, result.agentType);
 		}
 		if (result.agentType && agentTypeMaxConcurrency !== null) {
 			markRecentlyDispatched(project.id, result.agentType, result.workItemId);

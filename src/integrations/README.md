@@ -307,3 +307,62 @@ Spec 016/3 captured a fixture and pinned the rule for Linear specifically. The f
 - **No new GraphQL surface to query.** As of spec 016/3 the Linear API exposes inline-pasted images only via the `description` and `Comment.body` markdown fields. There is no `descriptionData` rich-text JSON tree that would expose them differently, and no `attachments(includeInline: true)` filter. Future Linear API drift would surface as a fixture-test failure.
 
 See [spec 016](../../docs/specs/016-pm-image-delivery-reliability.md) for the full rationale and the live incident this contract closed.
+
+---
+
+## Alerting work-item materializer
+
+**Spec [019](../../docs/specs/019-sentry-alert-pm-materialization.md)** added a generic materializer that converts an external alert event into a real PM work item so the alerting agent runs against a native PM card/issue with full lifecycle support (budget tracking, status transitions, label writes). See the spec for full rationale; this section covers the contracts new providers must respect.
+
+### `materializeAlertWorkItem` contract
+
+```
+materializeAlertWorkItem(source, externalId, project, hints) → pmNativeWorkItemId
+```
+
+Located at `src/integrations/alerting/_shared/materialize.ts`. Callable from any alerting trigger; today only Sentry's `SentryIssueAlertTrigger` uses it, but the signature is generic (`source: AlertSource`).
+
+- **`source`** — `'sentry' | 'pagerduty' | 'datadog' | 'github-alert'` (union grows as new sources are added).
+- **`externalId`** — the alert provider's stable issue/alert ID (e.g. Sentry issue ID `117972276`).
+- **`project`** — the full `ProjectConfig` for the target project. The materializer uses `project.pm` to determine which PM provider to call and which `alerts` slot to create the card in.
+- **`hints`** — `{ title: string; descriptionMarkdown: string }` — content to put in the card. Built by the per-source format helper (see below).
+- **Returns** — the PM-native work item ID (Trello card ID, JIRA issue key, Linear issue ID). This ID goes directly into `TriggerResult.workItemId`; no synthetic prefix.
+
+The function throws `AlertSlotMissingError` (from `src/integrations/alerting/_shared/types.ts`) when the project's PM config doesn't have the `alerts` slot configured. Callers catch this and return `null` — no dispatch, operator must configure the slot.
+
+### Storage contract — `work_items` idempotency
+
+Each materialization writes a row to the `work_items` table (or updates the existing one) using the `(projectId, externalSource, externalId)` partial UNIQUE index:
+
+```sql
+CREATE UNIQUE INDEX work_items_external_uniq
+  ON work_items (project_id, external_source, external_id)
+  WHERE external_source IS NOT NULL;
+```
+
+A second Sentry alert for the same issue on the same project hits the unique index and updates the existing row (lazy-heal: if the PM card was deleted, the UPDATE fetches the stored `work_item_id`, calls `getWorkItem`, and re-creates the card on 404). This makes the materializer fully idempotent — the same Sentry issue always produces the same `workItemId`.
+
+### Required `alerts` slot per provider
+
+The materializer calls `getAlertsContainerId(project)` / `getAlertsStatusKey(project)` (from `src/pm/config.ts`) to find the target list/status. These read:
+
+| Provider | Config key | Meaning |
+|---|---|---|
+| Trello | `lists.alerts` | Trello list ID where alert cards are created |
+| JIRA | `statuses.alerts` | JIRA status name/ID applied after issue creation |
+| Linear | `statuses.alerts` | Linear workflow state UUID applied after issue creation |
+
+Configure this slot in the PM wizard's **Status Mapping** step (the "Alerts" row). The validation rule in `src/triggers/shared/integration-validation.ts` emits a `pm`-category error at agent pre-flight when an alerting trigger is enabled but this slot is unset.
+
+### Optional `cascade-alert` label slot
+
+A `cascade-alert` label (Trello: `labels['cascade-alert']`; JIRA: `labels.cascadeAlert`; Linear: `labels.cascadeAlert`) is applied to the work item after creation when configured. Optional — alert cards are created without it if the slot is unset.
+
+### Per-source format helpers
+
+Each alert source has a format helper that maps the raw webhook payload to `AlertHints`. Today only Sentry is implemented (`src/integrations/alerting/_shared/format.ts` → `formatSentryCardBody`). Adding PagerDuty, Datadog, or GitHub Alerts follows this pattern:
+
+1. Add the source literal to `AlertSource` in `src/integrations/alerting/_shared/types.ts`.
+2. Add a `formatXxxCardBody(payload) → AlertHints` function in `format.ts` (or a new per-source file).
+3. Create a trigger class that calls `materializeAlertWorkItem(source, externalId, project, hints)`.
+4. Register the trigger in the alerting integration's `triggerHandlers` array.

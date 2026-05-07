@@ -68,6 +68,12 @@ export interface AgentInput {
 	alertOrgId?: string;
 	alertTitle?: string;
 	alertIssueUrl?: string;
+	/**
+	 * Stable key for metric alerts: `${orgSlug}:${alertTitle}`.
+	 * Used as the externalId for the sentry-metric source in the PM materializer.
+	 * Set by SentryMetricAlertTrigger; consumed by processSentryWebhook.
+	 */
+	alertMetricKey?: string;
 
 	[key: string]: unknown;
 }
@@ -110,6 +116,20 @@ export interface TriggerResult {
 	/** Called when the router cannot enqueue the job (work-item lock, concurrency limit).
 	 *  Allows the trigger handler to undo side-effects like dedup marking. */
 	onBlocked?: () => void;
+	/**
+	 * Router-level work-item lock key, independent of `workItemId`.
+	 *
+	 * Set by trigger handlers that defer `workItemId` assignment to the worker
+	 * (e.g. Sentry issue/metric alert triggers that materialise the PM card on
+	 * the worker side). The router uses `lockKey ?? workItemId` for
+	 * `isWorkItemLocked` / `markWorkItemEnqueued` / `clearWorkItemEnqueued` so
+	 * that duplicate webhook deliveries are rejected even before the PM card ID
+	 * is known.
+	 *
+	 * Must be stable across deliveries for the same logical alert — e.g.
+	 * `sentry:${issueId}` for Sentry issue alerts.
+	 */
+	lockKey?: string;
 	/**
 	 * Coalesce key for PM status-change webhook deduplication.
 	 *

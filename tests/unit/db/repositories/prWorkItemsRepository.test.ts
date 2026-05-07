@@ -15,6 +15,8 @@ vi.mock('../../../../src/db/schema/index.js', () => ({
 		prUrl: 'prUrl',
 		prTitle: 'prTitle',
 		updatedAt: 'updatedAt',
+		externalSource: 'externalSource',
+		externalId: 'externalId',
 	},
 	agentRuns: {
 		id: 'id',
@@ -34,7 +36,10 @@ vi.mock('../../../../src/db/repositories/joinHelpers.js', () => ({
 }));
 
 import {
+	attachWorkItemId,
+	claimExternalMapping,
 	createWorkItem,
+	findByExternal,
 	linkPRToWorkItem,
 	listPRsForOrg,
 	listPRsForProject,
@@ -42,6 +47,7 @@ import {
 	listUnifiedWorkForProject,
 	listWorkItems,
 	lookupWorkItemForPR,
+	replaceWorkItemId,
 } from '../../../../src/db/repositories/prWorkItemsRepository.js';
 
 // ---------------------------------------------------------------------------
@@ -65,9 +71,11 @@ function createMockChain(returningValue: unknown[] = []) {
 
 	// insert chain
 	chain.onConflictDoUpdate = vi.fn().mockReturnValue({ returning: chain.returning });
+	chain.onConflictDoNothing = vi.fn().mockReturnValue({ returning: chain.returning });
 	chain.values = vi.fn().mockReturnValue({
 		returning: chain.returning,
 		onConflictDoUpdate: chain.onConflictDoUpdate,
+		onConflictDoNothing: chain.onConflictDoNothing,
 	});
 
 	return chain;
@@ -911,6 +919,101 @@ describe('prWorkItemsRepository', () => {
 			await listUnifiedWorkForProject('proj-1');
 
 			expect(qc.leftJoin).toHaveBeenCalledWith(expect.anything(), 'mock-join-condition');
+		});
+	});
+
+	// ==========================================================================
+	// Alert-materialization repository methods (spec 019)
+	// ==========================================================================
+
+	describe('findByExternal', () => {
+		it('returns the row when a matching external mapping exists', async () => {
+			// Use mockResolvedValueOnce on the existing function — reassigning chain.limit
+			// would create a new reference that chain.where() has already captured.
+			chain.limit.mockResolvedValueOnce([{ id: 'row-1', workItemId: 'wi-abc' }]);
+
+			const result = await findByExternal('proj-1', 'sentry', 'ext-123');
+
+			expect(result).toEqual({ id: 'row-1', workItemId: 'wi-abc' });
+			expect(mockDb.select).toHaveBeenCalledTimes(1);
+		});
+
+		it('returns null when no matching row exists', async () => {
+			chain.limit = vi.fn().mockResolvedValue([]);
+			mockDb.select = vi.fn().mockReturnValue({ from: chain.from });
+
+			const result = await findByExternal('proj-1', 'sentry', 'ext-missing');
+
+			expect(result).toBeNull();
+		});
+
+		it('queries with the correct project, source, and externalId', async () => {
+			chain.limit = vi.fn().mockResolvedValue([]);
+			mockDb.select = vi.fn().mockReturnValue({ from: chain.from });
+
+			await findByExternal('my-project', 'sentry', 'sentry-999');
+
+			expect(mockDb.select).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe('claimExternalMapping', () => {
+		it('returns ownedHere=true with the new rowId when insert wins', async () => {
+			// Mutate the existing returning function — reassigning would break the chain reference.
+			chain.returning.mockResolvedValueOnce([{ id: 'new-row-id' }]);
+
+			const result = await claimExternalMapping('proj-1', 'sentry', 'ext-new');
+
+			expect(result).toEqual({ ownedHere: true, rowId: 'new-row-id' });
+			expect(mockDb.insert).toHaveBeenCalledTimes(1);
+			expect(mockDb.select).not.toHaveBeenCalled();
+		});
+
+		it('returns ownedHere=false with existing row when insert conflicts', async () => {
+			// Insert returns [] (default) → conflict path. findByExternal follows up with SELECT.
+			chain.limit.mockResolvedValueOnce([{ id: 'existing-row', workItemId: null }]);
+
+			const result = await claimExternalMapping('proj-1', 'sentry', 'ext-conflict');
+
+			expect(result).toEqual({
+				ownedHere: false,
+				existing: { id: 'existing-row', workItemId: null },
+			});
+		});
+
+		it('throws when insert conflicts but no winning row is found (unreachable invariant)', async () => {
+			// Insert returns [] (default) → conflict. findByExternal also returns [] → invariant throw.
+			await expect(claimExternalMapping('proj-1', 'sentry', 'ext-ghost')).rejects.toThrow(
+				/claimExternalMapping.*conflict but no row found/,
+			);
+		});
+	});
+
+	describe('attachWorkItemId', () => {
+		it('updates the row with the given workItemId', async () => {
+			await attachWorkItemId('row-abc', 'wi-xyz');
+
+			expect(mockDb.update).toHaveBeenCalledTimes(1);
+			expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'wi-xyz' }));
+		});
+	});
+
+	describe('replaceWorkItemId', () => {
+		it('returns true when the conditional update matches', async () => {
+			// Mutate the existing returning function rather than reassigning the chain references.
+			chain.returning.mockResolvedValueOnce([{ id: 'row-abc' }]);
+
+			const result = await replaceWorkItemId('row-abc', 'old-wi', 'new-wi');
+
+			expect(result).toBe(true);
+			expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'new-wi' }));
+		});
+
+		it('returns false when the conditional update finds no matching row', async () => {
+			// Default chain.returning resolves to [] — no row updated
+			const result = await replaceWorkItemId('row-abc', 'stale-wi', 'new-wi');
+
+			expect(result).toBe(false);
 		});
 	});
 });

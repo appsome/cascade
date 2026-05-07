@@ -17,6 +17,11 @@ export const prWorkItems = pgTable(
 		prUrl: text('pr_url'),
 		prTitle: text('pr_title'),
 		updatedAt: timestamp('updated_at', { withTimezone: true }),
+		// Alert materialization columns — nullable; set only for externally-sourced work items.
+		// A partial UNIQUE index on (project_id, external_source, external_id) WHERE external_source IS NOT NULL
+		// is enforced by migration 0051 (Drizzle doesn't support partial unique indexes natively).
+		externalSource: text('external_source'),
+		externalId: text('external_id'),
 	},
 	(table) => [
 		// NOTE: Drizzle doesn't support partial unique indexes natively.

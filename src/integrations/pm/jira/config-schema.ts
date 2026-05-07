@@ -46,6 +46,9 @@ export const jiraConfigSchema = z
 		 * Optional CASCADE-managed label names. Each key defaults to its
 		 * "cascade-*" conventional label name when the outer `labels` object
 		 * is present in the input.
+		 *
+		 * `cascadeAlert` — recognized label for alert work items (spec 019).
+		 * `statuses.alerts` is the recognized status key for the alerts slot.
 		 */
 		labels: z
 			.object({
@@ -53,6 +56,7 @@ export const jiraConfigSchema = z
 				processed: z.string().default('cascade-processed'),
 				error: z.string().default('cascade-error'),
 				readyToProcess: z.string().default('cascade-ready'),
+				cascadeAlert: z.string().optional(),
 			})
 			.optional(),
 	})

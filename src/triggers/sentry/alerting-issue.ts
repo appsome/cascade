@@ -3,8 +3,15 @@
  *
  * Fires the 'alerting' agent when a Sentry issue alert rule triggers.
  * The payload includes the full event object (exception, stacktrace, breadcrumbs).
+ *
+ * PM card materialisation is intentionally deferred to the worker side
+ * (processSentryWebhook). This means transient PM failures (5xx, DB errors,
+ * polling exhaustion) surface as BullMQ retries on the worker rather than
+ * being silently swallowed as non-fatal dispatch errors by processRouterWebhook,
+ * which would return HTTP 200 to Sentry with no job ever enqueued.
  */
 
+import { getAlertsContainerId } from '../../pm/config.js';
 import { getSentryIntegrationConfig } from '../../sentry/integration.js';
 import type { SentryAugmentedPayload, SentryIssueAlertPayload } from '../../sentry/types.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../../types/index.js';
@@ -71,22 +78,38 @@ export class SentryIssueAlertTrigger implements TriggerHandler {
 			orgId: sentryConfig.organizationSlug,
 		});
 
-		const workItemId = `sentry:issue:${issueId}`;
+		// Pre-flight: verify the alerts slot is configured before dispatching.
+		// Actual PM card creation is deferred to the worker (processSentryWebhook) so
+		// that transient PM failures surface as BullMQ retries rather than being
+		// swallowed as non-fatal by processRouterWebhook.
+		if (!getAlertsContainerId(ctx.project)) {
+			logger.warn('SentryIssueAlertTrigger: alerts slot not configured, skipping dispatch', {
+				projectId: ctx.project.id,
+				source: 'sentry',
+				reason: 'alerts_slot_missing',
+			});
+			return null;
+		}
 
 		return {
 			agentType: 'alerting',
 			agentInput: {
 				triggerEvent: 'alerting:issue-alert',
-				// Synthesized stable identifier — gives the dashboard work-item view
-				// a queryable handle and groups multiple investigations of the same
-				// Sentry issue. Spec 018, AC #12.
-				workItemId,
+				// workItemId is intentionally absent here — the worker (processSentryWebhook)
+				// materialises the PM card and sets it before running the agent.
 				alertIssueId: issueId,
 				alertOrgId: sentryConfig.organizationSlug,
 				alertTitle,
 				alertIssueUrl: issueUrl,
 			},
-			workItemId,
+			// workItemId omitted — worker sets it after materialisation.
+			// lockKey provides router-level work-item concurrency protection while the
+			// PM card ID is not yet known. Ensures a second Sentry delivery for the same
+			// issue cannot enqueue while the first worker is still active.
+			lockKey: `sentry:${issueId}`,
+			// coalesceKey uses the Sentry issue ID so rapid re-fires of the same alert
+			// are coalesced without needing a PM card ID.
+			coalesceKey: `${ctx.project.id}:sentry:${issueId}`,
 		};
 	}
 }

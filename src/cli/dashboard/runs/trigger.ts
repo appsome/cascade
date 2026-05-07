@@ -16,6 +16,15 @@ export default class RunsTrigger extends DashboardCommand {
 		'repo-full-name': Flags.string({ description: 'Repository full name (optional)' }),
 		'head-sha': Flags.string({ description: 'Git SHA (optional)' }),
 		model: Flags.string({ description: 'Override model (optional)' }),
+		'trigger-comment-body': Flags.string({
+			description: 'Triggering comment body (optional, for respond-to-pr-comment)',
+		}),
+		'trigger-comment-id': Flags.integer({ description: 'Triggering comment ID (optional)' }),
+		'trigger-comment-url': Flags.string({ description: 'Triggering comment URL (optional)' }),
+		'trigger-comment-path': Flags.string({
+			description: 'Triggering comment file path (optional, for inline review comments)',
+		}),
+		'trigger-comment-author': Flags.string({ description: 'Triggering comment author (optional)' }),
 	};
 
 	async run(): Promise<void> {
@@ -34,6 +43,11 @@ export default class RunsTrigger extends DashboardCommand {
 					repoFullName: flags['repo-full-name'],
 					headSha: flags['head-sha'],
 					model: flags.model,
+					triggerCommentBody: flags['trigger-comment-body'],
+					triggerCommentId: flags['trigger-comment-id'],
+					triggerCommentUrl: flags['trigger-comment-url'],
+					triggerCommentPath: flags['trigger-comment-path'],
+					triggerCommentAuthor: flags['trigger-comment-author'],
 				}),
 			);
 

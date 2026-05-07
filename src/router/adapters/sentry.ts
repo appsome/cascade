@@ -7,13 +7,22 @@
  * augmented payload by the router before the adapter processes it.
  */
 
+import { withJiraCredentials } from '../../jira/client.js';
+import { withLinearCredentials } from '../../linear/client.js';
 import type { SentryAugmentedPayload } from '../../sentry/types.js';
+import { withTrelloCredentials } from '../../trello/client.js';
 import type { TriggerRegistry } from '../../triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
 import { loadProjectConfig, type RouterProjectConfig } from '../config.js';
 import type { AckResult, ParsedWebhookEvent, RouterPlatformAdapter } from '../platform-adapter.js';
+import {
+	resolveJiraCredentials,
+	resolveLinearCredentials,
+	resolveTrelloCredentials,
+} from '../platformClients/index.js';
 import type { CascadeJob, SentryJob } from '../queue.js';
+import { withPMScopeForDispatch } from './_shared.js';
 
 // ============================================================================
 // Processable resource types
@@ -97,6 +106,55 @@ export class SentryRouterAdapter implements RouterPlatformAdapter {
 		}
 
 		const ctx: TriggerContext = { project: fullProject, source: 'sentry', payload };
+
+		// Establish PM credential scope so that materializeAlertWorkItem can call
+		// PM APIs (createWorkItem, addLabel, moveWorkItem) during trigger dispatch.
+		// Mirrors the pattern used by TrelloRouterAdapter / JiraRouterAdapter /
+		// LinearRouterAdapter. Without this, PM client AsyncLocalStorage calls fail
+		// with "No Xxx credentials in scope" and the dispatch exception is swallowed
+		// by processRouterWebhook as non-fatal, silently dropping the alert.
+		const pmType = fullProject.pm?.type;
+		const dispatch = () => withPMScopeForDispatch(fullProject, () => triggerRegistry.dispatch(ctx));
+
+		if (pmType === 'trello') {
+			const creds = await resolveTrelloCredentials(fullProject.id);
+			if (!creds) {
+				logger.warn('SentryRouterAdapter: missing Trello credentials, cannot dispatch triggers', {
+					projectId: fullProject.id,
+				});
+				return null;
+			}
+			return withTrelloCredentials(creds, dispatch);
+		}
+
+		if (pmType === 'jira') {
+			const creds = await resolveJiraCredentials(fullProject.id);
+			if (!creds) {
+				logger.warn('SentryRouterAdapter: missing JIRA credentials, cannot dispatch triggers', {
+					projectId: fullProject.id,
+				});
+				return null;
+			}
+			return withJiraCredentials(
+				{ email: creds.email, apiToken: creds.apiToken, baseUrl: creds.baseUrl },
+				dispatch,
+			);
+		}
+
+		if (pmType === 'linear') {
+			const creds = await resolveLinearCredentials(fullProject.id);
+			if (!creds) {
+				logger.warn('SentryRouterAdapter: missing Linear credentials, cannot dispatch triggers', {
+					projectId: fullProject.id,
+				});
+				return null;
+			}
+			return withLinearCredentials({ apiKey: creds.apiKey }, dispatch);
+		}
+
+		// No PM integration configured — dispatch without PM credential scope.
+		// The trigger handler will catch AlertSlotMissingError and return null
+		// before any PM write is attempted.
 		return triggerRegistry.dispatch(ctx);
 	}
 

@@ -283,6 +283,11 @@ export const runsRouter = router({
 				repoFullName: z.string().optional(),
 				headSha: z.string().optional(),
 				model: z.string().optional(),
+				triggerCommentBody: z.string().optional(),
+				triggerCommentId: z.number().optional(),
+				triggerCommentUrl: z.string().optional(),
+				triggerCommentPath: z.string().optional(),
+				triggerCommentAuthor: z.string().optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
@@ -338,6 +343,11 @@ export const runsRouter = router({
 					repoFullName: input.repoFullName,
 					headSha: input.headSha,
 					modelOverride: input.model,
+					triggerCommentBody: input.triggerCommentBody,
+					triggerCommentId: input.triggerCommentId,
+					triggerCommentUrl: input.triggerCommentUrl,
+					triggerCommentPath: input.triggerCommentPath,
+					triggerCommentAuthor: input.triggerCommentAuthor,
 				});
 			} else {
 				const { triggerManualRun } = await import('../../triggers/shared/manual-runner.js');
@@ -353,6 +363,11 @@ export const runsRouter = router({
 						repoFullName: input.repoFullName,
 						headSha: input.headSha,
 						modelOverride: input.model,
+						triggerCommentBody: input.triggerCommentBody,
+						triggerCommentId: input.triggerCommentId,
+						triggerCommentUrl: input.triggerCommentUrl,
+						triggerCommentPath: input.triggerCommentPath,
+						triggerCommentAuthor: input.triggerCommentAuthor,
 					},
 					pc.project,
 					pc.config,

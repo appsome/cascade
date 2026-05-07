@@ -5,8 +5,15 @@
  * or warning state (not on resolution).
  *
  * Supports a `severity` parameter to filter by minimum severity level.
+ *
+ * PM card materialisation is intentionally deferred to the worker side
+ * (processSentryWebhook). This means transient PM failures (5xx, DB errors,
+ * polling exhaustion) surface as BullMQ retries on the worker rather than
+ * being silently swallowed as non-fatal dispatch errors by processRouterWebhook,
+ * which would return HTTP 200 to Sentry with no job ever enqueued.
  */
 
+import { getAlertsContainerId } from '../../pm/config.js';
 import { getSentryIntegrationConfig } from '../../sentry/integration.js';
 import type { SentryAugmentedPayload, SentryMetricAlertPayload } from '../../sentry/types.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../../types/index.js';
@@ -75,22 +82,42 @@ export class SentryMetricAlertTrigger implements TriggerHandler {
 			orgId: sentryConfig.organizationSlug,
 		});
 
-		const workItemId = `sentry:metric:${sentryConfig.organizationSlug}:${alertTitle}`;
+		// Pre-flight: verify the alerts slot is configured before dispatching.
+		// Actual PM card creation is deferred to the worker (processSentryWebhook) so
+		// that transient PM failures surface as BullMQ retries rather than being
+		// swallowed as non-fatal by processRouterWebhook.
+		if (!getAlertsContainerId(ctx.project)) {
+			logger.warn('SentryMetricAlertTrigger: alerts slot not configured, skipping dispatch', {
+				projectId: ctx.project.id,
+				source: 'sentry',
+				reason: 'alerts_slot_missing',
+			});
+			return null;
+		}
+
+		// Stable key grouping metric alerts by org + alert title.
+		// A rule rename produces a new group — acceptable (noted in comment).
+		const alertMetricKey = `${sentryConfig.organizationSlug}:${alertTitle}`;
 
 		return {
 			agentType: 'alerting',
 			agentInput: {
 				triggerEvent: 'alerting:metric-alert',
-				// Synthesized stable identifier — see SentryIssueAlertTrigger for
-				// rationale. For metric alerts there's no per-firing event id, so
-				// the identifier groups by org + alert title (best effort: an alert
-				// rule rename will produce a new group, which is acceptable).
-				workItemId,
+				// workItemId is intentionally absent here — the worker (processSentryWebhook)
+				// materialises the PM card and sets it before running the agent.
+				alertMetricKey,
 				alertOrgId: sentryConfig.organizationSlug,
 				alertTitle,
 				alertIssueUrl: innerPayload.data?.web_url,
 			},
-			workItemId,
+			// workItemId omitted — worker sets it after materialisation.
+			// lockKey provides router-level work-item concurrency protection while
+			// the PM card ID is not yet known. Uses sentry-metric: prefix to avoid
+			// collisions with issue alert lock keys (sentry:${issueId}).
+			lockKey: `sentry-metric:${alertMetricKey}`,
+			// coalesceKey deduplicates rapid re-fires of the same metric alert
+			// within the BullMQ coalesce window without requiring a PM card ID.
+			coalesceKey: `${ctx.project.id}:sentry-metric:${alertMetricKey}`,
 		};
 	}
 }

@@ -56,6 +56,12 @@ export interface ManualTriggerInput {
 	repoFullName?: string;
 	headSha?: string;
 	modelOverride?: string;
+	// Comment-trigger fields — required for respond-to-pr-comment to know what was asked
+	triggerCommentBody?: string;
+	triggerCommentId?: number;
+	triggerCommentUrl?: string;
+	triggerCommentPath?: string;
+	triggerCommentAuthor?: string;
 }
 
 /**
@@ -93,7 +99,7 @@ export async function triggerManualRun(
 	}
 
 	// Pre-flight integration validation
-	const validation = await validateIntegrations(input.projectId, input.agentType);
+	const validation = await validateIntegrations(input.projectId, input.agentType, project);
 	if (!validation.valid) {
 		throw new Error(formatValidationErrors(validation));
 	}
@@ -120,6 +126,11 @@ export async function triggerManualRun(
 		headSha: input.headSha,
 		modelOverride: input.modelOverride,
 		triggerType: 'manual',
+		triggerCommentBody: input.triggerCommentBody,
+		triggerCommentId: input.triggerCommentId,
+		triggerCommentUrl: input.triggerCommentUrl,
+		triggerCommentPath: input.triggerCommentPath,
+		triggerCommentAuthor: input.triggerCommentAuthor,
 		project,
 		config,
 	};

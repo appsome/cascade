@@ -8,6 +8,11 @@ vi.mock('../../../src/sentry/integration.js', () => ({
 	getSentryIntegrationConfig: vi.fn(),
 }));
 
+vi.mock('../../../src/pm/config.js', () => ({
+	getAlertsContainerId: vi.fn(),
+}));
+
+import { getAlertsContainerId } from '../../../src/pm/config.js';
 import { getSentryIntegrationConfig } from '../../../src/sentry/integration.js';
 import { SentryIssueAlertTrigger } from '../../../src/triggers/sentry/alerting-issue.js';
 import { SentryMetricAlertTrigger } from '../../../src/triggers/sentry/alerting-metric.js';
@@ -15,7 +20,21 @@ import { checkTriggerEnabledWithParams } from '../../../src/triggers/shared/trig
 import type { TriggerContext } from '../../../src/types/index.js';
 import { createMockProject } from '../../helpers/factories.js';
 
-const mockProject = createMockProject();
+// Materialisation is deferred to the worker (processSentryWebhook) — neither trigger
+// calls materializeAlertWorkItem. Project must have lists.alerts configured so
+// the pre-flight getAlertsContainerId check passes.
+const mockProject = createMockProject({
+	trello: {
+		boardId: 'board123',
+		lists: {
+			splitting: 'split-list',
+			planning: 'plan-list',
+			todo: 'todo-list',
+			alerts: 'alerts-list',
+		},
+		labels: {},
+	},
+});
 
 const sentryConfig = { organizationSlug: 'my-org' };
 
@@ -97,6 +116,8 @@ describe('SentryIssueAlertTrigger', () => {
 		vi.resetAllMocks();
 		vi.mocked(checkTriggerEnabledWithParams).mockResolvedValue({ enabled: true, parameters: {} });
 		vi.mocked(getSentryIntegrationConfig).mockResolvedValue(sentryConfig);
+		// Issue alert trigger checks getAlertsContainerId before dispatching
+		vi.mocked(getAlertsContainerId).mockReturnValue('alerts-list');
 		trigger = new SentryIssueAlertTrigger();
 	});
 
@@ -223,29 +244,22 @@ describe('SentryIssueAlertTrigger', () => {
 			expect(result?.agentInput?.alertIssueUrl).toBe(issueUrl);
 		});
 
-		// --- Spec 018 / plan 2: synthesized stable workItemId for sentry runs ---
+		// --- Spec 019 (review feedback): workItemId is deferred to the worker ---
 
-		it('synthesizes a stable workItemId from alertIssueId (spec 018)', async () => {
+		it('does NOT set workItemId — materialisation is deferred to processSentryWebhook', async () => {
 			const result = await trigger.handle(makeSentryIssueAlertCtx());
-			expect(result?.agentInput?.workItemId).toBe('sentry:issue:issue-42');
-			expect(result?.workItemId).toBe('sentry:issue:issue-42');
+			expect(result?.workItemId).toBeUndefined();
+			expect(result?.agentInput?.workItemId).toBeUndefined();
 		});
 
-		it('produces the same workItemId for two dispatches against the same issue', async () => {
-			const a = await trigger.handle(makeSentryIssueAlertCtx());
-			const b = await trigger.handle(makeSentryIssueAlertCtx());
-			expect(a?.agentInput?.workItemId).toBe(b?.agentInput?.workItemId);
-			expect(a?.workItemId).toBe(b?.workItemId);
-			expect(a?.agentInput?.workItemId).toBe('sentry:issue:issue-42');
-			expect(a?.workItemId).toBe(a?.agentInput?.workItemId);
+		it('sets coalesceKey using sentry issue ID for BullMQ dedup without a PM card ID', async () => {
+			const result = await trigger.handle(makeSentryIssueAlertCtx());
+			expect(result?.coalesceKey).toBe(`${mockProject.id}:sentry:issue-42`);
 		});
 
-		it('produces different workItemIds for different issues', async () => {
-			const a = await trigger.handle(makeSentryIssueAlertCtx());
-			const b = await trigger.handle(
-				makeSentryIssueAlertCtx({ eventOverrides: { issue_id: 'issue-7777' } }),
-			);
-			expect(a?.agentInput?.workItemId).not.toBe(b?.agentInput?.workItemId);
+		it('sets lockKey for router-level concurrency lock without a PM card ID', async () => {
+			const result = await trigger.handle(makeSentryIssueAlertCtx());
+			expect(result?.lockKey).toBe('sentry:issue-42');
 		});
 	});
 });
@@ -261,6 +275,8 @@ describe('SentryMetricAlertTrigger', () => {
 		vi.resetAllMocks();
 		vi.mocked(checkTriggerEnabledWithParams).mockResolvedValue({ enabled: true, parameters: {} });
 		vi.mocked(getSentryIntegrationConfig).mockResolvedValue(sentryConfig);
+		// Metric alert trigger pre-flight checks getAlertsContainerId
+		vi.mocked(getAlertsContainerId).mockReturnValue('alerts-list');
 		trigger = new SentryMetricAlertTrigger();
 	});
 
@@ -343,6 +359,16 @@ describe('SentryMetricAlertTrigger', () => {
 			);
 		});
 
+		it('returns null when alerts slot is not configured', async () => {
+			vi.mocked(getAlertsContainerId).mockReturnValue(undefined);
+			const result = await trigger.handle(makeSentryMetricAlertCtx());
+			expect(result).toBeNull();
+			expect(mockLogger.warn).toHaveBeenCalledWith(
+				expect.stringContaining('alerts slot not configured'),
+				expect.objectContaining({ reason: 'alerts_slot_missing' }),
+			);
+		});
+
 		it('returns a TriggerResult with alertOrgId from config', async () => {
 			const result = await trigger.handle(makeSentryMetricAlertCtx({ action: 'critical' }));
 			expect(result).toMatchObject({
@@ -382,26 +408,45 @@ describe('SentryMetricAlertTrigger', () => {
 			expect(result?.agentInput?.alertIssueUrl).toBeUndefined();
 		});
 
-		// --- Spec 018 / plan 2: synthesized stable workItemId for metric alerts ---
+		// --- Spec 019 (review feedback): workItemId is deferred to the worker ---
 
-		it('synthesizes a stable workItemId from orgSlug + alertTitle (spec 018)', async () => {
+		it('does NOT set workItemId — materialisation is deferred to processSentryWebhook', async () => {
 			const result = await trigger.handle(
 				makeSentryMetricAlertCtx({ descriptionTitle: 'Error Rate High' }),
 			);
-			expect(result?.agentInput?.workItemId).toBe('sentry:metric:my-org:Error Rate High');
-			expect(result?.workItemId).toBe('sentry:metric:my-org:Error Rate High');
+			expect(result?.workItemId).toBeUndefined();
+			expect(result?.agentInput?.workItemId).toBeUndefined();
 		});
 
-		it('produces the same workItemId for two dispatches with the same title', async () => {
+		it('sets alertMetricKey from orgSlug + alertTitle for the PM materializer', async () => {
+			const result = await trigger.handle(
+				makeSentryMetricAlertCtx({ descriptionTitle: 'Error Rate High' }),
+			);
+			expect(result?.agentInput?.alertMetricKey).toBe('my-org:Error Rate High');
+		});
+
+		it('sets lockKey for router-level concurrency lock without a PM card ID', async () => {
+			const result = await trigger.handle(
+				makeSentryMetricAlertCtx({ descriptionTitle: 'Error Rate High' }),
+			);
+			expect(result?.lockKey).toBe('sentry-metric:my-org:Error Rate High');
+		});
+
+		it('sets coalesceKey for BullMQ dedup without a PM card ID', async () => {
+			const result = await trigger.handle(
+				makeSentryMetricAlertCtx({ descriptionTitle: 'Error Rate High' }),
+			);
+			expect(result?.coalesceKey).toBe(`${mockProject.id}:sentry-metric:my-org:Error Rate High`);
+		});
+
+		it('produces the same alertMetricKey for two dispatches with the same title', async () => {
 			const a = await trigger.handle(
 				makeSentryMetricAlertCtx({ descriptionTitle: 'Error Rate High' }),
 			);
 			const b = await trigger.handle(
 				makeSentryMetricAlertCtx({ descriptionTitle: 'Error Rate High' }),
 			);
-			expect(a?.agentInput?.workItemId).toBe(b?.agentInput?.workItemId);
-			expect(a?.workItemId).toBe(b?.workItemId);
-			expect(a?.workItemId).toBe(a?.agentInput?.workItemId);
+			expect(a?.agentInput?.alertMetricKey).toBe(b?.agentInput?.alertMetricKey);
 		});
 	});
 });

@@ -38,6 +38,9 @@ export const linearConfigSchema = z
 		/**
 		 * Optional CASCADE-managed Linear label UUIDs. Each key is
 		 * optional to accommodate teams that only use a subset.
+		 *
+		 * `cascadeAlert` — recognized label UUID for alert work items (spec 019).
+		 * `statuses.alerts` is the recognized status key for the alerts slot.
 		 */
 		labels: z
 			.object({
@@ -46,6 +49,7 @@ export const linearConfigSchema = z
 				error: z.string().optional(),
 				readyToProcess: z.string().optional(),
 				auto: z.string().optional(),
+				cascadeAlert: z.string().optional(),
 			})
 			.optional(),
 
