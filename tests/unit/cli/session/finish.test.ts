@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockExecSync = vi.fn();
+const mockExecFileSync = vi.fn();
 vi.mock('node:child_process', () => ({
 	execSync: (...args: unknown[]) => mockExecSync(...args),
+	execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
 }));
 
 vi.mock('../../../../src/github/client.js', () => ({
@@ -28,6 +30,7 @@ describe('session finish CLI', () => {
 		process.env.CASCADE_FINISH_HOOKS = JSON.stringify({ requiresPushedChanges: true });
 		process.env.CASCADE_INITIAL_HEAD_SHA = 'a'.repeat(40);
 		process.env.CASCADE_AGENT_TYPE = 'respond-to-review';
+		delete process.env.CASCADE_PR_BRANCH;
 	});
 
 	afterEach(() => {
@@ -37,6 +40,7 @@ describe('session finish CLI', () => {
 	});
 
 	it('writes pushed-changes sidecar after successful validation', async () => {
+		mockExecFileSync.mockReset();
 		mockExecSync.mockImplementation((cmd: string) => {
 			if (cmd.includes('status --porcelain')) return '';
 			if (cmd.includes('rev-list')) return '0';
@@ -74,6 +78,7 @@ describe('session finish CLI', () => {
 	});
 
 	it('fails when pushed changes were not actually made', async () => {
+		mockExecFileSync.mockReset();
 		mockExecSync.mockImplementation((cmd: string) => {
 			if (cmd.includes('status --porcelain')) return '';
 			if (cmd.includes('rev-list')) return '0';
