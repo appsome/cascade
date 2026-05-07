@@ -144,6 +144,11 @@ export interface ManualRunJobData {
 	repoFullName?: string;
 	headSha?: string;
 	modelOverride?: string;
+	triggerCommentBody?: string;
+	triggerCommentId?: number;
+	triggerCommentUrl?: string;
+	triggerCommentPath?: string;
+	triggerCommentAuthor?: string;
 }
 
 export interface RetryRunJobData {
@@ -194,6 +199,11 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
 				repoFullName: jobData.repoFullName,
 				headSha: jobData.headSha,
 				modelOverride: jobData.modelOverride,
+				triggerCommentBody: jobData.triggerCommentBody,
+				triggerCommentId: jobData.triggerCommentId,
+				triggerCommentUrl: jobData.triggerCommentUrl,
+				triggerCommentPath: jobData.triggerCommentPath,
+				triggerCommentAuthor: jobData.triggerCommentAuthor,
 			},
 			pc.project,
 			pc.config,

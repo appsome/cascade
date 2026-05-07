@@ -28,7 +28,19 @@ vi.mock('../../../src/triggers/shared/trigger-resolution.js', () => ({
 	resolveTriggerResult: vi.fn(),
 }));
 
+// Mock the dynamically-imported materialization helpers
+vi.mock('../../../src/integrations/alerting/_shared/materialize.js', () => ({
+	materializeAlertWorkItem: vi.fn(),
+}));
+vi.mock('../../../src/integrations/alerting/_shared/format.js', () => ({
+	formatSentryCardBody: vi
+		.fn()
+		.mockReturnValue({ title: '[Sentry] Test', descriptionMarkdown: 'desc' }),
+}));
+
 import { loadProjectConfigById } from '../../../src/config/provider.js';
+import { materializeAlertWorkItem } from '../../../src/integrations/alerting/_shared/materialize.js';
+import { AlertSlotMissingError } from '../../../src/integrations/alerting/_shared/types.js';
 import { processSentryWebhook } from '../../../src/triggers/sentry/webhook-handler.js';
 import { runAgentExecutionPipeline } from '../../../src/triggers/shared/agent-execution.js';
 import { withAgentTypeConcurrency } from '../../../src/triggers/shared/concurrency.js';
@@ -175,6 +187,107 @@ describe('processSentryWebhook', () => {
 		vi.mocked(withAgentTypeConcurrency).mockResolvedValue(false);
 
 		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never, triggerResult);
+
+		expect(runAgentExecutionPipeline).not.toHaveBeenCalled();
+	});
+
+	// ── PM card materialisation (spec 019) ──────────────────────────────────
+
+	it('materialises a PM work item when alertIssueId is set and workItemId is absent', async () => {
+		const payload = { resource: 'event_alert', cascadeProjectId: 'proj-sentry' };
+		const triggerResult = {
+			agentType: 'alerting',
+			agentInput: { alertIssueId: 'sentry-issue-42' },
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+		vi.mocked(materializeAlertWorkItem).mockResolvedValue('card-new');
+
+		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never);
+
+		expect(materializeAlertWorkItem).toHaveBeenCalledWith(
+			'sentry',
+			'sentry-issue-42',
+			mockProject,
+			expect.objectContaining({ title: '[Sentry] Test' }),
+		);
+		expect(runAgentExecutionPipeline).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: 'card-new',
+				agentInput: expect.objectContaining({ workItemId: 'card-new' }),
+			}),
+			mockProject,
+			expect.any(Object),
+			expect.objectContaining({ logLabel: 'Sentry agent' }),
+		);
+	});
+
+	it('skips materialisation and runs agent directly when workItemId is already set', async () => {
+		const payload = { resource: 'event_alert' };
+		const triggerResult = {
+			agentType: 'alerting',
+			workItemId: 'wi-already-set',
+			agentInput: { alertIssueId: 'sentry-issue-42', workItemId: 'wi-already-set' },
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+
+		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never);
+
+		expect(materializeAlertWorkItem).not.toHaveBeenCalled();
+		expect(runAgentExecutionPipeline).toHaveBeenCalledWith(
+			triggerResult,
+			mockProject,
+			expect.any(Object),
+			expect.any(Object),
+		);
+	});
+
+	it('skips materialisation when alertIssueId is not a string', async () => {
+		const payload = { resource: 'event_alert' };
+		const triggerResult = {
+			agentType: 'alerting',
+			agentInput: {},
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+
+		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never);
+
+		expect(materializeAlertWorkItem).not.toHaveBeenCalled();
+		expect(runAgentExecutionPipeline).toHaveBeenCalled();
+	});
+
+	it('logs a warning and skips agent when materialisation throws AlertSlotMissingError', async () => {
+		const payload = { resource: 'event_alert' };
+		const triggerResult = {
+			agentType: 'alerting',
+			agentInput: { alertIssueId: 'sentry-issue-42' },
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+		vi.mocked(materializeAlertWorkItem).mockRejectedValue(
+			new AlertSlotMissingError('proj-sentry', 'trello'),
+		);
+
+		await processSentryWebhook(payload, 'proj-sentry', mockRegistry as never);
+
+		expect(mockLogger.warn).toHaveBeenCalledWith(
+			expect.stringContaining('alerts slot no longer configured'),
+			expect.objectContaining({ projectId: 'proj-sentry', reason: 'alerts_slot_missing' }),
+		);
+		expect(runAgentExecutionPipeline).not.toHaveBeenCalled();
+	});
+
+	it('re-throws transient PM errors so BullMQ can retry the job', async () => {
+		const payload = { resource: 'event_alert' };
+		const triggerResult = {
+			agentType: 'alerting',
+			agentInput: { alertIssueId: 'sentry-issue-42' },
+		} as never;
+		vi.mocked(resolveTriggerResult).mockResolvedValue(triggerResult);
+		const transientError = new Error('PM 503 Service Unavailable');
+		vi.mocked(materializeAlertWorkItem).mockRejectedValue(transientError);
+
+		await expect(
+			processSentryWebhook(payload, 'proj-sentry', mockRegistry as never),
+		).rejects.toThrow('PM 503 Service Unavailable');
 
 		expect(runAgentExecutionPipeline).not.toHaveBeenCalled();
 	});

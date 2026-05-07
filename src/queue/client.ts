@@ -22,6 +22,11 @@ export interface ManualRunJob {
 	repoFullName?: string;
 	headSha?: string;
 	modelOverride?: string;
+	triggerCommentBody?: string;
+	triggerCommentId?: number;
+	triggerCommentUrl?: string;
+	triggerCommentPath?: string;
+	triggerCommentAuthor?: string;
 }
 
 export interface RetryRunJob {
