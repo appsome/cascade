@@ -6,7 +6,7 @@ plan_slug: trigger-wiring
 level: plan
 parent_spec: docs/specs/020-github-mergeability-deferred-recheck.md
 depends_on: [1-infrastructure.md]
-status: pending
+status: wip
 ---
 
 # 020/2: Conflict Trigger Wiring + Worker Re-check Detection
