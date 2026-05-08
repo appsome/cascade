@@ -4,7 +4,7 @@ slug: github-mergeability-deferred-recheck
 level: spec
 title: GitHub Async Mergeability — Durable Deferred Re-check
 created: 2026-05-08
-status: draft
+status: done
 ---
 
 # 020: GitHub Async Mergeability — Durable Deferred Re-check
