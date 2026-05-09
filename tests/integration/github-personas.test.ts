@@ -364,7 +364,7 @@ describe('GitHub Dual-Persona System (integration)', () => {
 			// scm:review-requested has defaultEnabled: false in definition
 			expect(trigger.matches(ctx)).toBe(true);
 			const result = await trigger.handle(ctx);
-			expectSkip(result, 'review-requested', /trigger is disabled/);
+			expect(result).toBeNull();
 		});
 
 		it('triggers review when enabled via DB and persona is requested', async () => {
