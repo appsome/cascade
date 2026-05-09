@@ -33,6 +33,29 @@ export interface CreatePRResult {
 // see `[git-push] still running (Ns)` ticks during slow hooks. Setting
 // wallTimeoutMs + idleTimeoutMs to 0 disables them — see runCommand in utils/repo.ts.
 
+/**
+ * Cap on captured hook output bytes that flow back into the agent's tool-result
+ * channel. Prod 2026-05-09 (run d8e31665, cascade/fe82YUKV): a successful PR
+ * creation returned 97 KB of `pushOutput` (lefthook's pre-push test:fast suite —
+ * 159 files, 2981 tests captured into the gadget result). Codex's tool-result
+ * parser couldn't extract the JSON envelope buried under that volume and
+ * retried the call; the resulting concurrent invocations raced against the same
+ * sidecar path leaving prUrl missing. Truncate here at the gadget result
+ * boundary; the FULL hook output already streams through `runCommand`'s
+ * heartbeat into the worker's engine log file (LLMIST_LOG_FILE) for operator
+ * visibility — only the agent-visible result-stream copy is capped.
+ */
+const HOOK_OUTPUT_MAX_BYTES = 4 * 1024;
+
+function truncateHookOutput(raw: string | undefined, label: 'commit' | 'push'): string | undefined {
+	if (!raw || raw.length <= HOOK_OUTPUT_MAX_BYTES) return raw;
+	const halfBudget = Math.floor(HOOK_OUTPUT_MAX_BYTES / 2);
+	const head = raw.slice(0, halfBudget);
+	const tail = raw.slice(-halfBudget);
+	const omitted = raw.length - head.length - tail.length;
+	return `${head}\n\n--- [${omitted} bytes truncated from ${label} hook output; full output in worker engine log] ---\n\n${tail}`;
+}
+
 async function detectOwnerRepo(): Promise<{ owner: string; repo: string }> {
 	const result = await runCommand('git', ['remote', 'get-url', 'origin'], process.cwd());
 	if (result.exitCode !== 0) {
@@ -143,6 +166,9 @@ export async function createPR(params: CreatePRParams): Promise<CreatePRResult> 
 	const runLinkFooter = buildRunLinkFooterFromEnv();
 	const prBody = runLinkFooter ? params.body + runLinkFooter : params.body;
 
+	const truncatedPushOutput = truncateHookOutput(pushOutput, 'push');
+	const truncatedCommitOutput = truncateHookOutput(commitOutput, 'commit');
+
 	try {
 		const pr = await githubClient.createPR(owner, repo, {
 			title: params.title,
@@ -157,8 +183,8 @@ export async function createPR(params: CreatePRParams): Promise<CreatePRResult> 
 			prUrl: pr.htmlUrl,
 			repoFullName: `${owner}/${repo}`,
 			alreadyExisted: false,
-			pushOutput,
-			commitOutput,
+			pushOutput: truncatedPushOutput,
+			commitOutput: truncatedCommitOutput,
 		};
 	} catch (error) {
 		if (
@@ -174,8 +200,8 @@ export async function createPR(params: CreatePRParams): Promise<CreatePRResult> 
 					prUrl: existingPR.htmlUrl,
 					repoFullName: `${owner}/${repo}`,
 					alreadyExisted: true,
-					pushOutput,
-					commitOutput,
+					pushOutput: truncatedPushOutput,
+					commitOutput: truncatedCommitOutput,
 				};
 			}
 		}

@@ -1,4 +1,4 @@
-import { unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -136,14 +136,43 @@ export async function hydratePrSidecar(sidecarPath: string): Promise<{
 				},
 			};
 		}
+		// Prod regression 2026-05-09 (run d8e31665): "PR sidecar missing required
+		// fields { hasPrUrl: false }" was the only WARN — operators had no signal
+		// of whether the file was empty, malformed, or had a non-prUrl field.
+		// Re-read the raw payload and dump the keys + actual values so a single
+		// log line tells the whole story.
+		const rawSidecar = readRawPRSidecar(sidecarPath);
 		logger.warn('PR sidecar missing required fields', {
+			sidecarPath,
 			hasPrUrl: !!sidecar.prUrl,
+			rawSidecarKeys: rawSidecar ? Object.keys(rawSidecar).sort() : null,
+			rawSidecarPrUrl:
+				rawSidecar && typeof rawSidecar.prUrl !== 'undefined' ? rawSidecar.prUrl : null,
+			rawSidecarPrNumber:
+				rawSidecar && typeof rawSidecar.prNumber !== 'undefined' ? rawSidecar.prNumber : null,
 		});
 	} catch (err) {
 		logger.warn('Failed to read PR sidecar', { path: sidecarPath, error: String(err) });
 	}
 
 	return {};
+}
+
+/**
+ * Best-effort raw read of the sidecar JSON for diagnostic purposes.
+ * Returns `null` for missing/empty/malformed files so the diagnostic log
+ * can distinguish "no file" / "empty file" / "valid JSON without prUrl".
+ */
+function readRawPRSidecar(path: string): Record<string, unknown> | null {
+	try {
+		if (!existsSync(path)) return null;
+		const raw = readFileSync(path, 'utf-8');
+		if (!raw.trim()) return null;
+		const parsed = JSON.parse(raw);
+		return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+	} catch {
+		return null;
+	}
 }
 
 /**
