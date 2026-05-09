@@ -74,7 +74,7 @@ The router queues `cascade-jobs` and `cascade-dashboard-jobs` with `attempts: 4`
 - Transient: Docker socket `ECONNREFUSED` / `ECONNRESET` / `ENOTFOUND`, registry HTTP 429, container-name HTTP 409, and `SLOT_WAIT_TIMEOUT`.
 - Terminal: validation errors (`TypeError`, `ZodError`) and image-not-found after fallback exhaustion.
 
-Every failed dispatch path flows through the BullMQ `failed` event and calls `releaseLocksForFailedJob`, releasing the work-item lock, agent-type counter, and recently-dispatched mark. Webhook logs distinguish healthy backpressure (`Awaiting worker slot`) from the wedged-lock canary (`Work item locked (no active dispatch)`).
+Post-enqueue dispatch failures (Docker socket errors, slot-wait timeouts, container failures) flow through the BullMQ `failed` event and call `releaseLocksForFailedJob`, releasing the work-item lock, agent-type counter, and recently-dispatched mark. Webhook logs distinguish healthy backpressure (`Awaiting worker slot`) from the wedged-lock canary (`Work item locked (no active dispatch)`). Enqueue/schedule failures that occur before a BullMQ job exists are handled differently — see the split below.
 
 The compensation operates at two distinct boundaries — not a single unified path:
 
