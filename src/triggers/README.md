@@ -133,7 +133,12 @@ This distinction prevents "No trigger matched for event" from hiding real handle
 
 ### Deferred re-check
 
-Use `buildDeferredRecheckResult({ delayMs, coalesceKey, agentInput? })` when the current webhook cannot make a final decision yet and no provider follow-up webhook is guaranteed. The router schedules a coalesced delayed job and exits without taking dispatch locks or posting an ack. The GitHub mergeability path uses this for `mergeable === null`; when the job fires, the worker re-dispatches through the registry against fresh state. Workers do not re-queue indefinitely: if the re-check still returns `deferredRecheck`, the GitHub worker emits `mergeability_recheck_exhausted` and stops.
+`buildDeferredRecheckResult` is currently a **GitHub-only** contract for bare re-dispatch. The router always schedules the delayed job via `scheduleCoalescedJob` and exits without taking dispatch locks or posting an ack — that part is generic. What differs is what the worker does when the job fires:
+
+- **GitHub adapter** — `GitHubRouterAdapter.buildJob()` strips `triggerResult` from the job and sets `mergeabilityRecheckAttempt: 1`. The GitHub worker detects the bare job and re-dispatches through the registry to evaluate fresh provider state. If the re-check still cannot resolve state, the GitHub worker emits `mergeability_recheck_exhausted` and stops without re-queueing.
+- **Non-GitHub adapters (Trello, JIRA, Linear, Sentry)** — these adapters always embed `triggerResult` in the job regardless of `deferredRecheck`. When the job fires, `resolveTriggerResult()` receives the pre-resolved result and returns it directly, skipping registry dispatch. A non-GitHub handler returning `buildDeferredRecheckResult` would therefore schedule a job that re-uses the same `agentType: null` result instead of re-evaluating provider state.
+
+Use this builder only in GitHub handlers unless the adapter and worker for your provider have been updated to support bare re-dispatch.
 
 ### Handler rules
 

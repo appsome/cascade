@@ -138,7 +138,8 @@ flowchart TD
 | `agentType: null` without skip/defer | Side-effect-only trigger completed | `Trigger completed without agent (PM operation)` |
 | `agentType` + `coalesceKey` and coalescing enabled | Schedule a delayed coalesced dispatch | `Coalesced dispatch scheduled: <agent> agent for work item <id>` |
 | `agentType` without coalescing | Post ack, build job, enqueue now | `Job queued: <agent> agent for work item <id>` |
-| Redis enqueue/schedule failure | Call `onBlocked` and leave a failure reason | `Failed to enqueue job to Redis` or `Failed to schedule coalesced job to Redis` |
+| Immediate-dispatch or PM coalesced-dispatch Redis failure | Call `onBlocked` and leave a failure reason | `Failed to enqueue job to Redis` or `Failed to schedule coalesced job to Redis` |
+| Deferred re-check Redis failure | Capture Sentry under `deferred_recheck_schedule_failure`; skip `onBlocked`; treat as if scheduled | `Deferred re-check scheduled: <coalesceKey>` |
 
 Structured skip is intentionally different from bare `null`: it preserves the handler's reason in webhook logs instead of collapsing expected non-dispatch decisions into "no trigger matched."
 
@@ -146,7 +147,7 @@ Structured skip is intentionally different from bare `null`: it preserves the ha
 
 PM status-change dispatches can include a `coalesceKey`, normally `${projectId}:${workItemId}`. When `PM_COALESCE_WINDOW_MS` is positive, the router schedules a delayed job via `scheduleCoalescedJob`; a newer dispatch with the same key supersedes the pending one and releases the superseded job's in-memory locks. PM ack comments are deferred to job fire time for coalesced jobs so superseded work does not leave orphan comments.
 
-Deferred re-check also uses `scheduleCoalescedJob`, but for a different contract: `deferredRecheck` schedules a bare job with no embedded `triggerResult`. When it fires, the worker re-dispatches through the trigger registry to evaluate fresh provider state. GitHub mergeability uses this when `mergeable` is still `null` after the synchronous retry budget; if the re-check still cannot resolve state, the worker records `mergeability_recheck_exhausted` and stops rather than re-queueing indefinitely.
+Deferred re-check also uses `scheduleCoalescedJob` and exits without dispatch locks or an ack comment. The bare re-dispatch on job fire is currently **GitHub-only**: `GitHubRouterAdapter.buildJob()` strips `triggerResult` and sets `mergeabilityRecheckAttempt: 1`, so the GitHub worker re-dispatches through the trigger registry to evaluate fresh provider state. Non-GitHub adapters (Trello, JIRA, Linear, Sentry) embed `triggerResult` in the job regardless of `deferredRecheck`, so their workers return the pre-resolved `agentType: null` result directly without re-dispatching. If a deferred re-check schedule call fails, the router captures Sentry under `deferred_recheck_schedule_failure` and still returns `Deferred re-check scheduled` — it does not call `onBlocked`. GitHub mergeability uses this when `mergeable` is still `null` after the synchronous retry budget; if the re-check still cannot resolve state, the GitHub worker records `mergeability_recheck_exhausted` and stops rather than re-queueing indefinitely.
 
 ### Concurrency controls
 
