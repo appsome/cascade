@@ -373,6 +373,9 @@ describe('hydratePrSidecar', () => {
 			expect.objectContaining({
 				sidecarPath,
 				hasPrUrl: false,
+				// Explicit 'parsed' status confirms the file was valid JSON — operator
+				// knows prUrl was simply absent, not that the file was truncated or missing.
+				rawSidecarStatus: 'parsed',
 				rawSidecarKeys: expect.arrayContaining(['source', 'prNumber', 'repoFullName']),
 				rawSidecarPrUrl: null,
 				rawSidecarPrNumber: 1290,
@@ -396,7 +399,41 @@ describe('hydratePrSidecar', () => {
 			expect.objectContaining({
 				sidecarPath,
 				hasPrUrl: false,
+				// 'empty' is distinguishable from 'malformed' — tells operator the file
+				// existed but had zero content (race/truncation), not a JSON syntax error.
+				rawSidecarStatus: 'empty',
 				rawSidecarKeys: null,
+				rawByteLength: 0,
+			}),
+		);
+	});
+
+	it('logs malformed status with parseError and rawPreview when JSON is truncated mid-write', async () => {
+		const { logger } = await import('../../../src/utils/logging.js');
+		const warnSpy = vi.mocked(logger.warn);
+		warnSpy.mockClear();
+
+		const sidecarPath = makeSidecarPath('pr-malformed');
+		// Simulate a partial write: the file has content but JSON is incomplete.
+		const truncatedJson = '{"prUrl": "https://github.com/o/r/pull/1", "prNum';
+		writeFileSync(sidecarPath, truncatedJson);
+
+		const result = await hydratePrSidecar(sidecarPath);
+
+		expect(result).toEqual({});
+		// 'malformed' is distinguishable from 'empty' (has rawByteLength > 0,
+		// parseError, rawPreview) and from 'parsed' (no rawSidecarKeys).
+		// Operators can read the rawPreview to see how far the write got.
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining('PR sidecar missing required fields'),
+			expect.objectContaining({
+				sidecarPath,
+				hasPrUrl: false,
+				rawSidecarStatus: 'malformed',
+				rawSidecarKeys: null,
+				rawByteLength: truncatedJson.length,
+				parseError: expect.stringContaining('SyntaxError'),
+				rawPreview: expect.stringContaining('prUrl'),
 			}),
 		);
 	});

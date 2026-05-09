@@ -140,16 +140,28 @@ export async function hydratePrSidecar(sidecarPath: string): Promise<{
 		// fields { hasPrUrl: false }" was the only WARN — operators had no signal
 		// of whether the file was empty, malformed, or had a non-prUrl field.
 		// Re-read the raw payload and dump the keys + actual values so a single
-		// log line tells the whole story.
+		// log line tells the whole story. The discriminated 'rawSidecarStatus'
+		// field makes empty vs malformed vs missing vs parsed-without-prUrl each
+		// produce a distinct log shape so no Loki archaeology is needed.
 		const rawSidecar = readRawPRSidecar(sidecarPath);
+		const parsedData = rawSidecar.status === 'parsed' ? rawSidecar.data : null;
 		logger.warn('PR sidecar missing required fields', {
 			sidecarPath,
 			hasPrUrl: !!sidecar.prUrl,
-			rawSidecarKeys: rawSidecar ? Object.keys(rawSidecar).sort() : null,
+			rawSidecarStatus: rawSidecar.status,
+			rawSidecarKeys: parsedData ? Object.keys(parsedData).sort() : null,
 			rawSidecarPrUrl:
-				rawSidecar && typeof rawSidecar.prUrl !== 'undefined' ? rawSidecar.prUrl : null,
+				parsedData !== null && typeof parsedData.prUrl !== 'undefined' ? parsedData.prUrl : null,
 			rawSidecarPrNumber:
-				rawSidecar && typeof rawSidecar.prNumber !== 'undefined' ? rawSidecar.prNumber : null,
+				parsedData !== null && typeof parsedData.prNumber !== 'undefined'
+					? parsedData.prNumber
+					: null,
+			rawByteLength:
+				rawSidecar.status === 'empty' || rawSidecar.status === 'malformed'
+					? rawSidecar.rawByteLength
+					: undefined,
+			parseError: rawSidecar.status === 'malformed' ? rawSidecar.parseError : undefined,
+			rawPreview: rawSidecar.status === 'malformed' ? rawSidecar.rawPreview : undefined,
 		});
 	} catch (err) {
 		logger.warn('Failed to read PR sidecar', { path: sidecarPath, error: String(err) });
@@ -159,19 +171,55 @@ export async function hydratePrSidecar(sidecarPath: string): Promise<{
 }
 
 /**
- * Best-effort raw read of the sidecar JSON for diagnostic purposes.
- * Returns `null` for missing/empty/malformed files so the diagnostic log
- * can distinguish "no file" / "empty file" / "valid JSON without prUrl".
+ * Discriminated diagnostic result from reading the raw PR sidecar file.
+ * Returned by `readRawPRSidecar` so the WARN log can tell apart:
+ *   - 'missing'  — file never written (agent exited before calling cascade-tools)
+ *   - 'empty'    — file exists but is zero/whitespace bytes (truncated mid-write or race)
+ *   - 'malformed' — JSON parse failed (partial write, encoding issue); rawPreview helps triage
+ *   - 'parsed'   — valid JSON object (normal path — prUrl simply absent from payload)
  */
-function readRawPRSidecar(path: string): Record<string, unknown> | null {
+type RawSidecarDiagnostic =
+	| { status: 'missing' }
+	| { status: 'empty'; rawByteLength: number }
+	| { status: 'malformed'; rawByteLength: number; parseError: string; rawPreview: string }
+	| { status: 'parsed'; data: Record<string, unknown> };
+
+/**
+ * Best-effort raw read of the sidecar JSON for diagnostic purposes.
+ * Returns a discriminated union instead of a nullable object so the WARN log
+ * can distinguish 'no file' / 'empty file' / 'malformed JSON' / 'valid JSON without prUrl'.
+ * Each case produces a distinct log shape — operators can triage from a single log line
+ * without Loki archaeology.
+ */
+function readRawPRSidecar(path: string): RawSidecarDiagnostic {
+	if (!existsSync(path)) return { status: 'missing' };
+	let raw: string;
 	try {
-		if (!existsSync(path)) return null;
-		const raw = readFileSync(path, 'utf-8');
-		if (!raw.trim()) return null;
+		raw = readFileSync(path, 'utf-8');
+	} catch (err) {
+		// readFileSync itself threw (permissions, I/O error) — treat as malformed.
+		return { status: 'malformed', rawByteLength: 0, parseError: String(err), rawPreview: '' };
+	}
+	if (!raw.trim()) return { status: 'empty', rawByteLength: raw.length };
+	try {
 		const parsed = JSON.parse(raw);
-		return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-	} catch {
-		return null;
+		if (parsed && typeof parsed === 'object') {
+			return { status: 'parsed', data: parsed as Record<string, unknown> };
+		}
+		// JSON.parse succeeded but returned a primitive (null, number, string) — not an object.
+		return {
+			status: 'malformed',
+			rawByteLength: raw.length,
+			parseError: 'parsed value is not an object',
+			rawPreview: raw.slice(0, 200),
+		};
+	} catch (err) {
+		return {
+			status: 'malformed',
+			rawByteLength: raw.length,
+			parseError: String(err),
+			rawPreview: raw.slice(0, 200),
+		};
 	}
 }
 
