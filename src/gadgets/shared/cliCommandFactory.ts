@@ -338,6 +338,7 @@ function normalizeBoolValue(raw: string): boolean | null {
  * (starts with `--`) — that token belongs to a different flag, not to the
  * preceding boolean. Bare-toggle invocations stay untouched.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: argv-shape taxonomy (--key=value, --key value, bare toggle)
 function massageBooleanFlagValues(
 	argv: readonly string[] | undefined,
 	booleanFlags: ReadonlySet<string>,
@@ -815,6 +816,7 @@ export function createCLICommand(
 		static override flags = flagsRecord;
 		static override examples = staticExamples;
 
+		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: parse-error classification taxonomy (unknown-flag / classified / runtime / re-throw)
 		async execute(): Promise<void> {
 			// Build a sink that routes emitCliError output through the instance's
 			// log/exit — lets tests spy on instance.log and instance.exit.
