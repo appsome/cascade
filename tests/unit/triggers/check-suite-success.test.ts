@@ -1031,7 +1031,11 @@ describe('CheckSuiteSuccessTrigger', () => {
 	});
 
 	describe('authorMode-aware behavior via trigger parameters', () => {
-		it('handle returns null when trigger is disabled via checkTriggerEnabledWithParams', async () => {
+		it('handle returns null when trigger is disabled (so the registry can try the next matcher)', async () => {
+			// Disabled-at-config returns bare null, not a structured skip,
+			// so the registry's first-match loop continues to the next
+			// matcher. Mirror of the contract change in
+			// `src/triggers/shared/trigger-check.ts:checkTriggerEnablement`.
 			vi.mocked(checkTriggerEnabledWithParams).mockResolvedValueOnce({
 				enabled: false,
 				parameters: {},
@@ -1045,7 +1049,7 @@ describe('CheckSuiteSuccessTrigger', () => {
 			};
 
 			const result = await trigger.handle(ctx);
-			expectSkip(result);
+			expect(result).toBeNull();
 			expect(checkTriggerEnabledWithParams).toHaveBeenCalledWith(
 				'test',
 				'review',

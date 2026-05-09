@@ -274,7 +274,7 @@ describe('GitHub Dual-Persona System (integration)', () => {
 				triggers: { prReviewSubmitted: true },
 			});
 			// Agent + trigger configs must both be seeded so the
-			// gateTriggerEnabled gate passes and we can exercise the
+			// checkTriggerEnabled gate passes and we can exercise the
 			// loop-prevention persona check.
 			await seedAgentConfig({ agentType: 'respond-to-review' });
 			await seedTriggerConfig({
