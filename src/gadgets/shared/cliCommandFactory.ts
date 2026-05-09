@@ -341,7 +341,7 @@ function normalizeBoolValue(raw: string): boolean | null {
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: argv-shape taxonomy (--key=value, --key value, bare toggle)
 function massageBooleanFlagValues(
 	argv: readonly string[] | undefined,
-	booleanFlags: ReadonlySet<string>,
+	booleanFlags: ReadonlyMap<string, boolean>,
 	sink: ErrorSink,
 ): string[] | undefined {
 	// Pass through `undefined` so oclif's `parse(Cmd)` (no argv arg) keeps
@@ -357,6 +357,7 @@ function massageBooleanFlagValues(
 			const eqIdx = tok.indexOf('=');
 			const name = tok.slice(2, eqIdx);
 			if (booleanFlags.has(name)) {
+				const allowNo = booleanFlags.get(name) ?? false;
 				const value = tok.slice(eqIdx + 1);
 				const normalized = normalizeBoolValue(value);
 				if (normalized === true) {
@@ -364,7 +365,10 @@ function massageBooleanFlagValues(
 					continue;
 				}
 				if (normalized === false) {
-					result.push(`--no-${name}`);
+					// Only emit --no-<name> when the flag supports negation. For
+					// non-negatable booleans (e.g. `draft`), omitting the flag
+					// produces the same `false` result without the unknown-flag error.
+					if (allowNo) result.push(`--no-${name}`);
 					continue;
 				}
 				emitCliError({
@@ -373,7 +377,9 @@ function massageBooleanFlagValues(
 					message: `Boolean flag --${name} got value '${value}'; accepts true|false|yes|no|1|0`,
 					got: value,
 					expected: 'true|false|yes|no|1|0',
-					hint: `Use --${name} or --no-${name} for the canonical toggle form, or --${name}=true / --${name}=false.`,
+					hint: allowNo
+						? `Use --${name} or --no-${name} for the canonical toggle form, or --${name}=true / --${name}=false.`
+						: `Use --${name} for true, or omit the flag for false.`,
 					stdout: sink.stdout,
 					stderr: sink.stderr,
 					exit: sink.exit,
@@ -385,6 +391,7 @@ function massageBooleanFlagValues(
 		if (tok.startsWith('--') && !tok.includes('=')) {
 			const name = tok.slice(2);
 			if (booleanFlags.has(name) && i + 1 < argv.length) {
+				const allowNo = booleanFlags.get(name) ?? false;
 				const next = argv[i + 1];
 				const normalized = normalizeBoolValue(next);
 				if (normalized === true) {
@@ -393,7 +400,9 @@ function massageBooleanFlagValues(
 					continue;
 				}
 				if (normalized === false) {
-					result.push(`--no-${name}`);
+					// Only emit --no-<name> when the flag supports negation. For
+					// non-negatable booleans, just consume the token — absence = false.
+					if (allowNo) result.push(`--no-${name}`);
 					i++;
 					continue;
 				}
@@ -407,7 +416,9 @@ function massageBooleanFlagValues(
 						message: `Boolean flag --${name} got value '${next}'; accepts true|false|yes|no|1|0`,
 						got: next,
 						expected: 'true|false|yes|no|1|0',
-						hint: `Use --${name} or --no-${name} for the canonical toggle form.`,
+						hint: allowNo
+							? `Use --${name} or --no-${name} for the canonical toggle form.`
+							: `Use --${name} for true, or omit the flag for false.`,
 						stdout: sink.stdout,
 						stderr: sink.stderr,
 						exit: sink.exit,
@@ -422,16 +433,25 @@ function massageBooleanFlagValues(
 }
 
 /**
- * Collect the set of boolean flag names declared by a tool definition (used by
- * the argv preprocessor to know which flags accept the value form).
+ * Collect boolean flag metadata for the argv preprocessor.
+ *
+ * Returns a Map from flag name to whether it supports `--no-<name>` negation
+ * (`allowNo`). The preprocessor uses this to decide:
+ * - `true` value  → always rewrite to `--<name>`
+ * - `false` value → `--no-<name>` only when allowNo is set; otherwise drop the
+ *                   token (absence = false for non-negatable booleans, so this
+ *                   produces the correct oclif parse result without emitting an
+ *                   unknown flag). Fixes `--draft false` on `scm create-pr`.
  */
-function collectBooleanFlagNames(def: ToolDefinition): Set<string> {
-	const names = new Set<string>();
+function collectBooleanFlagNames(def: ToolDefinition): Map<string, boolean> {
+	const flags = new Map<string, boolean>();
 	for (const [name, paramDef] of Object.entries(def.parameters)) {
 		if (paramDef.gadgetOnly) continue;
-		if (paramDef.type === 'boolean') names.add(name);
+		if (paramDef.type === 'boolean') {
+			flags.set(name, paramDef.allowNo ?? false);
+		}
 	}
-	return names;
+	return flags;
 }
 
 /**

@@ -248,6 +248,48 @@ describe('cliCommandFactory — flag generation', () => {
 			// oclif rejects 'true' since it's not in the enum options
 			await expect(cmd.run()).rejects.toThrow();
 		});
+
+		// Regression for reviewer feedback: `scm create-pr` has a `draft` boolean
+		// without `allowNo`. Before the fix, `--draft false` was rewritten to
+		// `--no-draft`, which oclif rejected as an unknown flag. Non-negatable
+		// booleans must accept `false` by simply omitting the flag (absence = false).
+		describe('boolean flags without allowNo (draft-style)', () => {
+			function makeDraftDef() {
+				return makeToolDef({
+					parameters: {
+						draft: {
+							type: 'boolean',
+							describe: 'Create as a draft pull request (default: false)',
+							optional: true,
+						},
+					},
+				});
+			}
+
+			it('--draft false (space-separated) produces draft:undefined (falsy), not unknown-flag error', async () => {
+				const coreFn = vi.fn().mockResolvedValue('ok');
+				const Cmd = createCLICommand(makeDraftDef(), coreFn);
+				const cmd = new Cmd(['--draft', 'false'], makeMockConfig() as never);
+				await cmd.run();
+				expect(coreFn).toHaveBeenCalledWith(expect.not.objectContaining({ draft: true }));
+			});
+
+			it('--draft=false (equals-separated) produces draft:undefined (falsy), not unknown-flag error', async () => {
+				const coreFn = vi.fn().mockResolvedValue('ok');
+				const Cmd = createCLICommand(makeDraftDef(), coreFn);
+				const cmd = new Cmd(['--draft=false'], makeMockConfig() as never);
+				await cmd.run();
+				expect(coreFn).toHaveBeenCalledWith(expect.not.objectContaining({ draft: true }));
+			});
+
+			it('--draft true still works for non-negatable booleans', async () => {
+				const coreFn = vi.fn().mockResolvedValue('ok');
+				const Cmd = createCLICommand(makeDraftDef(), coreFn);
+				const cmd = new Cmd(['--draft', 'true'], makeMockConfig() as never);
+				await cmd.run();
+				expect(coreFn).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
+			});
+		});
 	});
 
 	it('generates enum flags with restricted options', async () => {
