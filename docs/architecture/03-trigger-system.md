@@ -174,7 +174,7 @@ The router preserves structured skips in webhook logs with `Trigger <handler> sk
 
 Handlers that cannot make a final decision yet can return `deferredRecheck: { delayMs, coalesceKey }` with `agentType: null`. The router schedules a coalesced delayed BullMQ job and exits without spawning an agent. GitHub mergeability checks use this path; the worker recognizes re-check jobs via `mergeabilityRecheckAttempt` and captures a Sentry diagnostic if the second pass still cannot resolve state.
 
-Deferred re-check jobs are bare jobs: the router does not embed the original `TriggerResult`, so the worker calls the registry again and evaluates current provider state. Workers do not schedule another re-check after exhaustion.
+The bare re-dispatch on job fire is currently **GitHub-only**: `GitHubRouterAdapter.buildJob()` strips `triggerResult` and sets `mergeabilityRecheckAttempt: 1`, so the GitHub worker re-dispatches through the trigger registry to evaluate fresh provider state. Non-GitHub adapters (Trello, JIRA, Linear, Sentry) embed `triggerResult` in the job regardless of `deferredRecheck`; `resolveTriggerResult()` returns the pre-resolved result directly, skipping registry dispatch. A non-GitHub handler returning `buildDeferredRecheckResult` would therefore schedule a job that reuses the same `agentType: null` result rather than re-evaluating provider state. See `src/triggers/README.md` for the full authoring contract. Workers do not schedule another re-check after exhaustion.
 
 ### Config resolution
 

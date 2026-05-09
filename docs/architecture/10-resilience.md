@@ -80,7 +80,7 @@ The compensation lives at the router queue boundary, not inside individual adapt
 
 ### Deferred re-check exhaustion
 
-Some provider state is eventually consistent and has no follow-up webhook. A trigger can return `TriggerResult.deferredRecheck` with `agentType: null`; the router schedules a coalesced delayed bare job and does not take normal dispatch locks. The worker re-dispatches the bare job through the registry when it fires.
+Some provider state is eventually consistent and has no follow-up webhook. A trigger can return `TriggerResult.deferredRecheck` with `agentType: null`; the router schedules a coalesced delayed bare job and does not take normal dispatch locks. The bare re-dispatch on job fire is currently **GitHub-only**: `GitHubRouterAdapter.buildJob()` strips `triggerResult` and sets `mergeabilityRecheckAttempt: 1`, so the GitHub worker re-dispatches through the registry to get fresh provider state. Non-GitHub adapters (Trello, JIRA, Linear, Sentry) embed `triggerResult` in the job; their workers return the pre-resolved `agentType: null` result directly without re-dispatching through the registry.
 
 GitHub mergeability uses this for `pull_request` events where `mergeable === null`. If the deferred job still gets another deferred result, workers do not schedule a second re-check. The GitHub worker emits a WARN and captures to Sentry with tag `mergeability_recheck_exhausted`, making pathological provider latency visible without creating an infinite retry loop.
 
