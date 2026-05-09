@@ -76,7 +76,12 @@ The router queues `cascade-jobs` and `cascade-dashboard-jobs` with `attempts: 4`
 
 Every failed dispatch path flows through the BullMQ `failed` event and calls `releaseLocksForFailedJob`, releasing the work-item lock, agent-type counter, and recently-dispatched mark. Webhook logs distinguish healthy backpressure (`Awaiting worker slot`) from the wedged-lock canary (`Work item locked (no active dispatch)`).
 
-The compensation lives at the router queue boundary, not inside individual adapters. Any failure before a worker container starts must either enqueue successfully, retry under BullMQ, or reach the failed event so `releaseLocksForFailedJob` can clear the in-memory work-item lock, agent-type counter, and recently-dispatched dedup marker. This is what prevents a transient Docker or Redis failure from wedging a work item for the lock TTL.
+The compensation operates at two distinct boundaries — not a single unified path:
+
+- **Enqueue/schedule failures** (`addJob` or `scheduleCoalescedJob` throws before any BullMQ job exists) — the router catches the error inline, calls `onBlocked()` to clear any pre-checked state, and returns a failure decision reason (`Failed to enqueue job to Redis` or `Failed to schedule coalesced job to Redis`). Lock protection here relies on the success-first ordering contract: `markImmediateDispatchEnqueued` and `markCoalescedDispatchEnqueued` are called only after a successful enqueue, so a Redis failure leaves no lock marked. There is no BullMQ job and therefore no `failed` event and no `releaseLocksForFailedJob` on this path. (Deferred re-check schedule failures are a special case: the router does not call `onBlocked` and still returns the scheduled decision reason; see the router outcomes table in `docs/architecture/02-webhook-pipeline.md`.)
+- **Post-enqueue dispatch failures** (Docker socket errors, registry pull failures, container-name collisions, slot-wait timeouts) — a job already exists in BullMQ and locks are already marked. BullMQ retries under `attempts: 4` + exponential backoff. On exhaustion, `worker.on('failed')` calls `releaseLocksForFailedJob`, clearing the in-memory work-item lock, agent-type counter, and recently-dispatched dedup marker.
+
+This split prevents both classes of failure from wedging a work item for the lock TTL: enqueue/schedule failures never mark a lock in the first place; post-enqueue failures eventually flow through `releaseLocksForFailedJob` compensation.
 
 ### Deferred re-check exhaustion
 
