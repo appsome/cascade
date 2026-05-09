@@ -45,6 +45,8 @@ Configurable `max_concurrency` per agent type per project (set via `agent_config
 
 `projects.max_in_flight_items` — project-level cap on total concurrent agent runs. Checked during trigger dispatch.
 
+This gate is PM-provider scoped. PM router adapters enter `withPMScopeForDispatch(fullProject, dispatch)` before calling `TriggerRegistry.dispatch()` so shared trigger gates can call `getPMProvider()` and count active PM work items. If the scope is missing, the gate fails closed: it blocks dispatch, logs at error level, and captures to Sentry under `pipeline_capacity_gate_no_pm_provider`. This protects the PM-source path where `maxInFlightItems` matters most.
+
 ### BullMQ concurrency
 
 The router's worker manager limits how many Docker containers run in parallel via `routerConfig.maxWorkers`.
@@ -73,6 +75,23 @@ The router queues `cascade-jobs` and `cascade-dashboard-jobs` with `attempts: 4`
 - Terminal: validation errors (`TypeError`, `ZodError`) and image-not-found after fallback exhaustion.
 
 Every failed dispatch path flows through the BullMQ `failed` event and calls `releaseLocksForFailedJob`, releasing the work-item lock, agent-type counter, and recently-dispatched mark. Webhook logs distinguish healthy backpressure (`Awaiting worker slot`) from the wedged-lock canary (`Work item locked (no active dispatch)`).
+
+The compensation lives at the router queue boundary, not inside individual adapters. Any failure before a worker container starts must either enqueue successfully, retry under BullMQ, or reach the failed event so `releaseLocksForFailedJob` can clear the in-memory work-item lock, agent-type counter, and recently-dispatched dedup marker. This is what prevents a transient Docker or Redis failure from wedging a work item for the lock TTL.
+
+### Deferred re-check exhaustion
+
+Some provider state is eventually consistent and has no follow-up webhook. A trigger can return `TriggerResult.deferredRecheck` with `agentType: null`; the router schedules a coalesced delayed bare job and does not take normal dispatch locks. The worker re-dispatches the bare job through the registry when it fires.
+
+GitHub mergeability uses this for `pull_request` events where `mergeable === null`. If the deferred job still gets another deferred result, workers do not schedule a second re-check. The GitHub worker emits a WARN and captures to Sentry with tag `mergeability_recheck_exhausted`, making pathological provider latency visible without creating an infinite retry loop.
+
+### Wedged-lock canary
+
+The router classifies work-item lock rejections in `src/router/lock-state-classifier.ts`.
+
+- `Awaiting worker slot: ...` is healthy backpressure: the lock correlates with queued, waiting, or running dispatch state.
+- `Work item locked (no active dispatch): ...` is a canary: the classifier found a lock but no matching active dispatch. This captures to Sentry under `wedged_lock_canary`.
+
+The canary should not appear during normal operation. Its presence means a path acquired a lock without completing registration or compensation.
 
 ### LLM/API retries
 
