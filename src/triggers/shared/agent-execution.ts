@@ -20,9 +20,9 @@ import { parseRepoFullName } from '../../utils/repo.js';
 import type { TriggerResult } from '../types.js';
 import {
 	checkPreRunBudget,
-	prepareAgentLifecycle,
-	runPostAgentLifecycle,
-	validateAgentExecution,
+	prepareAgentExecutionLifecycle,
+	runPostAgentExecutionLifecycle,
+	validateAgentExecutionLifecycle,
 } from './agent-execution-lifecycle.js';
 import type { AgentExecutionConfig, AgentExecutionContext } from './agent-execution-types.js';
 import {
@@ -259,6 +259,17 @@ export async function runAgentExecutionPipeline(
 		});
 	}
 
+	const canExecute = await validateAgentExecutionLifecycle({
+		result,
+		project,
+		agentType,
+		lifecycle,
+		executionConfig,
+	});
+	if (!canExecute) {
+		return;
+	}
+
 	const { onSuccess, onFailure, logLabel = 'Agent' } = executionConfig;
 
 	// Re-resolve workItemId at run time. The trigger handler (e.g. PROpenedTrigger)
@@ -295,11 +306,6 @@ export async function runAgentExecutionPipeline(
 		agentInput,
 	};
 
-	// Pre-flight integration validation
-	if (!(await validateAgentExecution(result, executionContext))) {
-		return;
-	}
-
 	let remainingBudgetUsd: number | undefined;
 	if (executionContext.workItemId) {
 		const budgetResult = await checkPreRunBudget(
@@ -312,8 +318,7 @@ export async function runAgentExecutionPipeline(
 	}
 
 	await persistPreRunWorkItems(result, project, workItemId);
-
-	await prepareAgentLifecycle(executionContext);
+	await prepareAgentExecutionLifecycle(executionContext);
 
 	const agentResult = await runAgent(executionContext.agentType, {
 		...executionContext.agentInput,
@@ -335,7 +340,17 @@ export async function runAgentExecutionPipeline(
 	// Post agent summary to PM work item (cross-source: works for all trigger types)
 	await postAgentSummaryToPM(agentType, agentResult, workItemId, project.id, result.prNumber);
 
-	await runPostAgentLifecycle(executionContext, agentResult);
+	if (workItemId) {
+		await runPostAgentExecutionLifecycle(
+			workItemId,
+			agentType,
+			agentResult,
+			project,
+			lifecycle,
+			lifecycleHooks,
+			executionConfig,
+		);
+	}
 
 	logger.info(`${logLabel} completed`, {
 		agentType,

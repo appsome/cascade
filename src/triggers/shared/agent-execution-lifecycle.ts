@@ -1,3 +1,5 @@
+import type { LifecycleHooks } from '../../agents/definitions/schema.js';
+import type { PMLifecycleManager } from '../../pm/index.js';
 import type { AgentResult, ProjectConfig } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
 import type { TriggerResult } from '../types.js';
@@ -10,119 +12,21 @@ import {
 	validateIntegrations,
 } from './integration-validation.js';
 
-/**
- * Run integration validation before agent execution and notify the source when
- * validation fails.
- */
-export async function validateAgentExecution(
-	result: TriggerResult,
-	context: Pick<AgentExecutionContext, 'agentType' | 'project' | 'lifecycle' | 'executionConfig'>,
-): Promise<boolean> {
-	const validation = await validateIntegrations(
-		context.project.id,
-		context.agentType,
-		context.project,
-	);
-	if (validation.valid) return true;
-
-	await notifyValidationFailure(
-		result,
-		validation,
-		context.lifecycle,
-		context.executionConfig,
-		context.agentType,
-		context.project.id,
-	);
-	return false;
+interface ValidationLifecycleParams {
+	result: TriggerResult;
+	project: ProjectConfig;
+	executionConfig: AgentExecutionConfig;
+	agentType: string;
+	lifecycle: PMLifecycleManager;
 }
 
 /**
- * Check the budget before running an agent.
- * Returns the remaining budget if not exceeded, or null to signal the caller
- * should abort (budget exceeded and lifecycle notified).
- */
-export async function checkPreRunBudget(
-	workItemId: string,
-	project: ProjectConfig,
-	lifecycle: AgentExecutionContext['lifecycle'],
-): Promise<{ remainingBudgetUsd: number | undefined; abort: boolean }> {
-	const budgetCheck = await checkBudgetExceeded(workItemId, project);
-	if (budgetCheck?.exceeded) {
-		logger.warn('Budget exceeded, agent not started', {
-			workItemId,
-			currentCost: budgetCheck.currentCost,
-			budget: budgetCheck.budget,
-		});
-		await lifecycle.handleBudgetExceeded(workItemId, budgetCheck.currentCost, budgetCheck.budget);
-		return { remainingBudgetUsd: undefined, abort: true };
-	}
-	return { remainingBudgetUsd: budgetCheck?.remaining, abort: false };
-}
-
-/**
- * Prepare the PM lifecycle state before running an agent.
- */
-export async function prepareAgentLifecycle(context: AgentExecutionContext): Promise<void> {
-	if (context.workItemId && !context.executionConfig.skipPrepareForAgent) {
-		await context.lifecycle.prepareForAgent(context.workItemId, context.lifecycleHooks);
-	}
-}
-
-/**
- * Run post-agent lifecycle steps: artifact handling, budget warning, cleanup,
- * success/failure.
- */
-export async function runPostAgentLifecycle(
-	context: AgentExecutionContext,
-	agentResult: AgentResult,
-): Promise<void> {
-	const workItemId = context.workItemId;
-	if (!workItemId) return;
-
-	const {
-		skipPrepareForAgent = false,
-		skipHandleFailure = false,
-		handleSuccessOnlyForAgentType,
-	} = context.executionConfig;
-
-	await handleAgentResultArtifacts(workItemId, context.agentType, agentResult, context.project);
-
-	const postBudgetCheck = await checkBudgetExceeded(workItemId, context.project);
-	if (postBudgetCheck?.exceeded) {
-		await context.lifecycle.handleBudgetWarning(
-			workItemId,
-			postBudgetCheck.currentCost,
-			postBudgetCheck.budget,
-		);
-	}
-
-	if (!skipPrepareForAgent) {
-		await context.lifecycle.cleanupProcessing(workItemId);
-	}
-
-	const shouldCallHandleSuccess =
-		agentResult.success &&
-		(!handleSuccessOnlyForAgentType || context.agentType === handleSuccessOnlyForAgentType);
-
-	if (shouldCallHandleSuccess) {
-		await context.lifecycle.handleSuccess(
-			workItemId,
-			context.lifecycleHooks,
-			agentResult.prUrl,
-			agentResult.progressCommentId,
-		);
-	} else if (!agentResult.success && !skipHandleFailure) {
-		await context.lifecycle.handleFailure(workItemId, agentResult.error);
-	}
-}
-
-/**
- * Notify PM and GitHub when integration validation fails before the agent runs.
+ * Notify PM and source-specific callbacks when integration validation fails before the agent runs.
  */
 async function notifyValidationFailure(
 	result: TriggerResult,
 	validation: ValidationResult,
-	lifecycle: AgentExecutionContext['lifecycle'],
+	lifecycle: PMLifecycleManager,
 	executionConfig: AgentExecutionConfig,
 	agentType: string,
 	projectId: string,
@@ -143,5 +47,113 @@ async function notifyValidationFailure(
 	// Call onFailure callback (for GitHub PR updates)
 	if (executionConfig.onFailure) {
 		await executionConfig.onFailure(result, { success: false, output: '', error: errorMessage });
+	}
+}
+
+/**
+ * Run pre-flight integration validation and apply the existing failure notification semantics.
+ * Returns false when execution should stop before preparing or running the agent.
+ */
+export async function validateAgentExecutionLifecycle({
+	result,
+	project,
+	executionConfig,
+	agentType,
+	lifecycle,
+}: ValidationLifecycleParams): Promise<boolean> {
+	const validation = await validateIntegrations(project.id, agentType, project);
+	if (validation.valid) return true;
+
+	await notifyValidationFailure(
+		result,
+		validation,
+		lifecycle,
+		executionConfig,
+		agentType,
+		project.id,
+	);
+	return false;
+}
+
+/**
+ * Check the budget before running an agent.
+ * Returns the remaining budget if not exceeded, or abort=true when the agent
+ * must not start and the lifecycle manager has been notified.
+ */
+export async function checkPreRunBudget(
+	workItemId: string,
+	project: ProjectConfig,
+	lifecycle: PMLifecycleManager,
+): Promise<{ remainingBudgetUsd: number | undefined; abort: boolean }> {
+	const budgetCheck = await checkBudgetExceeded(workItemId, project);
+	if (budgetCheck?.exceeded) {
+		logger.warn('Budget exceeded, agent not started', {
+			workItemId,
+			currentCost: budgetCheck.currentCost,
+			budget: budgetCheck.budget,
+		});
+		await lifecycle.handleBudgetExceeded(workItemId, budgetCheck.currentCost, budgetCheck.budget);
+		return { remainingBudgetUsd: undefined, abort: true };
+	}
+	return { remainingBudgetUsd: budgetCheck?.remaining, abort: false };
+}
+
+/**
+ * Run pre-agent lifecycle steps owned by the PM lifecycle manager.
+ */
+export async function prepareAgentExecutionLifecycle(
+	context: AgentExecutionContext,
+): Promise<void> {
+	if (context.workItemId && !context.executionConfig.skipPrepareForAgent) {
+		await context.lifecycle.prepareForAgent(context.workItemId, context.lifecycleHooks);
+	}
+}
+
+/**
+ * Run post-agent lifecycle steps: artifact handling, budget warning, cleanup, success/failure.
+ */
+export async function runPostAgentExecutionLifecycle(
+	workItemId: string,
+	agentType: string,
+	agentResult: AgentResult,
+	project: ProjectConfig,
+	lifecycle: PMLifecycleManager,
+	lifecycleHooks: LifecycleHooks,
+	executionConfig: AgentExecutionConfig,
+): Promise<void> {
+	const {
+		skipPrepareForAgent = false,
+		skipHandleFailure = false,
+		handleSuccessOnlyForAgentType,
+	} = executionConfig;
+
+	await handleAgentResultArtifacts(workItemId, agentType, agentResult, project);
+
+	const postBudgetCheck = await checkBudgetExceeded(workItemId, project);
+	if (postBudgetCheck?.exceeded) {
+		await lifecycle.handleBudgetWarning(
+			workItemId,
+			postBudgetCheck.currentCost,
+			postBudgetCheck.budget,
+		);
+	}
+
+	if (!skipPrepareForAgent) {
+		await lifecycle.cleanupProcessing(workItemId);
+	}
+
+	const shouldCallHandleSuccess =
+		agentResult.success &&
+		(!handleSuccessOnlyForAgentType || agentType === handleSuccessOnlyForAgentType);
+
+	if (shouldCallHandleSuccess) {
+		await lifecycle.handleSuccess(
+			workItemId,
+			lifecycleHooks,
+			agentResult.prUrl,
+			agentResult.progressCommentId,
+		);
+	} else if (!agentResult.success && !skipHandleFailure) {
+		await lifecycle.handleFailure(workItemId, agentResult.error);
 	}
 }
