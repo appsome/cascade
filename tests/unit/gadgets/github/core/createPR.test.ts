@@ -675,6 +675,68 @@ describe('captured hook output preservation (spec 013)', () => {
 			expect(result.commitOutput).toMatch(/bytes truncated from commit/i);
 		});
 
+		// Reviewer feedback (PR #1292): failing hooks embed the full captured
+		// output in err.message, which createCLICommand serialises into the JSON
+		// error envelope. A pre-push hook that fails after printing 97 KB of test
+		// output still hits the parser/retry bloat path unless the error message
+		// itself is truncated. Verify both commit and push failure paths.
+		it('truncates error message when pre-push hook fails with large output', async () => {
+			const huge = 'E'.repeat(50 * 1024); // 50 KB of hook failure output
+			mockRunCommand.mockImplementation(async (_cmd, args) => {
+				if (args?.[0] === 'remote') return { stdout: HTTPS_URL, stderr: '', exitCode: 0 };
+				if (args?.[0] === 'push') return { stdout: huge, stderr: 'hook failed', exitCode: 1 };
+				return { stdout: '', stderr: '', exitCode: 0 };
+			});
+
+			let thrownError: Error | undefined;
+			try {
+				await createPR({
+					title: 'Test',
+					body: 'Body',
+					head: 'feat',
+					base: 'main',
+					commit: false,
+					push: true,
+				});
+			} catch (e) {
+				thrownError = e as Error;
+			}
+			expect(thrownError).toBeDefined();
+			expect(thrownError?.message).toMatch(/PUSH FAILED/);
+			// Error message must be capped — same 4 KB limit as the success path.
+			expect((thrownError?.message ?? '').length).toBeLessThan(10 * 1024);
+			expect(thrownError?.message).toMatch(/bytes truncated from push/i);
+		});
+
+		it('truncates error message when pre-commit hook fails with large output', async () => {
+			const huge = 'F'.repeat(50 * 1024); // 50 KB of hook failure output
+			mockRunCommand.mockImplementation(async (_cmd, args) => {
+				if (args?.[0] === 'remote') return { stdout: HTTPS_URL, stderr: '', exitCode: 0 };
+				if (args?.[0] === 'status') return { stdout: 'M foo.ts\n', stderr: '', exitCode: 0 };
+				if (args?.[0] === 'commit')
+					return { stdout: huge, stderr: 'pre-commit hook failed', exitCode: 1 };
+				return { stdout: '', stderr: '', exitCode: 0 };
+			});
+
+			let thrownError: Error | undefined;
+			try {
+				await createPR({
+					title: 'Test',
+					body: 'Body',
+					head: 'feat',
+					base: 'main',
+					commit: true,
+					push: false,
+				});
+			} catch (e) {
+				thrownError = e as Error;
+			}
+			expect(thrownError).toBeDefined();
+			expect(thrownError?.message).toMatch(/COMMIT FAILED/);
+			expect((thrownError?.message ?? '').length).toBeLessThan(10 * 1024);
+			expect(thrownError?.message).toMatch(/bytes truncated from commit/i);
+		});
+
 		it('leaves small hook output untouched (no truncation marker)', async () => {
 			mockRunCommand.mockImplementation(async (_cmd, args) => {
 				if (args?.[0] === 'remote') return { stdout: HTTPS_URL, stderr: '', exitCode: 0 };

@@ -108,8 +108,15 @@ async function stageAndCommit(commitMessage: string): Promise<string> {
 	);
 	if (commitResult.exitCode !== 0) {
 		const output = [commitResult.stdout, commitResult.stderr].filter(Boolean).join('\n').trim();
+		// Truncate before embedding in the error message — a failing pre-commit
+		// hook can emit the same volume of test output as a success (97 KB in the
+		// cascade prod incident). `createCLICommand` serialises err.message into
+		// the JSON error envelope, so unbounded output here hits the same
+		// Codex parser/retry bloat path as the success case. Full output stays
+		// in the worker engine log (LLMIST_LOG_FILE) for operator visibility.
+		const truncated = truncateHookOutput(output, 'commit') ?? output;
 		throw new Error(
-			`COMMIT FAILED (pre-commit hooks may have failed)\n\n--- OUTPUT ---\n${output}`,
+			`COMMIT FAILED (pre-commit hooks may have failed)\n\n--- OUTPUT ---\n${truncated}`,
 		);
 	}
 	return [commitResult.stdout, commitResult.stderr].filter(Boolean).join('\n').trim();
@@ -129,8 +136,13 @@ async function pushBranch(branch: string): Promise<string> {
 	);
 	if (pushResult.exitCode !== 0) {
 		const output = [pushResult.stdout, pushResult.stderr].filter(Boolean).join('\n').trim();
+		// Truncate before embedding in the error message — same rationale as the
+		// commit failure path above: a failing pre-push hook can emit 97+ KB of
+		// test output, and err.message gets serialised into the JSON error
+		// envelope by createCLICommand. Full output stays in the engine log.
+		const truncated = truncateHookOutput(output, 'push') ?? output;
 		throw new Error(
-			`PUSH FAILED for branch '${branch}' (pre-push hooks may have failed)\n\n--- OUTPUT ---\n${output}`,
+			`PUSH FAILED for branch '${branch}' (pre-push hooks may have failed)\n\n--- OUTPUT ---\n${truncated}`,
 		);
 	}
 	return [pushResult.stdout, pushResult.stderr].filter(Boolean).join('\n').trim();
