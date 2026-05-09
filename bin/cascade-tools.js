@@ -24,6 +24,31 @@ pjson.oclif = {
 		globPatterns: ['**/*.js', '!**/dashboard/**', '!**/_shared/**', '!base.js', '!bootstrap.js'],
 	},
 	topicSeparator: ' ',
+	// Explicit topic summaries. Without this block oclif borrows each topic's
+	// description from its FIRST command (see node_modules/@oclif/core
+	// /lib/config/config.js — the line `this._topics.set(name, { description:
+	// c.summary || c.description, name })`). That made bare `cascade-tools
+	// --help` show "pm  Add a checklist with items to a work item..." — a
+	// specific gadget's description leaking into the topic line. Agents reading
+	// bare --help to map the surface got a misleading frame (saw in 2026-05-09
+	// prod corpus). One truthful sentence per topic.
+	topics: {
+		pm: {
+			description:
+				'Read and write PM work items, comments, and checklists across Trello/JIRA/Linear.',
+		},
+		scm: {
+			description: 'Interact with GitHub PRs: create, review, comment, fetch diffs and CI logs.',
+		},
+		alerting: { description: 'Inspect Sentry alerting issues and events.' },
+		session: { description: 'End the agent session. Exclusive terminal call.' },
+		github: {
+			description: 'Direct GitHub provider commands. Prefer the provider-agnostic `scm` topic.',
+		},
+		trello: {
+			description: 'Direct Trello provider commands. Prefer the provider-agnostic `pm` topic.',
+		},
+	},
 };
 
 const config = await Config.load({ root, pjson });
