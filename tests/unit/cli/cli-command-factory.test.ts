@@ -711,4 +711,30 @@ describe('cliCommandFactory — parse-error envelope wrapping (spec 014, #4)', (
 		expect(output.success).toBe(false);
 		expect(output.error.type).toBe('unknown-flag');
 	});
+
+	// Pin oclif strict mode on the factory-generated commands. CredentialScopedCommand
+	// now sets `static override strict = true` explicitly; without that, future oclif
+	// behavior drift could let unknown flags slip past parse validation and reach the
+	// gadget body as positional args — bypassing the spec-014 unknown-flag envelope.
+	it('rejects unknown flags on a factory-generated command (strict mode pinned)', async () => {
+		const coreFn = vi.fn().mockResolvedValue('ok');
+		const def = makeToolDef({
+			name: 'Finish',
+			parameters: {
+				comment: { type: 'string', describe: 'A brief summary', required: true },
+			},
+		});
+		const Cmd = createCLICommand(def, coreFn);
+		const cmd = new Cmd(['--unknown-flag', 'foo', '--comment', 'x'], makeMockConfig() as never);
+		const logSpy = vi.spyOn(cmd, 'log');
+		await expect(cmd.run()).rejects.toThrow();
+		expect(coreFn).not.toHaveBeenCalled();
+		const output = JSON.parse(logSpy.mock.calls[0][0] as string) as {
+			success: boolean;
+			error: { type: string; flag?: string };
+		};
+		expect(output.success).toBe(false);
+		expect(output.error.type).toBe('unknown-flag');
+		expect(output.error.flag).toBe('--unknown-flag');
+	});
 });
