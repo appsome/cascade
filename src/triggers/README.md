@@ -120,7 +120,7 @@ Prefer the shared builders instead of hand-assembling `TriggerResult` objects:
 | `buildReviewResult`, `buildRespondToCiResult`, `buildResolveConflictsResult` | GitHub-specific agent input shapes |
 | `buildNoAgentResult` | Matched trigger completed a side effect but should not spawn an agent |
 | `buildSkipResult` / `skip()` | Matched handler deliberately self-skipped and should stop registry dispatch with a structured reason |
-| `buildDeferredRecheckResult` | Router should schedule a bare delayed job and re-dispatch later |
+| `buildDeferredRecheckResult` | **GitHub-only** — Router schedules a bare delayed job; the GitHub worker re-dispatches through the registry for fresh provider state. Non-GitHub adapters embed `triggerResult` in the job, so their workers return the same `agentType: null` result without re-dispatching. See the **Deferred re-check** section below. |
 
 ### `null` vs structured skip
 
