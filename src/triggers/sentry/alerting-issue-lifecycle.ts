@@ -29,6 +29,7 @@ import { getSentryIntegrationConfig } from '../../sentry/integration.js';
 import type { SentryAugmentedPayload, SentryIssuePayload } from '../../sentry/types.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
+import { TRIGGER_EVENTS } from '../shared/events.js';
 import { checkTriggerEnabledWithParams } from '../shared/trigger-check.js';
 
 export class SentryIssueLifecycleTrigger implements TriggerHandler {
@@ -50,7 +51,7 @@ export class SentryIssueLifecycleTrigger implements TriggerHandler {
 		const triggerConfig = await checkTriggerEnabledWithParams(
 			ctx.project.id,
 			'alerting',
-			'alerting:issue-lifecycle',
+			TRIGGER_EVENTS.ALERTING.ISSUE_LIFECYCLE,
 			this.name,
 		);
 		if (!triggerConfig.enabled) {
@@ -106,7 +107,7 @@ export class SentryIssueLifecycleTrigger implements TriggerHandler {
 		return {
 			agentType: 'alerting',
 			agentInput: {
-				triggerEvent: 'alerting:issue-lifecycle',
+				triggerEvent: TRIGGER_EVENTS.ALERTING.ISSUE_LIFECYCLE,
 				// workItemId is intentionally absent — the worker (processSentryWebhook)
 				// materialises the PM card via materializeAlertWorkItem('sentry-issue', ...)
 				// and sets workItemId before running the agent.

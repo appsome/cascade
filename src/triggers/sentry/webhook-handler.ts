@@ -27,6 +27,7 @@ import type { TriggerRegistry } from '../registry.js';
 import { runAgentExecutionPipeline } from '../shared/agent-execution.js';
 import { withAgentTypeConcurrency } from '../shared/concurrency.js';
 import { withPMScope } from '../shared/credential-scope.js';
+import { TRIGGER_EVENTS } from '../shared/events.js';
 import { resolveTriggerResult } from '../shared/trigger-resolution.js';
 
 /**
@@ -65,7 +66,7 @@ async function materializeSentryAlertWorkItem(
 	const augmented = payload as SentryAugmentedPayload;
 	try {
 		let workItemId: string;
-		if (triggerEvent === 'alerting:issue-lifecycle' && alertIssueId) {
+		if (triggerEvent === TRIGGER_EVENTS.ALERTING.ISSUE_LIFECYCLE && alertIssueId) {
 			// Sentry-Hook-Resource: issue (Internal Integration default surface).
 			// Distinct AlertSource ('sentry-issue') from event_alert ('sentry') so the
 			// partial-unique (project_id, external_source, external_id) index doesn't
