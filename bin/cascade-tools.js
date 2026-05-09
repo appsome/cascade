@@ -65,12 +65,6 @@ pjson.oclif = {
 		},
 		alerting: { description: 'Inspect Sentry alerting issues and events.' },
 		session: { description: 'End the agent session. Exclusive terminal call.' },
-		github: {
-			description: 'Direct GitHub provider commands. Prefer the provider-agnostic `scm` topic.',
-		},
-		trello: {
-			description: 'Direct Trello provider commands. Prefer the provider-agnostic `pm` topic.',
-		},
 	},
 };
 

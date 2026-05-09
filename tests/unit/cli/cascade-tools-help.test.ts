@@ -56,8 +56,6 @@ describe('cascade-tools --help — topic summaries', () => {
 		expect(stdout).not.toMatch(/scm\s+Create a GitHub pull request\./);
 		expect(stdout).not.toMatch(/alerting\s+Retrieve full details for an alerting event/);
 		expect(stdout).not.toMatch(/session\s+Call this gadget when you have completed all tasks/);
-		expect(stdout).not.toMatch(/github\s+Create a GitHub pull request with optional commit/);
-		expect(stdout).not.toMatch(/trello\s+Add a checklist with items to a Trello card/);
 
 		// Must contain canonical topic summaries for every discovered topic.
 		expect(stdout).toContain('TOPICS');
@@ -65,8 +63,6 @@ describe('cascade-tools --help — topic summaries', () => {
 		expect(stdout).toMatch(/scm\s+Interact with GitHub PRs/i);
 		expect(stdout).toMatch(/alerting\s+Inspect Sentry alerting/i);
 		expect(stdout).toMatch(/session\s+End the agent session/i);
-		expect(stdout).toMatch(/github\s+Direct GitHub provider commands/i);
-		expect(stdout).toMatch(/trello\s+Direct Trello provider commands/i);
 	});
 
 	it.skipIf(!built)('per-gadget --help is unaffected (topic-summary fix is additive)', () => {
