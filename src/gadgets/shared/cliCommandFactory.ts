@@ -15,7 +15,7 @@ import { Flags } from '@oclif/core';
 import { distance } from 'fastest-levenshtein';
 
 import { CredentialScopedCommand, resolveOwnerRepo } from '../../cli/base.js';
-import { emitCliError } from './errorEnvelope.js';
+import { type EmitCliErrorOptions, emitCliError } from './errorEnvelope.js';
 import type {
 	CLIAutoResolved,
 	FileInputAlternative,
@@ -244,6 +244,193 @@ function isNonexistentFlagError(err: unknown): err is { flags: string[]; message
 		errName === 'NonExistentFlagsError' ||
 		ctorName === 'NonExistentFlagsError';
 	return looksLikeCLIParse && Array.isArray(e.flags);
+}
+
+/**
+ * Spec 014, prod regression 2026-05-09: oclif's parse-time errors (missing
+ * required, enum mismatch, unexpected positional from a boolean-value miss)
+ * historically threw past the existing unknown-flag catch with `exit code 2`
+ * and empty stdout — bypassing the structured envelope contract. Classify the
+ * error here so every parse failure reaches the agent through the same shape.
+ *
+ * Returns a ready-to-emit envelope (omitting only the sink fields). Returns
+ * `null` when the error doesn't match any oclif parse-time shape — caller
+ * re-throws so unexpected exceptions still surface.
+ */
+function classifyParseError(
+	err: unknown,
+): Omit<EmitCliErrorOptions, 'stdout' | 'stderr' | 'exit'> | null {
+	if (!err || typeof err !== 'object') return null;
+	const e = err as { name?: string; constructor?: { name?: string }; message?: string };
+	const ctorName = e.constructor?.name ?? '';
+	const message = typeof e.message === 'string' ? e.message : '';
+
+	// FailedFlagValidationError → "Missing required flag <name>"
+	if (ctorName === 'FailedFlagValidationError') {
+		const m = message.match(/Missing required flag\s+([\w-]+)/);
+		if (m) {
+			return {
+				type: 'missing-required',
+				flag: m[1],
+				message: `Missing required flag --${m[1]}`,
+				hint: `pass --${m[1]} <value> (see --help for the full signature)`,
+			};
+		}
+	}
+
+	// FlagInvalidOptionError → "Expected --<flag>=<value> to be one of: <opts>"
+	if (ctorName === 'FlagInvalidOptionError') {
+		const m = message.match(/Expected --([\w-]+)=(\S+) to be one of:\s+(.+?)(?:\n|$)/);
+		if (m) {
+			return {
+				type: 'enum-mismatch',
+				flag: m[1],
+				got: m[2],
+				expected: m[3].trim(),
+				message: `Flag --${m[1]} got '${m[2]}'; expected one of: ${m[3].trim()}`,
+			};
+		}
+	}
+
+	// UnexpectedArgsError → fallback for boolean-value-form misses that escape
+	// the preprocessor (e.g. boolean toggle followed by a non-flag token we
+	// chose not to consume because it didn't look bool-shaped).
+	if (ctorName === 'UnexpectedArgsError') {
+		const m = message.match(/Unexpected argument:\s+(.+?)(?:\n|$)/);
+		if (m) {
+			return {
+				type: 'flag-parse',
+				got: m[1].trim(),
+				message,
+			};
+		}
+	}
+
+	// Generic CLIParseError fallback (rare).
+	if (ctorName.endsWith('Error') && /flag|argument|parse/i.test(message)) {
+		return { type: 'flag-parse', message };
+	}
+	return null;
+}
+
+/**
+ * Recognised string forms accepted as a value for boolean flags. Codex agents
+ * reach for `--includeComments true` (the dominant 2026-05-09 prod failure)
+ * even when the synopsis says `--[no-]includeComments`; widen the parser so
+ * both shapes work, then keep oclif's strict toggle semantics for everything
+ * else. Returns `true` / `false` for recognised values, `null` otherwise so
+ * the caller can treat the original token as a non-bool value.
+ */
+function normalizeBoolValue(raw: string): boolean | null {
+	const lc = raw.toLowerCase();
+	if (lc === 'true' || lc === 'yes' || lc === '1') return true;
+	if (lc === 'false' || lc === 'no' || lc === '0') return false;
+	return null;
+}
+
+/**
+ * Pre-process argv so boolean flags accept the natural value form. Each
+ * `--key true|false|...` (space- or equals-separated) is rewritten to oclif's
+ * canonical toggle (`--key` or `--no-key`); malformed values surface as a
+ * structured `flag-parse` envelope before oclif sees the argv.
+ *
+ * The preprocessor never consumes a token that LOOKS like another flag
+ * (starts with `--`) — that token belongs to a different flag, not to the
+ * preceding boolean. Bare-toggle invocations stay untouched.
+ */
+function massageBooleanFlagValues(
+	argv: readonly string[] | undefined,
+	booleanFlags: ReadonlySet<string>,
+	sink: ErrorSink,
+): string[] | undefined {
+	// Pass through `undefined` so oclif's `parse(Cmd)` (no argv arg) keeps
+	// working — some tests construct commands without seeded argv.
+	if (argv === undefined) return undefined;
+	if (booleanFlags.size === 0) return [...argv];
+	const result: string[] = [];
+	for (let i = 0; i < argv.length; i++) {
+		const tok = argv[i];
+
+		// --flag=value form
+		if (tok.startsWith('--') && tok.includes('=')) {
+			const eqIdx = tok.indexOf('=');
+			const name = tok.slice(2, eqIdx);
+			if (booleanFlags.has(name)) {
+				const value = tok.slice(eqIdx + 1);
+				const normalized = normalizeBoolValue(value);
+				if (normalized === true) {
+					result.push(`--${name}`);
+					continue;
+				}
+				if (normalized === false) {
+					result.push(`--no-${name}`);
+					continue;
+				}
+				emitCliError({
+					type: 'flag-parse',
+					flag: name,
+					message: `Boolean flag --${name} got value '${value}'; accepts true|false|yes|no|1|0`,
+					got: value,
+					expected: 'true|false|yes|no|1|0',
+					hint: `Use --${name} or --no-${name} for the canonical toggle form, or --${name}=true / --${name}=false.`,
+					stdout: sink.stdout,
+					stderr: sink.stderr,
+					exit: sink.exit,
+				});
+			}
+		}
+
+		// --flag <value> form
+		if (tok.startsWith('--') && !tok.includes('=')) {
+			const name = tok.slice(2);
+			if (booleanFlags.has(name) && i + 1 < argv.length) {
+				const next = argv[i + 1];
+				const normalized = normalizeBoolValue(next);
+				if (normalized === true) {
+					result.push(`--${name}`);
+					i++;
+					continue;
+				}
+				if (normalized === false) {
+					result.push(`--no-${name}`);
+					i++;
+					continue;
+				}
+				// Next token is something else. If it doesn't start with `--`, the
+				// agent meant it as a value to this boolean — surface a precise
+				// envelope here so we don't bottom out as `Unexpected argument`.
+				if (!next.startsWith('--')) {
+					emitCliError({
+						type: 'flag-parse',
+						flag: name,
+						message: `Boolean flag --${name} got value '${next}'; accepts true|false|yes|no|1|0`,
+						got: next,
+						expected: 'true|false|yes|no|1|0',
+						hint: `Use --${name} or --no-${name} for the canonical toggle form.`,
+						stdout: sink.stdout,
+						stderr: sink.stderr,
+						exit: sink.exit,
+					});
+				}
+				// next is another flag — leave the bare toggle as-is.
+			}
+		}
+		result.push(tok);
+	}
+	return result;
+}
+
+/**
+ * Collect the set of boolean flag names declared by a tool definition (used by
+ * the argv preprocessor to know which flags accept the value form).
+ */
+function collectBooleanFlagNames(def: ToolDefinition): Set<string> {
+	const names = new Set<string>();
+	for (const [name, paramDef] of Object.entries(def.parameters)) {
+		if (paramDef.gadgetOnly) continue;
+		if (paramDef.type === 'boolean') names.add(name);
+	}
+	return names;
 }
 
 /**
@@ -621,6 +808,7 @@ export function createCLICommand(
 
 	const commandPrefix = deriveCommandPrefix(def.name);
 	const staticExamples = buildOclifExamples(def, commandPrefix);
+	const booleanFlagNames = collectBooleanFlagNames(def);
 
 	class FactoryCommand extends CredentialScopedCommand {
 		static override description = def.description;
@@ -632,9 +820,15 @@ export function createCLICommand(
 			// log/exit — lets tests spy on instance.log and instance.exit.
 			const sink = buildSink(this);
 
+			// Pre-process argv so boolean flags accept the natural value form
+			// (`--key true|false|yes|no|1|0`). Reshapes to oclif's canonical
+			// toggle (`--key` / `--no-key`) before parsing; emits a structured
+			// flag-parse envelope inline for malformed bool values.
+			const massagedArgv = massageBooleanFlagValues(this.argv, booleanFlagNames, sink);
+
 			let flags: unknown;
 			try {
-				({ flags } = await this.parse(FactoryCommand));
+				({ flags } = await this.parse(FactoryCommand, massagedArgv));
 			} catch (err) {
 				if (isNonexistentFlagError(err)) {
 					const candidates = collectCandidateFlags(def);
@@ -645,6 +839,16 @@ export function createCLICommand(
 						flag: offending,
 						message: err.message,
 						...(suggestion ? { hint: `did you mean --${suggestion}?` } : {}),
+						stdout: sink.stdout,
+						stderr: sink.stderr,
+						exit: sink.exit,
+					});
+					return;
+				}
+				const classified = classifyParseError(err);
+				if (classified) {
+					emitCliError({
+						...classified,
 						stdout: sink.stdout,
 						stderr: sink.stderr,
 						exit: sink.exit,
