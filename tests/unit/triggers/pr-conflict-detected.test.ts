@@ -121,7 +121,11 @@ describe('PRConflictDetectedTrigger', () => {
 	});
 
 	describe('handle', () => {
-		it('should return null when trigger is disabled', async () => {
+		it('returns null when trigger is disabled (so the registry can try the next matcher)', async () => {
+			// Disabled-at-config returns bare null, not a structured skip,
+			// so the registry's first-match loop continues to the next
+			// matcher. See `src/triggers/shared/trigger-check.ts` for the
+			// disabled-shadowing contract.
 			vi.mocked(checkTriggerEnabled).mockResolvedValueOnce(false);
 
 			const ctx: TriggerContext = {
@@ -132,8 +136,7 @@ describe('PRConflictDetectedTrigger', () => {
 			};
 
 			const result = await trigger.handle(ctx);
-			expect(result?.agentType).toBeNull();
-			expect(result?.skipReason?.handler).toBe('pr-conflict-detected');
+			expect(result).toBeNull();
 			expect(checkTriggerEnabled).toHaveBeenCalledWith(
 				'test',
 				'resolve-conflicts',

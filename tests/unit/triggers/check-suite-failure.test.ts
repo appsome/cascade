@@ -174,7 +174,9 @@ describe('CheckSuiteFailureTrigger', () => {
 	});
 
 	describe('handle', () => {
-		it('returns a structured skip when trigger is disabled', async () => {
+		it('returns null when trigger is disabled (so the registry can try the next matcher)', async () => {
+			// Disabled-at-config returns null, not a structured skip — see
+			// `checkTriggerEnablement` contract for the shadowing-bug context.
 			vi.mocked(checkTriggerEnabled).mockResolvedValueOnce(false);
 
 			const ctx: TriggerContext = {
@@ -185,7 +187,7 @@ describe('CheckSuiteFailureTrigger', () => {
 			};
 
 			const result = await trigger.handle(ctx);
-			expectSkip(result, 'respond-to-ci trigger is disabled for this project');
+			expect(result).toBeNull();
 			expect(checkTriggerEnabled).toHaveBeenCalledWith(
 				'test',
 				'respond-to-ci',
