@@ -1,6 +1,10 @@
 import type { AgentInput, TriggerResult } from '../../types/index.js';
 import { TRIGGER_EVENTS } from './events.js';
-import { resolvePMStatusAgentById, resolvePMStatusAgentByName } from './pm-status.js';
+import {
+	resolvePMStatusAgentById,
+	resolvePMStatusAgentByIdFromWorkflowDefinitions,
+	resolvePMStatusAgentByName,
+} from './pm-status.js';
 import { buildPMDispatchResult } from './result-builders.js';
 
 export function resolvePMLabelAgentByList(args: {
@@ -28,6 +32,16 @@ export function resolvePMLabelAgentByStatusId(args: {
 	configuredStatuses: Record<string, string>;
 }): { agentType: string; cascadeStatus: string } | undefined {
 	return resolvePMStatusAgentById({
+		statusId: args.statusId,
+		configuredStatuses: args.configuredStatuses,
+	});
+}
+
+export function resolvePMLabelAgentByStatusIdFromWorkflowDefinitions(args: {
+	statusId: string;
+	configuredStatuses: Record<string, string>;
+}): Promise<{ agentType: string; cascadeStatus: string } | undefined> {
+	return resolvePMStatusAgentByIdFromWorkflowDefinitions({
 		statusId: args.statusId,
 		configuredStatuses: args.configuredStatuses,
 	});

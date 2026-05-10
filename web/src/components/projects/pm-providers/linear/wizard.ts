@@ -135,6 +135,7 @@ interface LinearProviderHooks {
 	readonly webhookUrl: string;
 	readonly projectIdForSecret: string;
 	readonly webhookSecretCredential: ProjectCredentialMeta | undefined;
+	readonly workflowStatuses: ReadonlyArray<{ readonly key: string; readonly label: string }>;
 }
 
 function asLinearHooks(providerHooks: Record<string, unknown> | undefined): LinearProviderHooks {
@@ -179,7 +180,7 @@ function LinearStatusMappingAdapter({
 	return StatusMappingStep({
 		step: { kind: 'status-mapping', id: 'linear-statuses' },
 		providerId: 'linear',
-		cascadeStatuses: LINEAR_STATUS_SLOTS,
+		cascadeStatuses: h.workflowStatuses.length > 0 ? h.workflowStatuses : LINEAR_STATUS_SLOTS,
 		providerStates: h.providerStates,
 		mappings: state.linearStatusMappings,
 		onMappingChange: (key, value) => dispatch({ type: 'SET_LINEAR_STATUS_MAPPING', key, value }),
@@ -311,6 +312,7 @@ export const linearProviderWizard: ProviderWizardDefinition = {
 		const credentialsQuery = useQuery(
 			trpc.projects.credentials.list.queryOptions({ projectId: projectId ?? '' }),
 		);
+		const workflowStatusesQuery = useQuery(trpc.workflowStatuses.list.queryOptions());
 		const webhookSecretCredential = credentialsQuery.data?.find(
 			(c) => c.envVarKey === 'LINEAR_WEBHOOK_SECRET',
 		);
@@ -370,6 +372,11 @@ export const linearProviderWizard: ProviderWizardDefinition = {
 			webhookUrl,
 			projectIdForSecret: projectId ?? '',
 			webhookSecretCredential,
+			workflowStatuses:
+				workflowStatusesQuery.data?.map((status) => ({
+					key: status.key,
+					label: status.label,
+				})) ?? LINEAR_STATUS_SLOTS,
 		} satisfies LinearProviderHooks & Record<string, unknown>;
 	},
 };

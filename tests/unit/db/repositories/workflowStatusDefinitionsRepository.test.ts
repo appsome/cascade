@@ -1,0 +1,104 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMockDbWithGetDb } from '../../../helpers/mockDb.js';
+import { mockDbClientModule } from '../../../helpers/sharedMocks.js';
+
+vi.mock('../../../../src/db/client.js', () => mockDbClientModule);
+
+import {
+	createCustomWorkflowStatusDefinition,
+	deleteCustomWorkflowStatusDefinition,
+	getCustomWorkflowStatusDefinition,
+	listCustomWorkflowStatusDefinitions,
+	updateCustomWorkflowStatusDefinition,
+} from '../../../../src/db/repositories/workflowStatusDefinitionsRepository.js';
+
+const now = new Date('2026-05-01T00:00:00.000Z');
+
+const dbRow = {
+	id: 1,
+	statusKey: 'prd',
+	label: 'PRD',
+	agentType: 'prd',
+	sortOrder: 1000,
+	createdAt: now,
+	updatedAt: now,
+};
+
+describe('workflowStatusDefinitionsRepository', () => {
+	let mockDb: ReturnType<typeof createMockDbWithGetDb>;
+
+	beforeEach(() => {
+		mockDb = createMockDbWithGetDb();
+	});
+
+	it('lists custom workflow statuses ordered by sort order and key', async () => {
+		mockDb.chain.orderBy.mockResolvedValueOnce([dbRow]);
+
+		const result = await listCustomWorkflowStatusDefinitions();
+
+		expect(result).toEqual([
+			{
+				id: 1,
+				key: 'prd',
+				label: 'PRD',
+				agentType: 'prd',
+				sortOrder: 1000,
+				createdAt: now,
+				updatedAt: now,
+			},
+		]);
+		expect(mockDb.chain.orderBy).toHaveBeenCalledTimes(1);
+	});
+
+	it('gets one custom workflow status by key', async () => {
+		mockDb.chain.where.mockResolvedValueOnce([dbRow]);
+
+		const result = await getCustomWorkflowStatusDefinition('prd');
+
+		expect(result?.key).toBe('prd');
+	});
+
+	it('creates a custom workflow status', async () => {
+		mockDb.chain.returning.mockResolvedValueOnce([dbRow]);
+
+		const result = await createCustomWorkflowStatusDefinition({
+			key: 'prd',
+			label: 'PRD',
+			agentType: 'prd',
+			sortOrder: 1000,
+		});
+
+		expect(result.key).toBe('prd');
+		expect(mockDb.chain.values).toHaveBeenCalledWith({
+			statusKey: 'prd',
+			label: 'PRD',
+			agentType: 'prd',
+			sortOrder: 1000,
+		});
+	});
+
+	it('updates a custom workflow status', async () => {
+		mockDb.chain.where.mockReturnValueOnce({ returning: mockDb.chain.returning });
+		mockDb.chain.returning.mockResolvedValueOnce([{ ...dbRow, label: 'Product Requirements' }]);
+
+		const result = await updateCustomWorkflowStatusDefinition('prd', {
+			label: 'Product Requirements',
+			agentType: null,
+		});
+
+		expect(result?.label).toBe('Product Requirements');
+		expect(mockDb.chain.set).toHaveBeenCalledWith(
+			expect.objectContaining({
+				label: 'Product Requirements',
+				agentType: null,
+				updatedAt: expect.any(Date),
+			}),
+		);
+	});
+
+	it('deletes a custom workflow status', async () => {
+		mockDb.chain.where.mockResolvedValueOnce({ rowCount: 1 });
+
+		await expect(deleteCustomWorkflowStatusDefinition('prd')).resolves.toBe(true);
+	});
+});

@@ -11,6 +11,7 @@ import { trelloProviderWizard } from '../../../web/src/components/projects/pm-pr
 import {
 	buildCurrentUserDiscoveryRequest,
 	buildIntegrationUpsertInput,
+	buildMissingStatusTriggerConfigs,
 	buildPersistedCredentialInputs,
 	buildProviderAuthArgFromMetadata,
 	buildProviderCustomFieldCreationRequest,
@@ -146,6 +147,42 @@ describe('provider credential metadata', () => {
 		expect(linearProviderWizard.credentialPersistence.map((c) => c.envVarKey)).not.toContain(
 			'LINEAR_WEBHOOK_SECRET',
 		);
+	});
+});
+
+describe('buildMissingStatusTriggerConfigs', () => {
+	it('builds trigger configs for mapped workflow statuses with dispatch agents', () => {
+		const result = buildMissingStatusTriggerConfigs({
+			statusMappings: {
+				prd: 'state-prd',
+				done: 'state-done',
+				story: '',
+			},
+			workflowStatuses: [
+				{ key: 'prd', agentType: 'prd' },
+				{ key: 'done', agentType: null },
+				{ key: 'story', agentType: 'story' },
+			],
+			existingConfigs: [],
+		});
+
+		expect(result).toEqual([
+			{
+				agentType: 'prd',
+				triggerEvent: 'pm:status-changed',
+				enabled: true,
+			},
+		]);
+	});
+
+	it('does not overwrite existing status trigger configs', () => {
+		const result = buildMissingStatusTriggerConfigs({
+			statusMappings: { prd: 'state-prd' },
+			workflowStatuses: [{ key: 'prd', agentType: 'prd' }],
+			existingConfigs: [{ agentType: 'prd', triggerEvent: 'pm:status-changed' }],
+		});
+
+		expect(result).toEqual([]);
 	});
 });
 
