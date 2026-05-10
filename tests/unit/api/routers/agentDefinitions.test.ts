@@ -671,6 +671,21 @@ describe('agentDefinitionsRouter', () => {
 			});
 		});
 
+		it('throws BAD_REQUEST for custom agents without built-in prompt defaults', async () => {
+			const current = createMockDefinition({
+				prompts: { systemPrompt: 'custom system', taskPrompt: 'custom task' },
+			});
+			mockResolveAgentDefinition.mockResolvedValue(current);
+			mockIsBuiltinAgentType.mockReturnValue(false);
+
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
+			await expect(caller.resetPrompt({ agentType: 'phased-plan' })).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+				message: 'No built-in prompt defaults exist for custom agent: phased-plan',
+			});
+			expect(mockLoadBuiltinDefinition).not.toHaveBeenCalled();
+		});
+
 		it('throws FORBIDDEN for non-superadmin', async () => {
 			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
 			await expect(caller.resetPrompt({ agentType: 'implementation' })).rejects.toMatchObject({

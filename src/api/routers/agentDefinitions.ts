@@ -305,6 +305,13 @@ export const agentDefinitionsRouter = router({
 		.input(z.object({ agentType: z.string().min(1) }))
 		.mutation(async ({ input }) => {
 			const current = await resolveDefinitionOrThrow(input.agentType);
+			const isBuiltin = isBuiltinAgentType(input.agentType);
+			if (!isBuiltin) {
+				throw new TRPCError({
+					code: 'BAD_REQUEST',
+					message: `No built-in prompt defaults exist for custom agent: ${input.agentType}`,
+				});
+			}
 
 			// Load YAML defaults and use its prompts section
 			let yamlDefault: AgentDefinition;
@@ -334,7 +341,6 @@ export const agentDefinitionsRouter = router({
 			};
 			const validated = AgentDefinitionSchema.parse(updated);
 
-			const isBuiltin = isBuiltinAgentType(input.agentType);
 			await upsertAgentDefinition(input.agentType, validated, isBuiltin);
 			invalidateDefinitionCache();
 			return { agentType: input.agentType };
