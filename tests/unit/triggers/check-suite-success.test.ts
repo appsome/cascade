@@ -951,6 +951,10 @@ describe('CheckSuiteSuccessTrigger', () => {
 			expect(result?.deferredRecheck?.coalesceKey).toBe(
 				'check-suite-success:owner/repo:pr-42:sha123',
 			);
+			// recheckKind must be 'check-suite' so buildJob sets checkSuiteRecheckAttempt
+			// (not mergeabilityRecheckAttempt) on the delayed job, allowing safe
+			// rescheduling if the Actions API is still stale on the first re-check.
+			expect(result?.deferredRecheck?.recheckKind).toBe('check-suite');
 			// Dedup must NOT be claimed for a deferred event; the recheck must
 			// be free to make the dispatch call.
 			expect(result?.onBlocked).toBeUndefined();

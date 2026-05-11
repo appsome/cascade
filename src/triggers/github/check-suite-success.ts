@@ -175,7 +175,11 @@ export class CheckSuiteSuccessTrigger implements TriggerHandler {
 				coalesceKey,
 				delayMs: 30_000,
 			});
-			return buildDeferredRecheckResult({ delayMs: 30_000, coalesceKey });
+			return buildDeferredRecheckResult({
+				delayMs: 30_000,
+				coalesceKey,
+				recheckKind: 'check-suite',
+			});
 		}
 
 		if (decision.action === 'skip') {
