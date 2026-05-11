@@ -297,6 +297,22 @@ describe('removeChecklistItem', () => {
 		const result = removeChecklistItem(desc, checklists[0].items[0].id, checklists);
 		expect(result).toBe('### Next\n- [ ] Other');
 	});
+
+	it('removes trailing detail lines when deleting a non-last item in a multi-item section', () => {
+		// Regression: detail after a deleted checkbox in a multi-item section must not be left orphaned.
+		const desc = '### AC\n- [ ] Remove\n  Detail for remove\n- [ ] Keep';
+		const checklists = parseInlineChecklists(desc);
+		const result = removeChecklistItem(desc, checklists[0].items[0].id, checklists);
+		expect(result).toBe('### AC\n- [ ] Keep');
+	});
+
+	it('removes trailing detail lines when deleting the last item in a multi-item section', () => {
+		// Regression: trailing detail after the last checkbox must not become attached to the previous item.
+		const desc = '### AC\n- [ ] First\n- [ ] Last\n  Trailing detail';
+		const checklists = parseInlineChecklists(desc);
+		const result = removeChecklistItem(desc, checklists[0].items[1].id, checklists);
+		expect(result).toBe('### AC\n- [ ] First');
+	});
 });
 
 // ---------------------------------------------------------------------------

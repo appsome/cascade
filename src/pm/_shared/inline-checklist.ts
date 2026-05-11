@@ -257,7 +257,16 @@ export function removeChecklistItem(
 		const sectionEnd = scan.lastContentIdx !== -1 ? scan.lastContentIdx : scan.targetLineIdx;
 		removeSectionBlock(lines, scan.headingIdx, sectionEnd);
 	} else {
-		lines.splice(scan.targetLineIdx, 1);
+		// Also remove detail/prose lines immediately following the deleted checkbox
+		// (up to the next checkbox, heading, or blank line) so they aren't orphaned.
+		let deleteEnd = scan.targetLineIdx;
+		for (let i = scan.targetLineIdx + 1; i < lines.length; i++) {
+			if (HEADING_REGEX.test(lines[i]) || CHECKBOX_REGEX.test(lines[i]) || lines[i].trim() === '') {
+				break;
+			}
+			deleteEnd = i;
+		}
+		lines.splice(scan.targetLineIdx, deleteEnd - scan.targetLineIdx + 1);
 	}
 
 	return lines.join('\n').trimEnd();
