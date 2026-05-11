@@ -14,7 +14,7 @@ vi.mock('../../../src/triggers/shared/trigger-check.js', () => mockTriggerCheckM
 
 vi.mock('../../../src/github/client.js', () => mockGitHubClientModule);
 
-// Stub the Redis-backed dedup module so tests don't need a Redis connection.
+// Stub the Redis-backed review dedup module so tests don't need a Redis connection.
 // Each `claim` resolves to true (success) by default; per-test overrides via
 // `mockClaimReviewDispatch.mockResolvedValueOnce(false)` simulate a duplicate.
 const mockClaimReviewDispatch = vi.fn().mockResolvedValue(true);
@@ -24,6 +24,17 @@ vi.mock('../../../src/triggers/github/review-dispatch-dedup.js', () => ({
 		`${owner}/${repo}:${prNumber}:${headSha}`,
 	claimReviewDispatch: (...args: unknown[]) => mockClaimReviewDispatch(...args),
 	releaseReviewDispatch: (...args: unknown[]) => mockReleaseReviewDispatch(...args),
+}));
+
+// Stub the Redis-backed respond-to-ci dedup module (used by dispatchRespondToCi
+// called from the success handler's mixed-state fork).
+const mockClaimRespondToCiDispatch = vi.fn().mockResolvedValue(true);
+const mockReleaseRespondToCiDispatch = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../../src/triggers/github/respond-to-ci-dedup.js', () => ({
+	buildRespondToCiDispatchKey: (owner: string, repo: string, prNumber: number, headSha: string) =>
+		`${owner}/${repo}:${prNumber}:${headSha}`,
+	claimRespondToCiDispatch: (...args: unknown[]) => mockClaimRespondToCiDispatch(...args),
+	releaseRespondToCiDispatch: (...args: unknown[]) => mockReleaseRespondToCiDispatch(...args),
 }));
 
 import { githubClient } from '../../../src/github/client.js';
@@ -54,6 +65,8 @@ describe('CheckSuiteSuccessTrigger', () => {
 		vi.mocked(lookupWorkItemForPR).mockResolvedValue('abc123');
 		mockClaimReviewDispatch.mockReset().mockResolvedValue(true);
 		mockReleaseReviewDispatch.mockReset().mockResolvedValue(undefined);
+		mockClaimRespondToCiDispatch.mockReset().mockResolvedValue(true);
+		mockReleaseRespondToCiDispatch.mockReset().mockResolvedValue(undefined);
 		resetFixAttempts(42);
 		// Default: aggregate status reflects all checks passing. Tests that need
 		// a mixed-state SHA override this per-case.

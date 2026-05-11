@@ -2,7 +2,7 @@ import { githubClient } from '../../github/client.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
 import { parseRepoFullName } from '../../utils/repo.js';
-import { gateBaseBranch, gateCascadePersona, requirePersonaIdentities } from '../shared/gates.js';
+import { gateCascadePersona, requirePersonaIdentities } from '../shared/gates.js';
 import { skip } from '../shared/skip.js';
 import { checkTriggerEnabled } from '../shared/trigger-check.js';
 import { decideCheckSuiteOutcome } from './check-suite-decision.js';
@@ -74,10 +74,17 @@ export class CheckSuiteFailureTrigger implements TriggerHandler {
 		const personasResult = requirePersonaIdentities(ctx.personaIdentities, prNumber, this.name);
 		if (!personasResult.ok) return personasResult.skip;
 
-		const gateChainSkip =
-			gateCascadePersona(prDetails.user.login, prNumber, personasResult.value, this.name) ??
-			gateBaseBranch(prDetails.baseRef, prNumber, ctx.project, this.name);
-		if (gateChainSkip) return gateChainSkip;
+		// Cascade-authored PRs bypass the base-branch gate — a cascade PR
+		// targeting a non-base branch is a stacked PR, not a drive-by.
+		// Non-cascade authors are filtered here and never reach the gate.
+		// Mirrors the authorIsCascade bypass in decideCheckSuiteGates (lines 101-109).
+		const cascadePersonaSkip = gateCascadePersona(
+			prDetails.user.login,
+			prNumber,
+			personasResult.value,
+			this.name,
+		);
+		if (cascadePersonaSkip) return cascadePersonaSkip;
 
 		// Resolve work item from DB
 		const workItemId = await resolveWorkItemId(ctx.project.id, prNumber);
