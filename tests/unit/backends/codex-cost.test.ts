@@ -286,7 +286,10 @@ describe('CodexEngine — cost and token deltas', () => {
 		expect(row.costUsd).toBeCloseTo(expected, 6);
 		expect(result.cost).toBeCloseTo(expected, 6);
 		// Reasoning breakdown is preserved in the stored response JSON for observability.
-		expect(row.response).toContain('reasoning');
+		const response = JSON.parse(row.response);
+		expect(response.reasoning).toBe(800);
+		expect(response.delta.outputTokens).toBe(1000);
+		expect(response.delta.reasoningTokens).toBe(800);
 	});
 
 	// ─── Test 4: cached input ─────────────────────────────────────────────────
