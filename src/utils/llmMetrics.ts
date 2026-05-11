@@ -28,6 +28,8 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cachedInput
 	// subscription plan, consistent with how Anthropic Pro/Max users see costs for claude-code.
 	'openai:gpt-5.5': { input: 5.0, output: 30.0, cachedInput: 0.5 },
 	'openai:gpt-5.4': { input: 2.5, output: 15.0, cachedInput: 0.25 },
+	// gpt-5.4-mini: rates from developers.openai.com/api/docs/models/gpt-5.4-mini (2026-05-11).
+	'openai:gpt-5.4-mini': { input: 0.75, output: 4.5, cachedInput: 0.075 },
 	'openai:gpt-5.3-codex': { input: 1.75, output: 14.0, cachedInput: 0.175 },
 	// gpt-5.3-codex-spark is a ChatGPT Pro research preview with no metered API listing;
 	// we proxy to gpt-5.3-codex rates so cost figures stay populated. Update if OpenAI
