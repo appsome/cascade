@@ -174,8 +174,13 @@ function computeTurnDelta(context: CodexLineContext, usage: UsageSummary): Codex
  * Cost = calculateCost('openai:<model>', delta) — Codex never emits cost_usd
  * upstream (openai/codex#17539), so cost is always computed CASCADE-side from
  * the per-turn token DELTA × the pricing table at src/utils/llmMetrics.ts.
- * Reasoning output tokens are folded into output for billing (OpenAI bills them
- * at the output rate) while being preserved separately in the stored payload.
+ *
+ * Reasoning tokens: OpenAI/Codex treats `reasoning_output_tokens` as a
+ * breakdown/subset of `output_tokens` — NOT an additional counter. A turn
+ * with `output_tokens: 47, reasoning_output_tokens: 41` has 47 total output
+ * tokens (41 of which are reasoning). We store the reasoning count separately
+ * in the response payload for observability, but billing always uses
+ * `delta.outputTokens` as-is (it already includes reasoning).
  */
 function persistTurnLlmCall(context: CodexLineContext): void {
 	const acc = context.currentTurn;
@@ -188,15 +193,13 @@ function persistTurnLlmCall(context: CodexLineContext): void {
 
 	if (usage) {
 		delta = computeTurnDelta(context, usage);
-		// Output billing includes reasoning tokens — OpenAI bills reasoning at the
-		// output rate. Fold them in for cost math; the stored row's `outputTokens`
-		// reflects the same combined figure for dashboard accuracy.
-		const billableOutput = delta.outputTokens + delta.reasoningTokens;
-		outputForRow = delta.outputTokens === 0 && billableOutput === 0 ? 0 : billableOutput;
+		// Use delta.outputTokens directly — reasoning_output_tokens is already
+		// counted within output_tokens (it is a breakdown, not an extra counter).
+		outputForRow = delta.outputTokens;
 		const turnCost = calculateCost(`openai:${context.model}`, {
 			inputTokens: delta.inputTokens,
-			outputTokens: billableOutput,
-			totalTokens: delta.inputTokens + billableOutput,
+			outputTokens: delta.outputTokens,
+			totalTokens: delta.inputTokens + delta.outputTokens,
 			cachedInputTokens: delta.cachedTokens,
 		});
 		if (turnCost > 0) {
@@ -211,8 +214,8 @@ function persistTurnLlmCall(context: CodexLineContext): void {
 		tools: acc.toolNames.length > 0 ? acc.toolNames : undefined,
 		usage: usage ?? undefined,
 		delta: delta ?? undefined,
-		// Surfaced explicitly so a future maintainer triaging cost drift can
-		// see at a glance that reasoning was folded into output.
+		// Reasoning breakdown preserved for observability; it is already counted
+		// within outputTokens above and must NOT be added to it for billing.
 		reasoning: delta && delta.reasoningTokens > 0 ? delta.reasoningTokens : undefined,
 	});
 

@@ -243,7 +243,12 @@ describe('CodexEngine — cost and token deltas', () => {
 
 	// ─── Test 3: reasoning tokens ─────────────────────────────────────────────
 
-	it('folds reasoning_output_tokens into output for cost math and stores them in the row', async () => {
+	it('uses output_tokens as-is for billing — reasoning_output_tokens is a subset, not extra', async () => {
+		// OpenAI/Codex: reasoning_output_tokens is a BREAKDOWN of output_tokens,
+		// not an additional counter. A turn with output_tokens: 1000 and
+		// reasoning_output_tokens: 800 has 1000 total output tokens (800 of which
+		// are internal reasoning). Billing uses output_tokens (1000) directly;
+		// adding reasoning on top would over-count to 1800.
 		mockSpawn.mockImplementation((_cmd: string, args: string[]) => {
 			const outputPath = args[args.indexOf('-o') + 1];
 			return createMockChild({
@@ -253,8 +258,8 @@ describe('CodexEngine — cost and token deltas', () => {
 						type: 'turn.completed',
 						usage: {
 							input_tokens: 100,
-							output_tokens: 200,
-							reasoning_output_tokens: 800,
+							output_tokens: 1000,
+							reasoning_output_tokens: 800, // subset of the 1000 output tokens
 						},
 					},
 				]),
@@ -272,14 +277,15 @@ describe('CodexEngine — cost and token deltas', () => {
 		);
 
 		const [row] = mockStoreLlmCall.mock.calls[0];
-		// Cost is computed against output = visible_output + reasoning = 1000.
+		// Cost uses output_tokens (1000) directly — NOT output + reasoning (1800).
 		const expected = calculateCost(`openai:${DEFAULT_CODEX_MODEL}`, {
 			inputTokens: 100,
 			outputTokens: 1000,
 		});
+		expect(row.outputTokens).toBe(1000); // not 1800
 		expect(row.costUsd).toBeCloseTo(expected, 6);
 		expect(result.cost).toBeCloseTo(expected, 6);
-		// Reasoning is preserved in the stored response JSON for observability.
+		// Reasoning breakdown is preserved in the stored response JSON for observability.
 		expect(row.response).toContain('reasoning');
 	});
 
