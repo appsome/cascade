@@ -345,6 +345,59 @@ async function captureRefreshedToken(
 }
 
 /**
+ * Inspect stderr for the SHELL_CORRUPTED signal and decide the outcome.
+ *
+ * The signal can fire mid-work (corruption masks real output → fail) or
+ * at session-close (real work already captured → success-with-warning).
+ * Discriminator: if `prUrl` is set and `finalOutput` is non-empty, the
+ * agent emitted real artifacts before the signal fired. See MNG-718
+ * (run f801342b, 2026-05-11) for the late-corruption prod case.
+ *
+ * Returns the failure `AgentEngineResult` to surface, or `null` when
+ * the run should continue through the normal success path (either no
+ * signal present, or signal fired after success evidence was captured).
+ */
+function classifyShellCorruption(
+	stderrOutput: string,
+	exitCode: number,
+	prUrl: string | undefined,
+	prEvidence: ReturnType<typeof extractAndBuildPrEvidence>['prEvidence'],
+	finalOutput: string,
+	cost: number | undefined,
+	logWriter: LogWriter,
+): AgentEngineResult | null {
+	if (exitCode !== 0 || !SHELL_CORRUPTED_RE.test(stderrOutput)) return null;
+
+	const hasSuccessEvidence = !!prUrl && finalOutput.length > 0;
+	if (hasSuccessEvidence) {
+		logWriter(
+			'WARN',
+			'Codex shell-state corruption signal fired after success evidence captured — treating as success-with-warning',
+			{
+				stderr: stderrOutput.slice(-500),
+				prUrl,
+				finalOutputLength: finalOutput.length,
+				hint: 'PR was created and final output captured before the corruption signal; verify the PR manually if anything looks off',
+			},
+		);
+		return null;
+	}
+
+	logWriter('ERROR', 'Codex shell-state corrupted (write_stdin closed) — failing run', {
+		stderr: stderrOutput,
+		hint: 'codex_core::tools::router lost its persistent bash session; subsequent commands may have inherited stale state',
+	});
+	return buildEngineResult({
+		success: false,
+		output: finalOutput,
+		error: 'codex shell-state corrupted: write_stdin failed (stdin closed for session)',
+		cost,
+		prUrl,
+		prEvidence,
+	});
+}
+
+/**
  * Codex CLI backend for CASCADE.
  *
  * Uses `codex exec` in JSONL mode and a conservative event parser so the engine
@@ -595,22 +648,26 @@ export class CodexEngine extends NativeToolEngine {
 			// failures with PR-creation evidence missing despite a real PR
 			// existing on GitHub. Codex itself exits cleanly (exit=0) — the
 			// stderr signal is the only evidence the session was corrupted.
-			// Surface it as a run failure so ops can retry against a fresh
-			// session rather than continuing in a corrupted state.
-			if (exitCode === 0 && SHELL_CORRUPTED_RE.test(stderrOutput)) {
-				input.logWriter('ERROR', 'Codex shell-state corrupted (write_stdin closed) — failing run', {
-					stderr: stderrOutput,
-					hint: 'codex_core::tools::router lost its persistent bash session; subsequent commands may have inherited stale state',
-				});
-				return buildEngineResult({
-					success: false,
-					output: finalOutput,
-					error: 'codex shell-state corrupted: write_stdin failed (stdin closed for session)',
-					cost,
-					prUrl,
-					prEvidence,
-				});
-			}
+			//
+			// MNG-718 follow-up (run f801342b, 2026-05-11): the signal can
+			// also fire LATE, at session-close, after all real work has been
+			// captured. That run opened PR #1350, ran the full verification
+			// suite, and filed a follow-up friction ticket — yet was marked
+			// failed, costing cascade the post-completion review dispatch
+			// and surfacing a misleading "agent failed" comment. Split the
+			// two cases by whether success evidence (prUrl + finalOutput)
+			// was captured before the signal: late → WARN + success, early
+			// → ERROR + fail.
+			const shellCorruptionResult = classifyShellCorruption(
+				stderrOutput,
+				exitCode,
+				prUrl,
+				prEvidence,
+				finalOutput,
+				cost,
+				input.logWriter,
+			);
+			if (shellCorruptionResult) return shellCorruptionResult;
 
 			if (exitCode !== 0) {
 				return buildEngineResult({
