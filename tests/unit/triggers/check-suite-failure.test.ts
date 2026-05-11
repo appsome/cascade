@@ -451,7 +451,12 @@ describe('CheckSuiteFailureTrigger', () => {
 			expect(result?.agentInput.workItemId).toBeUndefined();
 		});
 
-		it('returns a structured skip when not all checks are complete', async () => {
+		// API-lag fix (same as check-suite-success Bug 1, 2026-05-11):
+		// when the Actions API reports a check as in_progress even after the
+		// final check_suite.completed event, a plain skip would wait for a
+		// follow-up webhook that GitHub has already sent. The handler now
+		// schedules a deferred re-check so it re-evaluates against fresh state.
+		it('returns deferredRecheck (not plain skip) when not all checks are complete', async () => {
 			vi.mocked(githubClient.getPR).mockResolvedValue({
 				number: 42,
 				title: 'Test PR',
@@ -482,7 +487,20 @@ describe('CheckSuiteFailureTrigger', () => {
 
 			const result = await trigger.handle(ctx);
 
-			expectSkip(result, /Not all checks complete yet.*test/);
+			// No agent dispatch — wait for the deferred re-check.
+			expect(result?.agentType).toBeNull();
+			expect(result?.deferredRecheck).toBeDefined();
+			expect(result?.deferredRecheck?.delayMs).toBe(30_000);
+			// coalesceKey must include owner/repo + PR number + head SHA.
+			expect(result?.deferredRecheck?.coalesceKey).toBe(
+				'check-suite-failure:owner/repo:pr-42:sha123',
+			);
+			// recheckKind must be 'check-suite' so the router stamps
+			// checkSuiteRecheckAttempt (not mergeabilityRecheckAttempt) on the
+			// delayed job, enabling safe rescheduling if still stale.
+			expect(result?.deferredRecheck?.recheckKind).toBe('check-suite');
+			// Dedup must NOT be claimed for the deferred event.
+			expect(result?.onBlocked).toBeUndefined();
 		});
 
 		it('returns a structured skip when all checks actually passed (no failures)', async () => {

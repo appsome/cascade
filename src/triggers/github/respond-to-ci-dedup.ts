@@ -26,10 +26,13 @@ import { routerConfig } from '../../router/config.js';
 import { captureException } from '../../sentry.js';
 import { logger } from '../../utils/logging.js';
 
-// 2 minutes — covers the 30 s deferred-recheck window with generous buffer.
-// Kept shorter than the review-dispatch TTL (5 min) because the dedup scope
-// is narrower: we only need to block the one pending recheck job.
-const DEDUP_TTL_SEC = 2 * 60;
+// 10 minutes — must cover the full duplicate window: 30 s deferred-recheck
+// delay + up to 5 min waiting for a worker slot (slotWaitTimeoutMs default)
+// + buffer for active dispatch and edge cases.  The previous 2-min TTL could
+// expire before a recheck job even started under backlog, allowing the recheck
+// to claim the key and launch a second fix agent for the same PR+SHA.
+// See review comment 2026-05-11 (nhopeatall) on PR #1351 for the failure mode.
+const DEDUP_TTL_SEC = 10 * 60;
 
 const KEY_NS = 'cascade:respond-to-ci-dedup:';
 
