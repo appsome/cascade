@@ -103,6 +103,34 @@ Key functions:
 - `resolveAllAgentDefinitions()` — merge DB + YAML
 - `resolveKnownAgentTypes()` — list all known types
 
+### CLI management
+
+Custom agent definitions and custom workflow status definitions can be managed
+without the dashboard UI:
+
+```bash
+# Register a custom agent definition from YAML or JSON
+cascade definitions create --agent-type prd --file prd-agent.yaml
+
+# Import-or-update an agent definition from an exported file
+cascade definitions import --file prd-agent.yaml --update
+
+# Register a custom workflow status that dispatches that agent
+cascade workflow-statuses create \
+  --key prd \
+  --label PRD \
+  --agent-type prd \
+  --sort-order 1000
+
+# Inspect or update workflow status dispatch
+cascade workflow-statuses list
+cascade workflow-statuses update prd --agent-type story
+cascade workflow-statuses update prd --no-agent
+```
+
+Built-in workflow statuses cannot be modified through the CLI; create custom
+statuses for project-specific workflows and map them in the PM integration.
+
 ## Built-in Agents
 
 | Agent | Capabilities | Persona | Key Triggers |
