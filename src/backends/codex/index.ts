@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import { writeProjectCredential } from '../../db/repositories/credentialsRepository.js';
+import { calculateCost } from '../../utils/llmMetrics.js';
 import { CODEX_ENGINE_DEFINITION } from '../catalog.js';
 import { cleanupContextFiles } from '../shared/contextFiles.js';
 import { appendEngineLog } from '../shared/engineLog.js';
@@ -53,6 +54,24 @@ type CodexTurnAccumulator = {
 	usage: UsageSummary | null;
 };
 
+/**
+ * Run-level cumulative usage high-water mark.
+ *
+ * `codex exec --json` emits `usage` on every `turn.completed` as the CUMULATIVE
+ * session total — NOT a per-turn delta (upstream openai/codex#17539). We track
+ * the previous cumulative here so each turn persists its DELTA, not the running
+ * total. Without this, a 10-turn run with 100k tokens each would persist
+ * {100k, 200k, 300k, ...} = 5.5M summed instead of the true 1M.
+ *
+ * Reset/init: all zeros at the start of a run. Never reset per-turn.
+ */
+type CodexCumulativeUsage = {
+	inputTokens: number;
+	outputTokens: number;
+	cachedTokens: number;
+	reasoningTokens: number;
+};
+
 type CodexLineContext = {
 	input: AgentExecutionPlan;
 	model: string;
@@ -64,6 +83,8 @@ type CodexLineContext = {
 	finalError?: string;
 	/** Accumulator for the turn currently in progress. Reset on turn.started/thread.started. */
 	currentTurn: CodexTurnAccumulator;
+	/** Previous turn's cumulative usage — used to compute per-turn deltas. */
+	cumulativeUsage: CodexCumulativeUsage;
 };
 
 function tomlString(value: string): string {
@@ -99,39 +120,110 @@ function accumulateTurnUsage(context: CodexLineContext, usage: UsageSummary): vo
 		if (usage.inputTokens !== undefined) acc.usage.inputTokens = usage.inputTokens;
 		if (usage.outputTokens !== undefined) acc.usage.outputTokens = usage.outputTokens;
 		if (usage.cachedTokens !== undefined) acc.usage.cachedTokens = usage.cachedTokens;
-		if (usage.costUsd !== undefined) acc.usage.costUsd = usage.costUsd;
+		if (usage.reasoningTokens !== undefined) acc.usage.reasoningTokens = usage.reasoningTokens;
 	}
+}
+
+/**
+ * Compute the per-turn delta against the run-level cumulative high-water mark,
+ * then advance the high-water mark. Returns the delta. Clamps to 0 on out-of-order
+ * events (cumulative goes backwards) and logs a WARN.
+ *
+ * Upstream codex emits the SESSION-WIDE cumulative on every turn.completed (see
+ * openai/codex#17539). The delta is what we want to persist per-turn-row so that
+ * dashboard aggregations sum correctly.
+ */
+function computeTurnDelta(context: CodexLineContext, usage: UsageSummary): CodexCumulativeUsage {
+	const prev = context.cumulativeUsage;
+	const curr: CodexCumulativeUsage = {
+		inputTokens: usage.inputTokens ?? prev.inputTokens,
+		outputTokens: usage.outputTokens ?? prev.outputTokens,
+		cachedTokens: usage.cachedTokens ?? prev.cachedTokens,
+		reasoningTokens: usage.reasoningTokens ?? prev.reasoningTokens,
+	};
+	const delta: CodexCumulativeUsage = {
+		inputTokens: Math.max(0, curr.inputTokens - prev.inputTokens),
+		outputTokens: Math.max(0, curr.outputTokens - prev.outputTokens),
+		cachedTokens: Math.max(0, curr.cachedTokens - prev.cachedTokens),
+		reasoningTokens: Math.max(0, curr.reasoningTokens - prev.reasoningTokens),
+	};
+
+	if (
+		curr.inputTokens < prev.inputTokens ||
+		curr.outputTokens < prev.outputTokens ||
+		curr.cachedTokens < prev.cachedTokens ||
+		curr.reasoningTokens < prev.reasoningTokens
+	) {
+		context.input.logWriter(
+			'WARN',
+			'Codex turn.completed reported lower cumulative usage than previous turn — clamping delta to 0',
+			{ prev, curr },
+		);
+		// Don't advance backwards. Keep the high-water mark.
+		return delta;
+	}
+
+	context.cumulativeUsage = curr;
+	return delta;
 }
 
 /**
  * Persist exactly one storeLlmCall row for the completed turn, then reset the accumulator.
  * Called only from turn.completed to guarantee one row per turn, never from intermediate events.
+ *
+ * Cost = calculateCost('openai:<model>', delta) — Codex never emits cost_usd
+ * upstream (openai/codex#17539), so cost is always computed CASCADE-side from
+ * the per-turn token DELTA × the pricing table at src/utils/llmMetrics.ts.
+ * Reasoning output tokens are folded into output for billing (OpenAI bills them
+ * at the output rate) while being preserved separately in the stored payload.
  */
 function persistTurnLlmCall(context: CodexLineContext): void {
 	const acc = context.currentTurn;
 	const usage = acc.usage;
-	if (usage) {
-		context.cost = usage.costUsd ?? context.cost;
-	}
 	context.llmCallCount += 1;
 
-	// Build a compact turn-scoped payload: text summary + tool names + usage.
-	// Storing this instead of the raw event JSONL keeps the payload small and readable.
+	let delta: CodexCumulativeUsage | null = null;
+	let costUsd: number | undefined;
+	let outputForRow: number | undefined;
+
+	if (usage) {
+		delta = computeTurnDelta(context, usage);
+		// Output billing includes reasoning tokens — OpenAI bills reasoning at the
+		// output rate. Fold them in for cost math; the stored row's `outputTokens`
+		// reflects the same combined figure for dashboard accuracy.
+		const billableOutput = delta.outputTokens + delta.reasoningTokens;
+		outputForRow = delta.outputTokens === 0 && billableOutput === 0 ? 0 : billableOutput;
+		const turnCost = calculateCost(`openai:${context.model}`, {
+			inputTokens: delta.inputTokens,
+			outputTokens: billableOutput,
+			totalTokens: delta.inputTokens + billableOutput,
+			cachedInputTokens: delta.cachedTokens,
+		});
+		if (turnCost > 0) {
+			costUsd = turnCost;
+			context.cost = (context.cost ?? 0) + turnCost;
+		}
+	}
+
 	const turnPayload = JSON.stringify({
 		turn: context.llmCallCount,
 		text: acc.textSummary.join(' ').slice(0, 500) || undefined,
 		tools: acc.toolNames.length > 0 ? acc.toolNames : undefined,
 		usage: usage ?? undefined,
+		delta: delta ?? undefined,
+		// Surfaced explicitly so a future maintainer triaging cost drift can
+		// see at a glance that reasoning was folded into output.
+		reasoning: delta && delta.reasoningTokens > 0 ? delta.reasoningTokens : undefined,
 	});
 
 	logLlmCall({
 		runId: context.input.runId,
 		callNumber: context.llmCallCount,
 		model: context.model,
-		inputTokens: usage?.inputTokens,
-		outputTokens: usage?.outputTokens,
-		cachedTokens: usage?.cachedTokens,
-		costUsd: usage?.costUsd,
+		inputTokens: delta?.inputTokens,
+		outputTokens: outputForRow,
+		cachedTokens: delta?.cachedTokens,
+		costUsd,
 		response: turnPayload,
 		engineLabel: 'Codex',
 	});
@@ -516,6 +608,12 @@ export class CodexEngine extends NativeToolEngine {
 					cost,
 					finalError,
 					currentTurn: { textSummary: [], toolNames: [], usage: null },
+					cumulativeUsage: {
+						inputTokens: 0,
+						outputTokens: 0,
+						cachedTokens: 0,
+						reasoningTokens: 0,
+					},
 				};
 
 				child.once('error', (error) => {

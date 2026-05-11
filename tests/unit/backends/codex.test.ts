@@ -335,7 +335,7 @@ describe('extractUsage', () => {
 			inputTokens: 100,
 			outputTokens: 50,
 			cachedTokens: undefined,
-			costUsd: undefined,
+			reasoningTokens: undefined,
 		});
 	});
 
@@ -348,11 +348,27 @@ describe('extractUsage', () => {
 			inputTokens: 500,
 			outputTokens: 30,
 			cachedTokens: 450,
-			costUsd: undefined,
+			reasoningTokens: undefined,
 		});
 	});
 
-	it('still extracts top-level usage field (backward compat)', () => {
+	it('extracts reasoning_output_tokens from turn.completed usage', () => {
+		const result = extractUsage({
+			type: 'turn.completed',
+			usage: { input_tokens: 100, output_tokens: 200, reasoning_output_tokens: 800 },
+		});
+		expect(result).toEqual({
+			inputTokens: 100,
+			outputTokens: 200,
+			cachedTokens: undefined,
+			reasoningTokens: 800,
+		});
+	});
+
+	it('ignores any cost_usd-shaped fields on the event (cost is computed CASCADE-side)', () => {
+		// Pins the "delete dead branches" decision — codex exec --json doesn't
+		// emit cost upstream (openai/codex#17539); the engine computes cost from
+		// token deltas via calculateCost, so cost fields must NOT leak through.
 		const result = extractUsage({
 			usage: { input_tokens: 10, output_tokens: 5 },
 			total_cost_usd: 0.01,
@@ -361,7 +377,7 @@ describe('extractUsage', () => {
 			inputTokens: 10,
 			outputTokens: 5,
 			cachedTokens: undefined,
-			costUsd: 0.01,
+			reasoningTokens: undefined,
 		});
 	});
 
@@ -495,15 +511,11 @@ describe('CodexEngine', () => {
 						tool_input: { command: 'cascade-tools session finish --comment done' },
 					}),
 					// Intermediate usage event — accumulates into turn, does NOT persist a row
-					JSON.stringify({
-						usage: { input_tokens: 11, output_tokens: 7 },
-						total_cost_usd: 0.42,
-					}),
+					JSON.stringify({ usage: { input_tokens: 11, output_tokens: 7 } }),
 					// turn.completed finalizes and persists the accumulated turn data
 					JSON.stringify({
 						type: 'turn.completed',
 						usage: { input_tokens: 11, output_tokens: 7 },
-						total_cost_usd: 0.42,
 					}),
 				],
 				onBeforeClose: () => {
@@ -528,7 +540,10 @@ describe('CodexEngine', () => {
 		expect(result.success).toBe(true);
 		expect(result.output).toContain('Finished work.');
 		expect(result.prUrl).toBe('https://github.com/owner/repo/pull/123');
-		expect(result.cost).toBe(0.42);
+		// Cost is computed CASCADE-side from tokens × pricing table; the
+		// per-1M-token rate keeps the absolute number tiny for 11 in / 7 out.
+		expect(result.cost).toBeGreaterThan(0);
+		expect(result.cost).toBeLessThan(0.01);
 		expect(input.progressReporter.onIteration).toHaveBeenCalled();
 		expect(input.progressReporter.onToolCall).toHaveBeenCalledWith('Bash', {
 			command: 'cascade-tools session finish --comment done',
@@ -1011,14 +1026,15 @@ describe('CodexEngine', () => {
 		expect(result.success).toBe(true);
 		// Exactly two rows — one per completed turn
 		expect(mockStoreLlmCall).toHaveBeenCalledTimes(2);
-		// Stable, sequential callNumber values
+		// Codex emits CUMULATIVE session usage; rows must store per-turn DELTAS.
+		// Feeding cumulative {50,20} then {80,30} → deltas {50,20} and {30,10}.
 		expect(mockStoreLlmCall).toHaveBeenNthCalledWith(
 			1,
 			expect.objectContaining({ callNumber: 1, inputTokens: 50, outputTokens: 20 }),
 		);
 		expect(mockStoreLlmCall).toHaveBeenNthCalledWith(
 			2,
-			expect.objectContaining({ callNumber: 2, inputTokens: 80, outputTokens: 30 }),
+			expect.objectContaining({ callNumber: 2, inputTokens: 30, outputTokens: 10 }),
 		);
 	});
 
