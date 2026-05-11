@@ -29,6 +29,7 @@ export function hashChecklistItemId(checklistName: string, itemText: string): st
 // ---------------------------------------------------------------------------
 
 const H3_REGEX = /^### (.+)$/;
+const HEADING_REGEX = /^#{1,6}\s+/;
 const CHECKBOX_REGEX = /^- \[([ x])\] (.+)$/;
 
 export function parseInlineChecklists(description: string): ParsedChecklist[] {
@@ -81,6 +82,8 @@ function classifyLine(line: string, current: { name: string } | null): LineClass
 	const h3Match = line.match(H3_REGEX);
 	if (h3Match) return { action: 'new-section', name: h3Match[1] };
 
+	if (current && HEADING_REGEX.test(line)) return { action: 'end-section' };
+
 	const cbMatch = line.match(CHECKBOX_REGEX);
 	if (cbMatch && current) {
 		const name = cbMatch[2].trim();
@@ -95,7 +98,7 @@ function classifyLine(line: string, current: { name: string } | null): LineClass
 	}
 
 	if (current && line.trim() === '') return { action: 'skip' };
-	if (current) return { action: 'end-section' };
+	if (current) return { action: 'skip' };
 	return { action: 'skip' };
 }
 
@@ -197,7 +200,7 @@ export function addItemToChecklist(
 		if (inSection) {
 			if (CHECKBOX_REGEX.test(lines[i])) {
 				insertIdx = i;
-			} else if (lines[i].trim() !== '') {
+			} else if (HEADING_REGEX.test(lines[i])) {
 				break;
 			}
 		}
@@ -308,12 +311,11 @@ function scanSection(lines: string[], checklistName: string, targetItemName: str
 			continue;
 		}
 		if (!inSection) continue;
+		if (HEADING_REGEX.test(lines[i])) break;
 		const cbMatch = lines[i].match(CHECKBOX_REGEX);
 		if (cbMatch) {
 			itemCount++;
 			if (cbMatch[2].trim() === targetItemName && targetLineIdx === -1) targetLineIdx = i;
-		} else if (lines[i].trim() !== '') {
-			break;
 		}
 	}
 
