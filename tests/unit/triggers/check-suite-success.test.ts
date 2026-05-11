@@ -294,7 +294,10 @@ describe('CheckSuiteSuccessTrigger', () => {
 			expectSkip(checkSuiteResult);
 		});
 
-		it('returns null when PR targets non-base branch', async () => {
+		it('returns skip when non-cascade-authored PR targets non-base branch', async () => {
+			// Fix B (2026-05-11): the base-branch gate still applies to NON-
+			// cascade-authored PRs. Cascade-authored stacked PRs now bypass
+			// the gate — see the "cascade-authored stacked PR" test below.
 			vi.mocked(githubClient.getPR).mockResolvedValue({
 				number: 42,
 				title: 'Test PR',
@@ -305,7 +308,7 @@ describe('CheckSuiteSuccessTrigger', () => {
 				baseRef: 'develop',
 				merged: false,
 				htmlUrl: 'https://github.com/owner/repo/pull/42',
-				user: { login: 'cascade-impl' },
+				user: { login: 'random-contributor' },
 			});
 
 			const ctx: TriggerContext = {
@@ -908,7 +911,15 @@ describe('CheckSuiteSuccessTrigger', () => {
 		// later success event. Mirrors the existing check-suite-failure deferral
 		// shape — the LAST check_suite event makes the dispatch decision based
 		// on full aggregate state.
-		it('skips with "Not all checks complete yet" when an in-progress check exists, naming the pending check', async () => {
+		// Bug 1 (2026-05-11 prod incident on ucho PR #394, MNG-683):
+		// the handler used to return a plain skip when checks were incomplete,
+		// relying on GitHub to fire another check_suite event when the final
+		// suite finishes. But when the GitHub Actions API lags webhook delivery
+		// by >0ms, the API still shows that final suite as "in_progress" — and
+		// no further webhook arrives because GitHub already fired its event.
+		// Review never dispatched; user had to manually request from the
+		// reviewer persona. Fix: schedule a deferred re-check with delay.
+		it('returns deferredRecheck (not plain skip) when an in-progress check exists', async () => {
 			vi.mocked(githubClient.getPR).mockResolvedValue(baseImplementerPR);
 			vi.mocked(githubClient.getPRReviews).mockResolvedValue([]);
 			vi.mocked(githubClient.getCheckSuiteStatus).mockResolvedValue({
@@ -929,11 +940,19 @@ describe('CheckSuiteSuccessTrigger', () => {
 
 			const result = await trigger.handle(ctx);
 
-			expectSkip(result, /Not all checks complete yet.*lint-and-test/);
-			// Crucially, no agent dispatched — the worker bail-out path is gone.
+			// No agent dispatch — the worker bail-out path is gone.
 			expect(result?.agentType).toBeNull();
-			// Dedup must NOT be claimed for a deferred event; the next
-			// check_suite event for this SHA must be free to make the call.
+			// New contract: a deferredRecheck job is scheduled so the trigger
+			// re-evaluates even when GitHub does not fire another check_suite event.
+			expect(result?.deferredRecheck).toBeDefined();
+			expect(result?.deferredRecheck?.delayMs).toBe(30_000);
+			// coalesceKey must include owner/repo + PR number + head SHA so
+			// concurrent deferrals collapse to a single delayed job.
+			expect(result?.deferredRecheck?.coalesceKey).toBe(
+				'check-suite-success:owner/repo:pr-42:sha123',
+			);
+			// Dedup must NOT be claimed for a deferred event; the recheck must
+			// be free to make the dispatch call.
 			expect(result?.onBlocked).toBeUndefined();
 		});
 
@@ -968,10 +987,45 @@ describe('CheckSuiteSuccessTrigger', () => {
 			};
 
 			const firstResult = await trigger.handle(ctx);
-			expectSkip(firstResult, /Not all checks complete yet/);
+			// First event: defer-with-recheck (no dedup claim yet).
+			expect(firstResult?.agentType).toBeNull();
+			expect(firstResult?.deferredRecheck).toBeDefined();
+			expect(mockClaimReviewDispatch).not.toHaveBeenCalled();
 
 			const secondResult = await trigger.handle(ctx);
 			expect(secondResult?.agentType).toBe('review');
+		});
+
+		// Bug 2 (2026-05-11 prod incident on ucho PR #393, MNG-691):
+		// the handler rejected stacked PRs targeting a feature branch even
+		// when the PR was opened by the cascade implementer persona. Fix:
+		// the base-branch gate now skips cascade-authored PRs.
+		it('dispatches review for cascade-authored stacked PR targeting a feature branch', async () => {
+			vi.mocked(githubClient.getPR).mockResolvedValue({
+				...baseImplementerPR,
+				baseRef: 'feature/MNG-690-calendar-event-context-tables',
+			});
+			vi.mocked(githubClient.getPRReviews).mockResolvedValue([]);
+			vi.mocked(githubClient.getCheckSuiteStatus).mockResolvedValue({
+				allPassing: true,
+				totalCount: 2,
+				checkRuns: [
+					{ name: 'CI', status: 'completed', conclusion: 'success' },
+					{ name: 'lint-and-test', status: 'completed', conclusion: 'success' },
+				],
+			});
+
+			const ctx: TriggerContext = {
+				project: mockProject,
+				source: 'github',
+				payload: makeCheckSuitePayload(),
+				personaIdentities: mockPersonaIdentities,
+			};
+
+			const result = await trigger.handle(ctx);
+
+			expect(result?.agentType).toBe('review');
+			expect(result?.prNumber).toBe(42);
 		});
 
 		it('dispatches respond-to-ci on timed_out conclusion', async () => {
