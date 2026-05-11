@@ -159,8 +159,13 @@ function computeTurnDelta(context: CodexLineContext, usage: UsageSummary): Codex
 			'Codex turn.completed reported lower cumulative usage than previous turn — clamping delta to 0',
 			{ prev, curr },
 		);
-		// Don't advance backwards. Keep the high-water mark.
-		return delta;
+		// Return all-zero delta — discard the entire backwards event rather than
+		// persisting partial positive fields (e.g. outputTokens increased while
+		// inputTokens went backwards). The high-water mark stays at `prev` so
+		// the next valid cumulative is correctly subtracted from the last known
+		// good baseline; without this, any positive per-field delta from the
+		// discarded event would be double-counted on the following valid event.
+		return { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 };
 	}
 
 	context.cumulativeUsage = curr;
@@ -337,8 +342,16 @@ async function processStdoutLine(context: CodexLineContext, line: string): Promi
 
 function resolveCodexModel(cascadeModel: string): string {
 	if (CODEX_MODEL_IDS.includes(cascadeModel)) return cascadeModel;
-	if (cascadeModel.startsWith('openai:')) return cascadeModel.replace('openai:', '');
-	if (cascadeModel.startsWith('gpt-') && cascadeModel.includes('codex')) return cascadeModel;
+	// Accept openai: prefix as a convenience shorthand (e.g. "openai:gpt-5.4").
+	// Only resolve to a known Codex model ID — the old gpt-*codex* wildcard was
+	// removed because unrecognised model IDs have no pricing row in MODEL_PRICING
+	// and would silently persist zero cost. Add new models to CODEX_MODEL_IDS in
+	// src/backends/codex/models.ts AND add a pricing row to MODEL_PRICING in
+	// src/utils/llmMetrics.ts before accepting them here.
+	if (cascadeModel.startsWith('openai:')) {
+		const bareId = cascadeModel.replace('openai:', '');
+		if (CODEX_MODEL_IDS.includes(bareId)) return bareId;
+	}
 
 	throw new Error(
 		`Model "${cascadeModel}" is not compatible with the Codex engine. Configure a Codex-compatible model (e.g. "${DEFAULT_CODEX_MODEL}") or switch to a different engine.`,

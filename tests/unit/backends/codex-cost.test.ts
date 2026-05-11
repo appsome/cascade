@@ -363,6 +363,68 @@ describe('CodexEngine — cost and token deltas', () => {
 		expect(rows[1].outputTokens).toBe(0);
 	});
 
+	// ─── Test 5b: mixed regression — one counter up, one down ─────────────────
+
+	it('returns all-zero delta when any single counter regresses — prevents double-counting', async () => {
+		// Regression test for the bug where computeTurnDelta returned per-field
+		// Math.max(0, curr-prev) even when the backwards guard tripped. If inputTokens
+		// went backwards while outputTokens increased, the positive outputTokens delta
+		// was still persisted AND double-counted on the next valid event (because the
+		// high-water mark was not advanced for the rejected event).
+		//
+		// Scenario: T1 valid {1000,500} → T2 mixed {900,600} → T3 valid {2000,1200}
+		// Expected:
+		//   T1 delta: {1000, 500}  (first event, HWM=0→{1000,500})
+		//   T2 delta: {0, 0}       (inputTokens regressed — whole event discarded)
+		//   T3 delta: {1000, 700}  (2000-1000, 1200-500 from unchanged HWM)
+		// Bug produced T2 delta {0, 100} which was then double-counted in T3.
+		mockSpawn.mockImplementation((_cmd: string, args: string[]) => {
+			const outputPath = args[args.indexOf('-o') + 1];
+			return createMockChild({
+				stdoutLines: stdoutFor([
+					{ type: 'turn.started' },
+					// T1: valid baseline
+					{ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 500 } },
+					{ type: 'turn.started' },
+					// T2: inputTokens goes backwards (1000→900), outputTokens increases (500→600)
+					{ type: 'turn.completed', usage: { input_tokens: 900, output_tokens: 600 } },
+					{ type: 'turn.started' },
+					// T3: both counters advance from valid T1 baseline (HWM was not advanced for T2)
+					{ type: 'turn.completed', usage: { input_tokens: 2000, output_tokens: 1200 } },
+				]),
+				onBeforeClose: () => writeFileSync(outputPath, 'Done.', 'utf-8'),
+			});
+		});
+
+		const engine = new CodexEngine();
+		await engine.execute(
+			makeInput({
+				repoDir: workspaceDir,
+				engineLogPath: join(workspaceDir, 'codex.log'),
+				runId: 'run-mixed-regression',
+			}),
+		);
+
+		const rows = mockStoreLlmCall.mock.calls.map((c) => c[0]);
+		expect(rows).toHaveLength(3);
+
+		// T1: valid delta
+		expect(rows[0].inputTokens).toBe(1000);
+		expect(rows[0].outputTokens).toBe(500);
+
+		// T2: all-zero delta — whole event discarded because inputTokens regressed
+		// (was {0, 100} before the fix — outputTokens was charged even though the
+		// event was invalid, and would be double-counted in T3)
+		expect(rows[1].inputTokens).toBe(0);
+		expect(rows[1].outputTokens).toBe(0); // NOT 100
+		expect(rows[1].costUsd).toBeUndefined();
+
+		// T3: delta computed from the unchanged HWM {1000, 500}
+		// → {2000-1000, 1200-500} = {1000, 700}
+		expect(rows[2].inputTokens).toBe(1000);
+		expect(rows[2].outputTokens).toBe(700);
+	});
+
 	// ─── Test 6: no usage on turn.completed ───────────────────────────────────
 
 	it('persists a row with undefined token fields when turn.completed carries no usage', async () => {

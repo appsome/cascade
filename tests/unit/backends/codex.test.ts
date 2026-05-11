@@ -151,6 +151,23 @@ describe('resolveCodexModel', () => {
 			'not compatible with the Codex engine',
 		);
 	});
+
+	it('throws for openai: prefix with an unlisted model (no pricing row)', () => {
+		// Pins the constraint that openai:* only resolves when the bare ID is in
+		// CODEX_MODEL_IDS — prevents silent zero-cost runs on models with no
+		// pricing entry in MODEL_PRICING.
+		expect(() => resolveCodexModel('openai:gpt-5-codex')).toThrow(
+			'not compatible with the Codex engine',
+		);
+	});
+
+	it('throws for gpt-*codex* pattern not in CODEX_MODEL_IDS', () => {
+		// The old wildcard gpt-*codex* branch was removed; unrecognised model IDs
+		// must throw rather than silently pass through with zero cost.
+		expect(() => resolveCodexModel('gpt-5-turbo-codex')).toThrow(
+			'not compatible with the Codex engine',
+		);
+	});
 });
 
 describe('extractErrorMessage', () => {
