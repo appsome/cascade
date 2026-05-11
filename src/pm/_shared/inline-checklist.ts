@@ -202,6 +202,10 @@ export function addItemToChecklist(
 				insertIdx = i;
 			} else if (HEADING_REGEX.test(lines[i])) {
 				break;
+			} else if (lines[i].trim() !== '') {
+				// Non-empty detail/prose line — advance insertIdx so new items land
+				// after all trailing detail belonging to the previous item, not before it.
+				insertIdx = i;
 			}
 		}
 	}
@@ -248,7 +252,10 @@ export function removeChecklistItem(
 	if (scan.targetLineIdx === -1) throw new Error(`Checklist item line not found: ${itemId}`);
 
 	if (scan.itemCount === 1) {
-		removeSectionBlock(lines, scan.headingIdx, scan.targetLineIdx);
+		// Remove the entire section: use lastContentIdx so trailing detail lines
+		// after the only checkbox are included and not left orphaned.
+		const sectionEnd = scan.lastContentIdx !== -1 ? scan.lastContentIdx : scan.targetLineIdx;
+		removeSectionBlock(lines, scan.headingIdx, sectionEnd);
 	} else {
 		lines.splice(scan.targetLineIdx, 1);
 	}
@@ -295,6 +302,8 @@ interface SectionScan {
 	headingIdx: number;
 	targetLineIdx: number;
 	itemCount: number;
+	/** Index of the last non-empty line in the section (may be a detail line after the last checkbox). */
+	lastContentIdx: number;
 }
 
 function scanSection(lines: string[], checklistName: string, targetItemName: string): SectionScan {
@@ -303,6 +312,7 @@ function scanSection(lines: string[], checklistName: string, targetItemName: str
 	let targetLineIdx = -1;
 	let inSection = false;
 	let itemCount = 0;
+	let lastContentIdx = -1;
 
 	for (let i = 0; i < lines.length; i++) {
 		if (lines[i] === heading) {
@@ -317,9 +327,12 @@ function scanSection(lines: string[], checklistName: string, targetItemName: str
 			itemCount++;
 			if (cbMatch[2].trim() === targetItemName && targetLineIdx === -1) targetLineIdx = i;
 		}
+		if (lines[i].trim() !== '') {
+			lastContentIdx = i;
+		}
 	}
 
-	return { headingIdx, targetLineIdx, itemCount };
+	return { headingIdx, targetLineIdx, itemCount, lastContentIdx };
 }
 
 function removeSectionBlock(lines: string[], headingIdx: number, lastItemIdx: number): void {

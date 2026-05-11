@@ -204,6 +204,13 @@ describe('addItemToChecklist', () => {
 			'### AC\n- [ ] First\n  Detail\n- [ ] Second\n- [ ] Third\n\n### Next\n- [ ] Other',
 		);
 	});
+
+	it('adds after trailing detail lines that follow the last checkbox', () => {
+		// Regression: detail after the last checkbox must not be displaced under the new item.
+		const desc = '### AC\n- [ ] First\n  Detail line';
+		const result = addItemToChecklist(desc, 'AC', 'Second');
+		expect(result).toBe('### AC\n- [ ] First\n  Detail line\n- [ ] Second');
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -281,6 +288,14 @@ describe('removeChecklistItem', () => {
 		const checklists = parseInlineChecklists(desc);
 		const result = removeChecklistItem(desc, checklists[0].items[1].id, checklists);
 		expect(result).toBe('### AC\n- [ ] Keep\nSome detail\n\n### Next\n- [ ] Other');
+	});
+
+	it('removes the whole section including trailing detail when deleting the only item', () => {
+		// Regression: detail lines after the sole checkbox must not be left orphaned.
+		const desc = '### AC\n- [ ] Only\nDetail line\n\n### Next\n- [ ] Other';
+		const checklists = parseInlineChecklists(desc);
+		const result = removeChecklistItem(desc, checklists[0].items[0].id, checklists);
+		expect(result).toBe('### Next\n- [ ] Other');
 	});
 });
 
