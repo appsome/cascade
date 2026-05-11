@@ -26,13 +26,26 @@ import { routerConfig } from '../../router/config.js';
 import { captureException } from '../../sentry.js';
 import { logger } from '../../utils/logging.js';
 
-// 10 minutes — must cover the full duplicate window: 30 s deferred-recheck
+// 35 minutes — must cover the full duplicate window: 30 s deferred-recheck
 // delay + up to 5 min waiting for a worker slot (slotWaitTimeoutMs default)
-// + buffer for active dispatch and edge cases.  The previous 2-min TTL could
-// expire before a recheck job even started under backlog, allowing the recheck
-// to claim the key and launch a second fix agent for the same PR+SHA.
-// See review comment 2026-05-11 (nhopeatall) on PR #1351 for the failure mode.
-const DEDUP_TTL_SEC = 10 * 60;
+// + up to 30 min of active worker execution (workerTimeoutMs default) + buffer.
+//
+// The critical scenario this prevents:
+//   1. Failure webhook fires → key claimed → respond-to-ci dispatched (starts running).
+//   2. Success-side deferred recheck fires 30 s later → key taken → skips. ✓
+//   3. respond-to-ci worker runs for e.g. 25 min.
+//   4. With a 10-min TTL, the key has already expired by now.
+//   5. A second delayed check-suite recheck fires → key NOT taken → would
+//      dispatch ANOTHER fix agent for the same PR+SHA. ✗
+//
+// By setting the TTL to 35 min (30-min workerTimeoutMs + 5-min buffer), the key
+// stays alive for the entire execution window of the original respond-to-ci job.
+// After that job exits and the work-item lock is released, the next legitimate
+// trigger can go through the router's own lock mechanism.
+//
+// Matches the work-item lock TTL (30 min, src/router/work-item-lock.ts) so the
+// two mechanisms age out together.
+const DEDUP_TTL_SEC = 35 * 60;
 
 const KEY_NS = 'cascade:respond-to-ci-dedup:';
 
