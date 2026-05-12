@@ -306,6 +306,15 @@ export const jiraProviderWizard: ProviderWizardDefinition = {
 		...(state.jiraCostFieldId ? { customFields: { cost: state.jiraCostFieldId } } : {}),
 	}),
 
+	buildSaveTriggerConfigs: ({ state }) =>
+		state.isEditing
+			? []
+			: [
+					{ agentType: 'implementation', triggerEvent: 'pm:status-changed', enabled: true },
+					{ agentType: 'splitting', triggerEvent: 'pm:status-changed', enabled: true },
+					{ agentType: 'planning', triggerEvent: 'pm:status-changed', enabled: true },
+				],
+
 	buildEditState: (initialConfig, configuredKeys) => {
 		const statuses = initialConfig.statuses as Record<string, string> | undefined;
 		const issueTypes = initialConfig.issueTypes as Record<string, string> | undefined;

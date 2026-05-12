@@ -351,50 +351,6 @@ export function buildPersistedCredentialInputs(
 	});
 }
 
-interface StatusTriggerInput {
-	readonly key: string;
-	readonly agentType: string | null;
-}
-
-interface ExistingTriggerInput {
-	readonly agentType: string;
-	readonly triggerEvent: string;
-}
-
-export function buildMissingStatusTriggerConfigs(args: {
-	readonly statusMappings: Readonly<Record<string, string>>;
-	readonly workflowStatuses: ReadonlyArray<StatusTriggerInput>;
-	readonly existingConfigs: ReadonlyArray<ExistingTriggerInput>;
-}): Array<{
-	agentType: string;
-	triggerEvent: 'pm:status-changed';
-	enabled: true;
-}> {
-	const mappedKeys = new Set(
-		Object.entries(args.statusMappings)
-			.filter(([, providerStateId]) => providerStateId)
-			.map(([key]) => key),
-	);
-	const existing = new Set(
-		args.existingConfigs.map((config) => `${config.agentType}:${config.triggerEvent}`),
-	);
-	const seenAgents = new Set<string>();
-
-	return args.workflowStatuses.flatMap((status) => {
-		if (!status.agentType || !mappedKeys.has(status.key)) return [];
-		if (seenAgents.has(status.agentType)) return [];
-		seenAgents.add(status.agentType);
-		if (existing.has(`${status.agentType}:pm:status-changed`)) return [];
-		return [
-			{
-				agentType: status.agentType,
-				triggerEvent: 'pm:status-changed',
-				enabled: true,
-			},
-		];
-	});
-}
-
 export function buildIntegrationUpsertInput(
 	projectId: string,
 	state: WizardState,
@@ -431,29 +387,22 @@ export function useSaveMutation(
 				await trpcClient.projects.credentials.set.mutate({ projectId, ...cred });
 			}
 
-			if (state.provider === 'linear') {
+			if (manifestDef.buildSaveTriggerConfigs) {
 				const [workflowStatuses, existingConfigs] = await Promise.all([
 					trpcClient.workflowStatuses.list.query(),
 					trpcClient.agentTriggerConfigs.listByProject.query({ projectId }),
 				]);
-				const configs = buildMissingStatusTriggerConfigs({
-					statusMappings: state.linearStatusMappings,
+				const configs = manifestDef.buildSaveTriggerConfigs({
+					state,
 					workflowStatuses,
 					existingConfigs,
 				});
 				if (configs.length > 0) {
-					await trpcClient.agentTriggerConfigs.bulkUpsert.mutate({ projectId, configs });
+					await trpcClient.agentTriggerConfigs.bulkUpsert.mutate({
+						projectId,
+						configs: [...configs],
+					});
 				}
-			} else if (!state.isEditing) {
-				// On first-time setup, preserve legacy default PM triggers for Trello/JIRA.
-				await trpcClient.agentTriggerConfigs.bulkUpsert.mutate({
-					projectId,
-					configs: [
-						{ agentType: 'implementation', triggerEvent: 'pm:status-changed', enabled: true },
-						{ agentType: 'splitting', triggerEvent: 'pm:status-changed', enabled: true },
-						{ agentType: 'planning', triggerEvent: 'pm:status-changed', enabled: true },
-					],
-				});
 			}
 
 			// If the user switched provider mid-edit, clean up the old provider's credentials.

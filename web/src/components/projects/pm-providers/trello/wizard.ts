@@ -299,6 +299,15 @@ export const trelloProviderWizard: ProviderWizardDefinition = {
 		...(state.trelloCostFieldId ? { customFields: { cost: state.trelloCostFieldId } } : {}),
 	}),
 
+	buildSaveTriggerConfigs: ({ state }) =>
+		state.isEditing
+			? []
+			: [
+					{ agentType: 'implementation', triggerEvent: 'pm:status-changed', enabled: true },
+					{ agentType: 'splitting', triggerEvent: 'pm:status-changed', enabled: true },
+					{ agentType: 'planning', triggerEvent: 'pm:status-changed', enabled: true },
+				],
+
 	buildEditState: (initialConfig, configuredKeys) => {
 		const editState = {
 			provider: 'trello',

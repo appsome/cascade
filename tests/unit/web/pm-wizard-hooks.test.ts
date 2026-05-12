@@ -7,11 +7,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { jiraProviderWizard } from '../../../web/src/components/projects/pm-providers/jira/wizard.js';
 import { linearProviderWizard } from '../../../web/src/components/projects/pm-providers/linear/wizard.js';
+import { buildMissingStatusTriggerConfigs } from '../../../web/src/components/projects/pm-providers/save-trigger-configs.js';
 import { trelloProviderWizard } from '../../../web/src/components/projects/pm-providers/trello/wizard.js';
 import {
 	buildCurrentUserDiscoveryRequest,
 	buildIntegrationUpsertInput,
-	buildMissingStatusTriggerConfigs,
 	buildPersistedCredentialInputs,
 	buildProviderAuthArgFromMetadata,
 	buildProviderCustomFieldCreationRequest,

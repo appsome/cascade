@@ -24,6 +24,7 @@ import { type ReactElement, useState } from 'react';
 import { API_URL } from '@/lib/api.js';
 import { trpc } from '@/lib/trpc.js';
 import type { ProjectCredentialMeta } from '../../project-secret-field.js';
+import { buildMissingStatusTriggerConfigs } from '../save-trigger-configs.js';
 import { ContainerPickStep } from '../steps/container-pick.js';
 import { CredentialsStep } from '../steps/credentials.js';
 import { LabelMappingStep } from '../steps/label-mapping.js';
@@ -281,6 +282,13 @@ export const linearProviderWizard: ProviderWizardDefinition = {
 		statuses: state.linearStatusMappings,
 		...(Object.keys(state.linearLabels).length > 0 ? { labels: state.linearLabels } : {}),
 	}),
+
+	buildSaveTriggerConfigs: ({ state, workflowStatuses, existingConfigs }) =>
+		buildMissingStatusTriggerConfigs({
+			statusMappings: state.linearStatusMappings,
+			workflowStatuses,
+			existingConfigs,
+		}),
 
 	buildEditState: (initialConfig, configuredKeys) => {
 		const statuses = initialConfig.statuses as Record<string, string> | undefined;
