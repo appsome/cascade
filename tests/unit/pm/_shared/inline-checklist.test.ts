@@ -280,6 +280,21 @@ Keep me.`);
 		expect(result).toContain('### ✅ AC\n- [ ] First\n- [ ] Second');
 		expect(result).toContain('### Dependencies\n- [ ] First');
 	});
+
+	it('preserves non-checkbox prose from duplicate sections instead of silently dropping it', () => {
+		// Regression: MNG-741 — user-edited prose inside a duplicate checklist section
+		// must survive the convergence pass (data-loss path reported in review #3226378053).
+		const desc = '### AC\n- [ ] First\n\n### AC\n- [x] First\nThis note should stay.\nMore detail.';
+
+		const result = upsertChecklistSection(desc, 'AC', []);
+
+		expect(result).toContain('This note should stay.');
+		expect(result).toContain('More detail.');
+		// The duplicate heading must be collapsed into one.
+		expect(result.match(/^### AC$/gm)).toHaveLength(1);
+		// Checkbox items are merged correctly.
+		expect(result).toContain('- [x] First');
+	});
 });
 
 describe('upsertItemInChecklist', () => {

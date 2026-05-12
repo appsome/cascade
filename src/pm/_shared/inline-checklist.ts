@@ -509,8 +509,28 @@ function skipRemovedDuplicateSection(
 	output: string[],
 	duplicate: ChecklistSectionSpan,
 ): number {
-	let nextIdx = duplicate.endIdx;
+	// Collect non-checkbox prose lines from the duplicate section.
+	// Checkbox items have already been merged into the first section's rewrite;
+	// the heading line itself is also dropped. Only non-generated prose survives.
+	const proseLines: string[] = [];
+	for (let i = duplicate.startIdx + 1; i < duplicate.endIdx; i++) {
+		if (!CHECKBOX_REGEX.test(lines[i])) {
+			proseLines.push(lines[i]);
+		}
+	}
+	// Trim leading/trailing blank lines so we don't emit orphaned whitespace.
+	while (proseLines.length > 0 && proseLines[0].trim() === '') proseLines.shift();
+	while (proseLines.length > 0 && proseLines[proseLines.length - 1].trim() === '') proseLines.pop();
+
 	while (output.length > 0 && output[output.length - 1].trim() === '') output.pop();
+
+	if (proseLines.length > 0) {
+		// Preserve prose from the duplicate section after the merged content.
+		output.push('');
+		output.push(...proseLines);
+	}
+
+	let nextIdx = duplicate.endIdx;
 	while (nextIdx < lines.length && lines[nextIdx].trim() === '') nextIdx++;
 	if (nextIdx < lines.length && output.length > 0 && output[output.length - 1].trim() !== '') {
 		output.push('');
