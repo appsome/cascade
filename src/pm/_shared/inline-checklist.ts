@@ -372,6 +372,18 @@ interface ChecklistSectionSpan {
 	endIdx: number;
 }
 
+/**
+ * An item collected during duplicate-section merging, carrying both its
+ * checked state and any trailing detail/prose lines that belong to it
+ * (non-blank, non-checkbox, non-heading lines immediately following the
+ * checkbox with no blank-line gap).
+ */
+interface MergedItemInfo {
+	checked: boolean;
+	/** Detail/prose lines immediately following this item's checkbox row. */
+	detail: string[];
+}
+
 function dedupeChecklistSections(description: string, checklistName: string): string {
 	if (!description) return description;
 	const lines = description.split('\n');
@@ -379,12 +391,21 @@ function dedupeChecklistSections(description: string, checklistName: string): st
 	if (sections.length <= 1) return description;
 
 	const first = sections[0];
-	const mergedItems = collectMergedSectionItems(lines, sections);
+	// Track items already in the first section so we know which items from
+	// duplicate sections are "new" (need to be inserted with their detail)
+	// vs "existing" (detail would be orphaned and should be preserved as prose).
+	const firstSectionItems = new Set(collectSectionItems(lines, first).keys());
+	const mergedItems = collectMergedSectionItemsWithDetail(lines, sections);
 	const rewrittenFirstSection = rewriteChecklistSection(
 		lines.slice(first.startIdx, first.endIdx),
 		mergedItems,
 	);
-	return removeDuplicateChecklistSections(lines, sections, rewrittenFirstSection);
+	return removeDuplicateChecklistSections(
+		lines,
+		sections,
+		rewrittenFirstSection,
+		firstSectionItems,
+	);
 }
 
 function findChecklistInsertionIndex(lines: string[], checklistName: string): number {
@@ -413,22 +434,72 @@ function findChecklistInsertionIndex(lines: string[], checklistName: string): nu
 	return insertIdx;
 }
 
-function collectMergedSectionItems(
+/**
+ * Collect all items from a single section, each with trailing detail lines.
+ *
+ * A "detail line" is any non-blank, non-checkbox, non-heading line that
+ * immediately follows a checkbox with no blank-line gap between them.  These
+ * are treated as belonging to their preceding item and must travel with it
+ * when the section is merged elsewhere.
+ */
+function collectSectionItemsWithDetail(
 	lines: string[],
-	sections: ChecklistSectionSpan[],
-): Map<string, boolean> {
-	const mergedItems = new Map<string, boolean>();
-	for (const section of sections) {
-		for (const [name, checked] of collectSectionItems(lines, section)) {
-			mergedItems.set(name, (mergedItems.get(name) ?? false) || checked);
+	section: ChecklistSectionSpan,
+): Map<string, MergedItemInfo> {
+	const items = new Map<string, MergedItemInfo>();
+	let currentName: string | null = null;
+	for (let i = section.startIdx + 1; i < section.endIdx; i++) {
+		const line = lines[i];
+		const cbMatch = line.match(CHECKBOX_REGEX);
+		if (cbMatch) {
+			currentName = cbMatch[2].trim();
+			const checked = cbMatch[1] === 'x';
+			const existing = items.get(currentName);
+			if (!existing) {
+				items.set(currentName, { checked, detail: [] });
+			} else if (checked) {
+				existing.checked = true;
+			}
+		} else if (HEADING_REGEX.test(line)) {
+			break;
+		} else if (currentName !== null) {
+			if (line.trim() === '') {
+				currentName = null; // blank line ends detail attachment
+			} else {
+				items.get(currentName)?.detail.push(line);
+			}
 		}
 	}
-	return mergedItems;
+	return items;
+}
+
+function collectMergedSectionItemsWithDetail(
+	lines: string[],
+	sections: ChecklistSectionSpan[],
+): Map<string, MergedItemInfo> {
+	const merged = new Map<string, MergedItemInfo>();
+	for (const section of sections) {
+		for (const [name, info] of collectSectionItemsWithDetail(lines, section)) {
+			const existing = merged.get(name);
+			if (!existing) {
+				// First occurrence — keep its checked state and detail.
+				merged.set(name, { checked: info.checked, detail: info.detail });
+			} else {
+				// Subsequent occurrence — merge checked state (any checked wins).
+				if (info.checked) existing.checked = true;
+				// Detail: first non-empty occurrence wins to avoid duplicating detail.
+				if (existing.detail.length === 0 && info.detail.length > 0) {
+					existing.detail.push(...info.detail);
+				}
+			}
+		}
+	}
+	return merged;
 }
 
 function rewriteChecklistSection(
 	sectionLines: string[],
-	mergedItems: Map<string, boolean>,
+	mergedItems: Map<string, MergedItemInfo>,
 ): string[] {
 	const state = { lines: [] as string[], seen: new Set<string>(), lastCheckboxIdx: -1 };
 	for (const line of sectionLines) {
@@ -441,7 +512,7 @@ function rewriteChecklistSection(
 function rewriteChecklistSectionLine(
 	state: { lines: string[]; seen: Set<string>; lastCheckboxIdx: number },
 	line: string,
-	mergedItems: Map<string, boolean>,
+	mergedItems: Map<string, MergedItemInfo>,
 ): void {
 	const cbMatch = line.match(CHECKBOX_REGEX);
 	if (!cbMatch) {
@@ -451,9 +522,12 @@ function rewriteChecklistSectionLine(
 	const itemName = cbMatch[2].trim();
 	if (state.seen.has(itemName)) return;
 	state.seen.add(itemName);
-	const checked = (mergedItems.get(itemName) ?? false) || cbMatch[1] === 'x';
+	const info = mergedItems.get(itemName);
+	const checked = (info?.checked ?? false) || cbMatch[1] === 'x';
 	state.lines.push(`- [${checked ? 'x' : ' '}] ${itemName}`);
 	state.lastCheckboxIdx = state.lines.length - 1;
+	// Note: we do NOT emit detail lines for existing items here — they come
+	// from the source sectionLines on subsequent iterations (preserved in-place).
 }
 
 /**
@@ -482,12 +556,15 @@ function findMissingItemsInsertionIndex(lines: string[], lastCheckboxIdx: number
 
 function insertMissingChecklistItemLines(
 	state: { lines: string[]; seen: Set<string>; lastCheckboxIdx: number },
-	mergedItems: Map<string, boolean>,
+	mergedItems: Map<string, MergedItemInfo>,
 ): void {
 	const missingItemLines: string[] = [];
-	for (const [itemName, checked] of mergedItems) {
+	for (const [itemName, info] of mergedItems) {
 		if (!state.seen.has(itemName)) {
-			missingItemLines.push(`- [${checked ? 'x' : ' '}] ${itemName}`);
+			missingItemLines.push(`- [${info.checked ? 'x' : ' '}] ${itemName}`);
+			// Carry the item's detail lines immediately after its checkbox so they
+			// remain attached to the item rather than becoming orphaned prose.
+			missingItemLines.push(...info.detail);
 		}
 	}
 	if (missingItemLines.length > 0) {
@@ -500,6 +577,7 @@ function removeDuplicateChecklistSections(
 	lines: string[],
 	sections: ChecklistSectionSpan[],
 	rewrittenFirstSection: string[],
+	firstSectionItems: Set<string>,
 ): string {
 	const first = sections[0];
 	const output: string[] = [];
@@ -511,7 +589,7 @@ function removeDuplicateChecklistSections(
 		}
 		const duplicate = findSectionStartingAt(sections, i);
 		if (duplicate) {
-			i = skipRemovedDuplicateSection(lines, output, duplicate);
+			i = skipRemovedDuplicateSection(lines, output, duplicate, firstSectionItems);
 			continue;
 		}
 		output.push(lines[i]);
@@ -528,20 +606,59 @@ function findSectionStartingAt(
 	return sections.find((section) => section.startIdx === lineIdx);
 }
 
+/**
+ * Skip a duplicate checklist section during convergence, selectively
+ * preserving content that can't be safely re-attached to merged items.
+ *
+ * Checkbox rows are dropped (they've been merged into the first section
+ * rewrite).  The heading itself is also dropped.  What we keep:
+ *
+ * - Detail lines of EXISTING items (items already in the first section):
+ *   since those items are not being re-inserted, their duplicate-section
+ *   detail cannot travel with them and is preserved as orphaned prose.
+ *
+ * - Truly standalone prose: non-checkbox lines that appear before the
+ *   first checkbox or after a blank-line separator (not attached to any
+ *   checkbox item).
+ *
+ * Detail lines of NEW items (items NOT in firstSectionItems) are skipped —
+ * they are emitted alongside their checkbox row by insertMissingChecklistItemLines.
+ */
 function skipRemovedDuplicateSection(
 	lines: string[],
 	output: string[],
 	duplicate: ChecklistSectionSpan,
+	firstSectionItems: Set<string>,
 ): number {
-	// Collect non-checkbox prose lines from the duplicate section.
-	// Checkbox items have already been merged into the first section's rewrite;
-	// the heading line itself is also dropped. Only non-generated prose survives.
 	const proseLines: string[] = [];
+	let currentItemName: string | null = null;
+	let currentItemIsNew = false;
+
 	for (let i = duplicate.startIdx + 1; i < duplicate.endIdx; i++) {
-		if (!CHECKBOX_REGEX.test(lines[i])) {
-			proseLines.push(lines[i]);
+		const line = lines[i];
+		const cbMatch = line.match(CHECKBOX_REGEX);
+		if (cbMatch) {
+			currentItemName = cbMatch[2].trim();
+			// "New" items (not in the first section) are inserted into section 1
+			// by insertMissingChecklistItemLines; their detail travels with them.
+			currentItemIsNew = !firstSectionItems.has(currentItemName);
+		} else if (HEADING_REGEX.test(line)) {
+			break;
+		} else if (line.trim() === '') {
+			// Blank line — end of any item's detail attachment.
+			currentItemName = null;
+			currentItemIsNew = false;
+		} else if (currentItemName === null) {
+			// Standalone prose before the first checkbox (or after a blank gap).
+			proseLines.push(line);
+		} else if (!currentItemIsNew) {
+			// Detail line of an EXISTING item — preserve as prose since the item
+			// won't be re-inserted and its detail would otherwise be lost.
+			proseLines.push(line);
 		}
+		// else: detail line of a NEW item — skipped; emitted in section 1.
 	}
+
 	// Trim leading/trailing blank lines so we don't emit orphaned whitespace.
 	while (proseLines.length > 0 && proseLines[0].trim() === '') proseLines.shift();
 	while (proseLines.length > 0 && proseLines[proseLines.length - 1].trim() === '') proseLines.pop();

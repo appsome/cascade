@@ -316,6 +316,30 @@ Keep me.`);
 		// Detail immediately follows First, not Second.
 		expect(result.indexOf('  Detail for First')).toBeLessThan(result.indexOf('- [ ] Second'));
 	});
+
+	it('detail line from a duplicate section travels with its checkbox into the first section', () => {
+		// Exact reviewer repro (review comment #3226669603):
+		// upsertChecklistSection("### AC\n- [ ] First\n\n### AC\n- [ ] Second\n  Detail for Second", "AC", [])
+		// must NOT orphan "  Detail for Second" after a blank line;
+		// it must be emitted immediately after "- [ ] Second" in the merged section.
+		const desc = '### AC\n- [ ] First\n\n### AC\n- [ ] Second\n  Detail for Second';
+
+		const result = upsertChecklistSection(desc, 'AC', []);
+
+		// Heading appears exactly once.
+		expect(result.match(/^### AC$/gm)).toHaveLength(1);
+		// Both items present.
+		expect(result).toContain('- [ ] First');
+		expect(result).toContain('- [ ] Second');
+		// Detail line is present and immediately follows Second (not orphaned after a blank line).
+		expect(result).toContain('  Detail for Second');
+		const secondIdx = result.indexOf('- [ ] Second');
+		const detailIdx = result.indexOf('  Detail for Second');
+		const blankAfterSecond = result.indexOf('\n\n', secondIdx);
+		// Detail must appear after Second but before any blank line gap (i.e. no orphan gap).
+		expect(detailIdx).toBeGreaterThan(secondIdx);
+		expect(blankAfterSecond === -1 || detailIdx < blankAfterSecond).toBe(true);
+	});
 });
 
 describe('upsertItemInChecklist', () => {

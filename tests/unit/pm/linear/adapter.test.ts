@@ -873,6 +873,39 @@ describe('LinearPMProvider', () => {
 			expect(description.match(/^### ✅ AC$/gm)).toHaveLength(1);
 			expect(description.match(/First item/g)).toHaveLength(1);
 		});
+
+		it('uses cross-process sidecar as fresh base when in-process cache is cold (different process)', async () => {
+			// Regression: review comment #3226669608 — the in-process recentDescriptions cache
+			// doesn't help a *second OS process* that acquires the lock after the first exits.
+			// The sidecar file written while holding the lock provides the cross-process fresh base.
+			//
+			// Simulate: process A writes checklist → clears in-process cache (new process B) →
+			// Linear GET returns stale description → process B must read sidecar, not Linear.
+			let description = 'Existing.';
+			const staleDescription = 'Existing.'; // Linear always returns pre-write state (stale)
+			mockGetIssue.mockImplementation(async () => makeIssue({ description: staleDescription }));
+			mockUpdateIssue.mockImplementation(async (_id, updates: { description?: string }) => {
+				description = updates.description ?? description;
+				return makeIssue({ description });
+			});
+
+			// Process A: create checklist — sidecar is written while lock is held.
+			await provider.createChecklistWithItems('issue-uuid', '✅ AC', [{ name: 'First item' }]);
+			expect(mockUpdateIssue).toHaveBeenCalledTimes(1);
+
+			// Simulate process boundary: wipe the in-process cache.
+			// Without the sidecar, the next call would base off stale Linear GET.
+			__resetRecentDescriptionsForTests();
+
+			// Process B: retry with the same args while Linear still returns stale description.
+			await provider.createChecklistWithItems('issue-uuid', '✅ AC', [{ name: 'First item' }]);
+
+			// The sidecar (written by process A) must have served as the fresh base so the
+			// checklist section and item appear exactly once — not duplicated.
+			expect(description).toBe('Existing.\n\n### ✅ AC\n- [ ] First item');
+			expect(description.match(/^### ✅ AC$/gm)).toHaveLength(1);
+			expect(description.match(/First item/g)).toHaveLength(1);
+		});
 	});
 
 	// =========================================================================

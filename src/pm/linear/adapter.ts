@@ -11,7 +11,11 @@
 import { resolveLabelId as sharedResolveLabelId } from '../../integrations/pm/_shared/label-id-resolver.js';
 import { linearClient } from '../../linear/client.js';
 import { logger } from '../../utils/logging.js';
-import { withDescriptionMutationLock } from '../_shared/description-mutation-lock.js';
+import {
+	readLockedDescription,
+	withDescriptionMutationLock,
+	writeLockedDescription,
+} from '../_shared/description-mutation-lock.js';
 import {
 	buildChecklistId,
 	findChecklistNameByHash,
@@ -42,11 +46,19 @@ import type {
  * In-process read-after-write cache of recently-PUT issue descriptions.
  *
  * Linear's API is eventually consistent: a GET issued moments after a PUT can
- * return the previous description. After each successful PUT, keep the new
- * description here so the next locked mutation starts from the freshest
- * in-process value instead of overwriting it with a stale read.
+ * return the previous description for seconds.  After each successful PUT we
+ * store the new description in two places:
  *
- * Scope: in-process only, matching `withDescriptionMutationLock`.
+ * 1. This in-process map — fast, zero I/O, covers same-process retries and
+ *    consecutive mutations within the same `cascade-tools` invocation.
+ *
+ * 2. A filesystem sidecar file (via `writeLockedDescription`) — durable
+ *    across process boundaries.  Because `withDescriptionMutationLock` is a
+ *    filesystem lock shared by all `cascade-tools` processes on the same
+ *    host, a second process can acquire the lock after this one releases it
+ *    with an empty in-process cache.  The sidecar, written while holding the
+ *    lock, provides that process with the fresh base so it doesn't overwrite
+ *    the first process's accepted write with a stale Linear snapshot.
  */
 const RECENT_DESCRIPTION_TTL_MS = 60_000;
 type RecentDescription = { description: string; timestamp: number };
@@ -365,6 +377,12 @@ export class LinearPMProvider implements PMProvider {
 		issueId: string,
 		mutate: (desc: string) => string,
 	): Promise<void> {
+		// Read the cross-process sidecar first — if a different process wrote a
+		// description under this lock before us, its sidecar is more authoritative
+		// than a potentially-stale Linear GET.  Called here (inside the lock body)
+		// so the read is serialized with any concurrent writes.
+		const sidecarDescription = await readLockedDescription('linear', issueId);
+
 		for (let attempt = 0; attempt < 2; attempt++) {
 			let issue: Awaited<ReturnType<typeof linearClient.getIssue>>;
 			try {
@@ -377,13 +395,18 @@ export class LinearPMProvider implements PMProvider {
 				throw err;
 			}
 
-			const cachedDescription = recallRecentDescription(issueId);
+			// Precedence: sidecar (cross-process durable) > in-process cache >
+			// Linear GET (may be stale due to eventual consistency).
+			const inProcessDescription = recallRecentDescription(issueId);
+			const freshDescription = sidecarDescription ?? inProcessDescription;
 			const baseDescription =
-				cachedDescription !== undefined ? cachedDescription : (issue.description ?? '');
+				freshDescription !== undefined ? freshDescription : (issue.description ?? '');
 			const newDesc = mutate(baseDescription);
 			try {
 				await linearClient.updateIssue(issueId, { description: newDesc });
 				rememberRecentDescription(issueId, newDesc);
+				// Persist for the next process that acquires this lock.
+				await writeLockedDescription('linear', issueId, newDesc);
 				return;
 			} catch (err) {
 				if (attempt === 0) {
