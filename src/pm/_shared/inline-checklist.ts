@@ -456,6 +456,30 @@ function rewriteChecklistSectionLine(
 	state.lastCheckboxIdx = state.lines.length - 1;
 }
 
+/**
+ * Find where to splice new checkbox rows after the last existing checkbox.
+ *
+ * We scan forward past any non-blank detail/prose lines that immediately follow
+ * `lastCheckboxIdx` and stop at the first blank line (section boundary). This
+ * ensures newly-merged rows land *after* detail belonging to the previous item,
+ * not before it — which would visually re-attribute those detail lines to the
+ * wrong (newly-inserted) item.
+ */
+function findMissingItemsInsertionIndex(lines: string[], lastCheckboxIdx: number): number {
+	if (lastCheckboxIdx === -1) {
+		return 1; // No checkboxes yet; insert right after the heading.
+	}
+	let insertIdx = lastCheckboxIdx;
+	for (let i = lastCheckboxIdx + 1; i < lines.length; i++) {
+		if (lines[i].trim() !== '') {
+			insertIdx = i; // Non-blank detail/prose line — advance past it.
+		} else {
+			break; // Blank line — stop; don't cross section boundaries.
+		}
+	}
+	return insertIdx + 1;
+}
+
 function insertMissingChecklistItemLines(
 	state: { lines: string[]; seen: Set<string>; lastCheckboxIdx: number },
 	mergedItems: Map<string, boolean>,
@@ -467,28 +491,7 @@ function insertMissingChecklistItemLines(
 		}
 	}
 	if (missingItemLines.length > 0) {
-		// Determine insertion point: immediately after the last checkbox AND any
-		// trailing non-blank detail/prose lines that follow it. Inserting at
-		// lastCheckboxIdx + 1 would place new rows before those detail lines,
-		// visually re-attributing them to the wrong (newly-inserted) item.
-		// We stop advancing at the first blank line so we never cross a section
-		// boundary or an intentional separator.
-		let insertIdx: number;
-		if (state.lastCheckboxIdx === -1) {
-			insertIdx = 1; // No checkboxes yet; insert right after the heading.
-		} else {
-			insertIdx = state.lastCheckboxIdx;
-			for (let i = state.lastCheckboxIdx + 1; i < state.lines.length; i++) {
-				if (state.lines[i].trim() !== '') {
-					// Non-blank detail/prose line — advance past it.
-					insertIdx = i;
-				} else {
-					// Blank line — stop; don't cross section boundaries.
-					break;
-				}
-			}
-			insertIdx += 1;
-		}
+		const insertIdx = findMissingItemsInsertionIndex(state.lines, state.lastCheckboxIdx);
 		state.lines.splice(insertIdx, 0, ...missingItemLines);
 	}
 }
