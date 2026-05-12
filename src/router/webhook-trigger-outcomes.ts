@@ -5,7 +5,7 @@ import { logger } from '../utils/logging.js';
 import { clearAgentTypeEnqueued, clearRecentlyDispatched } from './agent-type-lock.js';
 import type { RouterProjectConfig } from './config.js';
 import type { ParsedWebhookEvent, RouterPlatformAdapter } from './platform-adapter.js';
-import { addJob, scheduleCoalescedJob } from './queue.js';
+import { addJob, hasPendingCoalescedJob, scheduleCoalescedJob } from './queue.js';
 import {
 	checkDispatchLocks,
 	markCoalescedDispatchEnqueued,
@@ -190,6 +190,22 @@ async function maybeHandleCoalescedDispatch({
 	}
 
 	try {
+		const hasPendingForKey = await hasPendingCoalescedJob(result.coalesceKey);
+		if (!hasPendingForKey) {
+			const lockCheck = await checkDispatchLocks({
+				adapterType: adapter.type,
+				projectId: project.id,
+				result: result as TriggerResult & { agentType: string },
+			});
+			if (lockCheck.blocked) {
+				return {
+					shouldProcess: true,
+					projectId: project.id,
+					decisionReason: lockCheck.decisionReason,
+				};
+			}
+		}
+
 		const { superseded, supersededJobData } = await scheduleCoalescedJob(
 			job,
 			result.coalesceKey,

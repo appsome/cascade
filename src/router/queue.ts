@@ -153,6 +153,11 @@ export async function addJob(job: CascadeJob): Promise<string> {
 	return result.id ?? jobId;
 }
 
+export async function hasPendingCoalescedJob(coalesceKey: string): Promise<boolean> {
+	const [delayed, waiting] = await Promise.all([jobQueue.getDelayed(), jobQueue.getWaiting()]);
+	return [...delayed, ...waiting].some((j) => j.name === coalesceKey);
+}
+
 export interface ScheduleCoalescedJobResult {
 	/** The unique BullMQ job id for the newly-scheduled delayed job. */
 	jobId: string;
