@@ -13,8 +13,6 @@ import { linearClient } from '../../linear/client.js';
 import { logger } from '../../utils/logging.js';
 import { withDescriptionMutationLock } from '../_shared/description-mutation-lock.js';
 import {
-	addItemToChecklist,
-	appendChecklistSection,
 	buildChecklistId,
 	findChecklistNameByHash,
 	hashChecklistItemId,
@@ -22,6 +20,8 @@ import {
 	parseInlineChecklists,
 	removeChecklistItem,
 	toggleChecklistItem,
+	upsertChecklistSection,
+	upsertItemInChecklist,
 } from '../_shared/inline-checklist.js';
 import type { LinearConfig } from '../config.js';
 import type { ContainerId, LabelId } from '../ids.js';
@@ -41,23 +41,12 @@ import type {
 /**
  * In-process read-after-write cache of recently-PUT issue descriptions.
  *
- * Linear's API is eventually consistent — a GET issued moments after a PUT
- * can return the previous description for seconds. Polling the GET until
- * visibility (the prior approach in commit fad4dda1) was too aggressive
- * (1s timeout) and DOSed itself: planning runs MNG-741 / MNG-736 / MNG-739
- * (2026-05-12) all failed with "Linear description visibility timed out"
- * even though every PUT succeeded on Linear's side.
+ * Linear's API is eventually consistent: a GET issued moments after a PUT can
+ * return the previous description. After each successful PUT, keep the new
+ * description here so the next locked mutation starts from the freshest
+ * in-process value instead of overwriting it with a stale read.
  *
- * The new contract: after each successful PUT, store the new description
- * here. The next `updateDescription` call consults the cache before
- * mutating — if the GET returned a stale value within the consistency
- * window, the cached value wins. After TTL the entry is evicted and the
- * GET becomes authoritative again.
- *
- * Scope: in-process only. Cross-process races against Linear's eventual
- * consistency are NOT new to this fix and were never solved by the
- * visibility wait — the existing `withDescriptionMutationLock` is
- * process-local too.
+ * Scope: in-process only, matching `withDescriptionMutationLock`.
  */
 const RECENT_DESCRIPTION_TTL_MS = 60_000;
 type RecentDescription = { description: string; timestamp: number };
@@ -65,7 +54,6 @@ const recentDescriptions = new Map<string, RecentDescription>();
 
 function rememberRecentDescription(issueId: string, description: string): void {
 	recentDescriptions.set(issueId, { description, timestamp: Date.now() });
-	// Lazy cleanup — keep the map small without a setInterval.
 	if (recentDescriptions.size > 200) {
 		const cutoff = Date.now() - RECENT_DESCRIPTION_TTL_MS;
 		for (const [id, entry] of recentDescriptions.entries()) {
@@ -84,14 +72,10 @@ function recallRecentDescription(issueId: string): string | undefined {
 	return entry.description;
 }
 
-/**
- * Test-only escape hatch — each test starts with an empty cache so module-
- * level state doesn't leak between cases. NOT exported via the public API;
- * called only from `tests/unit/pm/linear/adapter.test.ts`.
- */
 export function __resetRecentDescriptionsForTests(): void {
 	recentDescriptions.clear();
 }
+
 const CASCADE_STATUS_KEYS = new Set([
 	'backlog',
 	'todo',
@@ -288,7 +272,7 @@ export class LinearPMProvider implements PMProvider {
 	}
 
 	async createChecklist(workItemId: string, name: string): Promise<Checklist> {
-		await this.updateDescription(workItemId, (desc) => appendChecklistSection(desc, name, []));
+		await this.updateDescription(workItemId, (desc) => upsertChecklistSection(desc, name, []));
 		return {
 			id: buildChecklistId(workItemId, name),
 			name,
@@ -302,12 +286,12 @@ export class LinearPMProvider implements PMProvider {
 		name: string,
 		items: ChecklistItemDraft[],
 	): Promise<Checklist> {
+		const checklistItems = items.map((item) => ({
+			name: item.name,
+			checked: item.checked ?? false,
+		}));
 		await this.updateDescription(workItemId, (desc) =>
-			appendChecklistSection(
-				desc,
-				name,
-				items.map((item) => ({ name: item.name, checked: item.checked ?? false })),
-			),
+			upsertChecklistSection(desc, name, checklistItems),
 		);
 
 		return {
@@ -338,7 +322,7 @@ export class LinearPMProvider implements PMProvider {
 			if (!checklistName) {
 				throw new Error(`Checklist not found in description: ${checklistId}`);
 			}
-			return addItemToChecklist(desc, checklistName, name, checked);
+			return upsertItemInChecklist(desc, checklistName, name, checked);
 		});
 		logger.debug('[Linear] addChecklistItem — appended inline checkbox', {
 			workItemId: parsed.workItemId,
@@ -393,11 +377,6 @@ export class LinearPMProvider implements PMProvider {
 				throw err;
 			}
 
-			// Read-after-write consistency: if we recently PUT a newer description
-			// for this issue and the GET above returned the stale pre-PUT value
-			// (Linear's eventual-consistency window), use the cached fresh value
-			// as the source of truth for the mutation. Without this, consecutive
-			// in-process updates can read-modify-write over each other.
 			const cachedDescription = recallRecentDescription(issueId);
 			const baseDescription =
 				cachedDescription !== undefined ? cachedDescription : (issue.description ?? '');

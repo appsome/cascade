@@ -43,6 +43,34 @@ export function parseInlineChecklists(description: string): ParsedChecklist[] {
 	return state.checklists;
 }
 
+export function checklistSectionContainsItems(
+	description: string,
+	checklistName: string,
+	items: { name: string; checked?: boolean }[],
+): boolean {
+	const deduped = dedupeChecklistSections(description, checklistName);
+	const section = findChecklistSection(deduped.split('\n'), checklistName);
+	if (!section) return false;
+	const sectionItems = collectSectionItems(deduped.split('\n'), section);
+	return items.every((item) => {
+		const actual = sectionItems.get(item.name);
+		if (actual === undefined) return false;
+		return item.checked === undefined || actual === item.checked || actual === true;
+	});
+}
+
+export function checklistItemStateSatisfied(
+	description: string,
+	checklistName: string,
+	itemName: string,
+	checked: boolean,
+): boolean {
+	const deduped = dedupeChecklistSections(description, checklistName);
+	const section = findChecklistSection(deduped.split('\n'), checklistName);
+	if (!section) return false;
+	return collectSectionItems(deduped.split('\n'), section).get(itemName) === checked;
+}
+
 interface ParseState {
 	checklists: ParsedChecklist[];
 	current: ParsedChecklist | null;
@@ -176,6 +204,26 @@ export function appendChecklistSection(
 	return `${description.trimEnd()}\n\n${section}`;
 }
 
+export function upsertChecklistSection(
+	description: string,
+	checklistName: string,
+	items: { name: string; checked: boolean }[],
+): string {
+	const deduped = dedupeChecklistSections(description, checklistName);
+	const lines = deduped ? deduped.split('\n') : [];
+	const section = findChecklistSection(lines, checklistName);
+
+	if (!section) {
+		return appendChecklistSection(deduped, checklistName, items);
+	}
+
+	if (items.length === 0) return deduped;
+	return dedupeChecklistSections(
+		appendChecklistSection(deduped, checklistName, items),
+		checklistName,
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Adding a single item
 // ---------------------------------------------------------------------------
@@ -187,29 +235,7 @@ export function addItemToChecklist(
 	checked = false,
 ): string {
 	const lines = description.split('\n');
-	const heading = `### ${checklistName}`;
-	let insertIdx = -1;
-	let inSection = false;
-
-	for (let i = 0; i < lines.length; i++) {
-		if (lines[i] === heading) {
-			inSection = true;
-			insertIdx = i;
-			continue;
-		}
-		if (inSection) {
-			if (CHECKBOX_REGEX.test(lines[i])) {
-				insertIdx = i;
-			} else if (HEADING_REGEX.test(lines[i])) {
-				break;
-			} else if (lines[i].trim() !== '') {
-				// Non-empty detail/prose line — advance insertIdx so new items land
-				// after all trailing detail belonging to the previous item, not before it.
-				insertIdx = i;
-			}
-		}
-	}
-
+	const insertIdx = findChecklistInsertionIndex(lines, checklistName);
 	if (insertIdx === -1) {
 		throw new Error(`Checklist section "${checklistName}" not found in description`);
 	}
@@ -217,6 +243,31 @@ export function addItemToChecklist(
 	const newLine = `- [${checked ? 'x' : ' '}] ${itemName}`;
 	lines.splice(insertIdx + 1, 0, newLine);
 	return lines.join('\n');
+}
+
+export function upsertItemInChecklist(
+	description: string,
+	checklistName: string,
+	itemName: string,
+	checked = false,
+): string {
+	const deduped = dedupeChecklistSections(description, checklistName);
+	const lines = deduped.split('\n');
+	const section = findChecklistSection(lines, checklistName);
+	if (!section) {
+		throw new Error(`Checklist section "${checklistName}" not found in description`);
+	}
+
+	const existing = findItemLineInSection(lines, section, itemName);
+	if (existing !== -1) {
+		const existingChecked = lines[existing].match(CHECKBOX_REGEX)?.[1] === 'x';
+		if (checked && !existingChecked) {
+			lines[existing] = `- [x] ${itemName}`;
+		}
+		return lines.join('\n');
+	}
+
+	return addItemToChecklist(deduped, checklistName, itemName, checked);
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +364,202 @@ interface SectionScan {
 	itemCount: number;
 	/** Index of the last non-empty line in the section (may be a detail line after the last checkbox). */
 	lastContentIdx: number;
+}
+
+interface ChecklistSectionSpan {
+	name: string;
+	startIdx: number;
+	endIdx: number;
+}
+
+function dedupeChecklistSections(description: string, checklistName: string): string {
+	if (!description) return description;
+	const lines = description.split('\n');
+	const sections = scanChecklistSections(lines).filter((section) => section.name === checklistName);
+	if (sections.length <= 1) return description;
+
+	const first = sections[0];
+	const mergedItems = collectMergedSectionItems(lines, sections);
+	const rewrittenFirstSection = rewriteChecklistSection(
+		lines.slice(first.startIdx, first.endIdx),
+		mergedItems,
+	);
+	return removeDuplicateChecklistSections(lines, sections, rewrittenFirstSection);
+}
+
+function findChecklistInsertionIndex(lines: string[], checklistName: string): number {
+	const heading = `### ${checklistName}`;
+	let insertIdx = -1;
+	let inSection = false;
+
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i] === heading) {
+			inSection = true;
+			insertIdx = i;
+			continue;
+		}
+		if (!inSection) continue;
+		if (CHECKBOX_REGEX.test(lines[i])) {
+			insertIdx = i;
+		} else if (HEADING_REGEX.test(lines[i])) {
+			break;
+		} else if (lines[i].trim() !== '') {
+			// Non-empty detail/prose line — advance insertIdx so new items land
+			// after all trailing detail belonging to the previous item, not before it.
+			insertIdx = i;
+		}
+	}
+
+	return insertIdx;
+}
+
+function collectMergedSectionItems(
+	lines: string[],
+	sections: ChecklistSectionSpan[],
+): Map<string, boolean> {
+	const mergedItems = new Map<string, boolean>();
+	for (const section of sections) {
+		for (const [name, checked] of collectSectionItems(lines, section)) {
+			mergedItems.set(name, (mergedItems.get(name) ?? false) || checked);
+		}
+	}
+	return mergedItems;
+}
+
+function rewriteChecklistSection(
+	sectionLines: string[],
+	mergedItems: Map<string, boolean>,
+): string[] {
+	const state = { lines: [] as string[], seen: new Set<string>(), lastCheckboxIdx: -1 };
+	for (const line of sectionLines) {
+		rewriteChecklistSectionLine(state, line, mergedItems);
+	}
+	insertMissingChecklistItemLines(state, mergedItems);
+	return state.lines;
+}
+
+function rewriteChecklistSectionLine(
+	state: { lines: string[]; seen: Set<string>; lastCheckboxIdx: number },
+	line: string,
+	mergedItems: Map<string, boolean>,
+): void {
+	const cbMatch = line.match(CHECKBOX_REGEX);
+	if (!cbMatch) {
+		state.lines.push(line);
+		return;
+	}
+	const itemName = cbMatch[2].trim();
+	if (state.seen.has(itemName)) return;
+	state.seen.add(itemName);
+	const checked = (mergedItems.get(itemName) ?? false) || cbMatch[1] === 'x';
+	state.lines.push(`- [${checked ? 'x' : ' '}] ${itemName}`);
+	state.lastCheckboxIdx = state.lines.length - 1;
+}
+
+function insertMissingChecklistItemLines(
+	state: { lines: string[]; seen: Set<string>; lastCheckboxIdx: number },
+	mergedItems: Map<string, boolean>,
+): void {
+	const missingItemLines: string[] = [];
+	for (const [itemName, checked] of mergedItems) {
+		if (!state.seen.has(itemName)) {
+			missingItemLines.push(`- [${checked ? 'x' : ' '}] ${itemName}`);
+		}
+	}
+	if (missingItemLines.length > 0) {
+		const insertIdx = state.lastCheckboxIdx === -1 ? 1 : state.lastCheckboxIdx + 1;
+		state.lines.splice(insertIdx, 0, ...missingItemLines);
+	}
+}
+
+function removeDuplicateChecklistSections(
+	lines: string[],
+	sections: ChecklistSectionSpan[],
+	rewrittenFirstSection: string[],
+): string {
+	const first = sections[0];
+	const output: string[] = [];
+	for (let i = 0; i < lines.length; ) {
+		if (i === first.startIdx) {
+			output.push(...rewrittenFirstSection);
+			i = first.endIdx;
+			continue;
+		}
+		const duplicate = findSectionStartingAt(sections, i);
+		if (duplicate) {
+			i = skipRemovedDuplicateSection(lines, output, duplicate);
+			continue;
+		}
+		output.push(lines[i]);
+		i++;
+	}
+
+	return output.join('\n').trimEnd();
+}
+
+function findSectionStartingAt(
+	sections: ChecklistSectionSpan[],
+	lineIdx: number,
+): ChecklistSectionSpan | undefined {
+	return sections.find((section) => section.startIdx === lineIdx);
+}
+
+function skipRemovedDuplicateSection(
+	lines: string[],
+	output: string[],
+	duplicate: ChecklistSectionSpan,
+): number {
+	let nextIdx = duplicate.endIdx;
+	while (output.length > 0 && output[output.length - 1].trim() === '') output.pop();
+	while (nextIdx < lines.length && lines[nextIdx].trim() === '') nextIdx++;
+	if (nextIdx < lines.length && output.length > 0 && output[output.length - 1].trim() !== '') {
+		output.push('');
+	}
+	return nextIdx;
+}
+
+function scanChecklistSections(lines: string[]): ChecklistSectionSpan[] {
+	const sections: ChecklistSectionSpan[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const match = lines[i].match(H3_REGEX);
+		if (!match) continue;
+		let endIdx = lines.length;
+		for (let j = i + 1; j < lines.length; j++) {
+			if (HEADING_REGEX.test(lines[j])) {
+				endIdx = j;
+				break;
+			}
+		}
+		sections.push({ name: match[1], startIdx: i, endIdx });
+	}
+	return sections;
+}
+
+function findChecklistSection(lines: string[], checklistName: string): ChecklistSectionSpan | null {
+	return scanChecklistSections(lines).find((section) => section.name === checklistName) ?? null;
+}
+
+function collectSectionItems(lines: string[], section: ChecklistSectionSpan): Map<string, boolean> {
+	const items = new Map<string, boolean>();
+	for (let i = section.startIdx + 1; i < section.endIdx; i++) {
+		const match = lines[i].match(CHECKBOX_REGEX);
+		if (!match) continue;
+		const name = match[2].trim();
+		items.set(name, (items.get(name) ?? false) || match[1] === 'x');
+	}
+	return items;
+}
+
+function findItemLineInSection(
+	lines: string[],
+	section: ChecklistSectionSpan,
+	itemName: string,
+): number {
+	for (let i = section.startIdx + 1; i < section.endIdx; i++) {
+		const match = lines[i].match(CHECKBOX_REGEX);
+		if (match && match[2].trim() === itemName) return i;
+	}
+	return -1;
 }
 
 function scanSection(lines: string[], checklistName: string, targetItemName: string): SectionScan {
