@@ -295,6 +295,27 @@ Keep me.`);
 		// Checkbox items are merged correctly.
 		expect(result).toContain('- [x] First');
 	});
+
+	it('inserts merged rows after trailing detail lines so they stay attached to their parent item', () => {
+		// Regression: MNG-741 — rows merged from a duplicate section were inserted at
+		// lastCheckboxIdx + 1, which placed them BEFORE any trailing detail/prose
+		// belonging to the last existing checkbox. The detail was then visually
+		// re-attributed to the newly inserted item (review comment #3226513749).
+		// ### AC\n- [ ] First\n  Detail for First\n\n### AC\n- [ ] Second
+		// must NOT become:  - [ ] First\n- [ ] Second\n  Detail for First
+		// but instead:      - [ ] First\n  Detail for First\n- [ ] Second
+		const desc = '### AC\n- [ ] First\n  Detail for First\n\n### AC\n- [ ] Second';
+
+		const result = upsertChecklistSection(desc, 'AC', []);
+
+		expect(result).toBe('### AC\n- [ ] First\n  Detail for First\n- [ ] Second');
+		// Heading appears exactly once.
+		expect(result.match(/^### AC$/gm)).toHaveLength(1);
+		// Detail line is still present and not displaced.
+		expect(result).toContain('  Detail for First');
+		// Detail immediately follows First, not Second.
+		expect(result.indexOf('  Detail for First')).toBeLessThan(result.indexOf('- [ ] Second'));
+	});
 });
 
 describe('upsertItemInChecklist', () => {
