@@ -1,12 +1,11 @@
-import { runAgent } from '../../agents/registry.js';
 import { isAgentEnabledForProject } from '../../db/repositories/agentConfigsRepository.js';
-import { createWorkItem } from '../../db/repositories/prWorkItemsRepository.js';
 import { getRunById } from '../../db/repositories/runsRepository.js';
 import { withPMCredentials } from '../../pm/context.js';
 import { createPMProvider, pmRegistry, withPMProvider } from '../../pm/index.js';
-import type { AgentInput, CascadeConfig, ProjectConfig } from '../../types/index.js';
+import type { AgentInput, CascadeConfig, ProjectConfig, TriggerResult } from '../../types/index.js';
 import { startWatchdog } from '../../utils/lifecycle.js';
 import { logger } from '../../utils/logging.js';
+import { runAgentExecutionPipeline } from './agent-execution.js';
 import { formatValidationErrors, validateIntegrations } from './integration-validation.js';
 
 /**
@@ -116,7 +115,7 @@ export async function triggerManualRun(
 
 	markTriggerRunning(triggerKey);
 
-	const agentInput: AgentInput & { project: ProjectConfig; config: CascadeConfig } = {
+	const agentInput: AgentInput = {
 		workItemId: input.workItemId,
 		workItemUrl: input.workItemUrl,
 		workItemTitle: input.workItemTitle,
@@ -131,43 +130,31 @@ export async function triggerManualRun(
 		triggerCommentUrl: input.triggerCommentUrl,
 		triggerCommentPath: input.triggerCommentPath,
 		triggerCommentAuthor: input.triggerCommentAuthor,
-		project,
-		config,
+	};
+	const triggerResult: TriggerResult = {
+		agentType: input.agentType,
+		agentInput,
+		workItemId: input.workItemId,
+		workItemUrl: input.workItemUrl,
+		workItemTitle: input.workItemTitle,
+		prNumber: input.prNumber,
 	};
 
 	try {
 		startWatchdog(project.watchdogTimeoutMs);
 
-		if (input.workItemId && (input.workItemUrl || input.workItemTitle)) {
-			try {
-				await createWorkItem(project.id, input.workItemId, {
-					workItemUrl: input.workItemUrl,
-					workItemTitle: input.workItemTitle,
-				});
-			} catch (err) {
-				logger.warn('Failed to persist work-item row for manual run', {
-					projectId: project.id,
-					workItemId: input.workItemId,
-					error: String(err),
-				});
-			}
-		}
-
 		const pmProvider = createPMProvider(project);
-		const result = await withPMCredentials(
+		await withPMCredentials(
 			project.id,
 			project.pm?.type,
 			(t) => pmRegistry.getOrNull(t),
-			() => withPMProvider(pmProvider, () => runAgent(input.agentType, agentInput)),
+			() =>
+				withPMProvider(pmProvider, () => runAgentExecutionPipeline(triggerResult, project, config)),
 		);
-		if (result !== undefined) {
-			logger.info('Manual agent run completed', {
-				projectId: input.projectId,
-				agentType: input.agentType,
-				success: result.success,
-				runId: result.runId,
-			});
-		}
+		logger.info('Manual agent run completed', {
+			projectId: input.projectId,
+			agentType: input.agentType,
+		});
 	} catch (err) {
 		logger.error('Manual agent run failed', {
 			projectId: input.projectId,
