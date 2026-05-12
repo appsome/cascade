@@ -395,12 +395,36 @@ export class LinearPMProvider implements PMProvider {
 				throw err;
 			}
 
-			// Precedence: sidecar (cross-process durable) > in-process cache >
-			// Linear GET (may be stale due to eventual consistency).
+			// Choose the base description carefully to handle two competing risks:
+			// 1. Linear's eventual consistency: a GET issued shortly after a PUT
+			//    can return the pre-write description.  Our sidecar / in-process
+			//    cache records the last accepted write so we don't overwrite it.
+			// 2. External human edits: if a user has edited the description in
+			//    Linear *after* our last write, the provider read is the freshest
+			//    state and must win — otherwise we'd silently drop their changes.
+			//
+			// Heuristic: if the provider read *contains* our last known-good write
+			// (the sidecar / in-process cache), it is at least as current — prefer
+			// it so external edits that arrived after our write are preserved.
+			// If the provider read does NOT contain our last write, it is
+			// demonstrably stale (Linear hasn't propagated our PUT yet) — fall back
+			// to the sidecar / in-process cache.
 			const inProcessDescription = recallRecentDescription(issueId);
-			const freshDescription = sidecarDescription ?? inProcessDescription;
-			const baseDescription =
-				freshDescription !== undefined ? freshDescription : (issue.description ?? '');
+			const bestKnown = sidecarDescription ?? inProcessDescription;
+			let baseDescription: string;
+			if (bestKnown !== undefined) {
+				const providerDesc = issue.description ?? '';
+				if (providerDesc.trimEnd().includes(bestKnown.trimEnd())) {
+					// Provider read is at least as current as our last write — use it
+					// to preserve any external edits that arrived after that write.
+					baseDescription = providerDesc;
+				} else {
+					// Provider read is stale — use our last known-good write as the base.
+					baseDescription = bestKnown;
+				}
+			} else {
+				baseDescription = issue.description ?? '';
+			}
 			const newDesc = mutate(baseDescription);
 			try {
 				await linearClient.updateIssue(issueId, { description: newDesc });

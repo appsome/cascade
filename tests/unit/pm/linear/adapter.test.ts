@@ -906,6 +906,41 @@ describe('LinearPMProvider', () => {
 			expect(description.match(/^### ✅ AC$/gm)).toHaveLength(1);
 			expect(description.match(/First item/g)).toHaveLength(1);
 		});
+
+		it('preserves human edits that arrived between cascade writes (review #3226887552)', async () => {
+			// Reviewer repro: the sidecar was preferred unconditionally over the
+			// provider read, so a human edit that appeared in Linear *after* cascade's
+			// last write was silently dropped when a second cascade process added items.
+			// The fix: prefer the provider read when it already contains cascade's last
+			// known-good write (i.e. the provider is current, not stale).
+			let description = 'Existing.';
+			mockGetIssue.mockImplementation(async () => makeIssue({ description }));
+			mockUpdateIssue.mockImplementation(async (_id, updates: { description?: string }) => {
+				description = updates.description ?? description;
+				return makeIssue({ description });
+			});
+
+			// Process A: create checklist.
+			await provider.createChecklistWithItems('issue-uuid', '✅ AC', [{ name: 'First item' }]);
+			expect(description).toBe('Existing.\n\n### ✅ AC\n- [ ] First item');
+
+			// Human edits the description directly in Linear after cascade's write.
+			description += '\nHuman edit that should survive.';
+
+			// Simulate process boundary: clear in-process cache (new process B).
+			__resetRecentDescriptionsForTests();
+
+			// Process B: Linear GET now returns the human-edited description (current),
+			// while the sidecar still has the pre-human-edit snapshot.
+			await provider.createChecklistWithItems('issue-uuid', '✅ AC', [{ name: 'Second item' }]);
+
+			// Human edit and both cascade items must be present, without duplication.
+			expect(description).toContain('Human edit that should survive.');
+			expect(description).toContain('- [ ] First item');
+			expect(description).toContain('- [ ] Second item');
+			expect(description.match(/First item/g)).toHaveLength(1);
+			expect(description.match(/Second item/g)).toHaveLength(1);
+		});
 	});
 
 	// =========================================================================

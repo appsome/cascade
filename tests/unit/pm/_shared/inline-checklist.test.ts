@@ -340,6 +340,30 @@ Keep me.`);
 		expect(detailIdx).toBeGreaterThan(secondIdx);
 		expect(blankAfterSecond === -1 || detailIdx < blankAfterSecond).toBe(true);
 	});
+
+	it('detail from duplicate section stays attached when existing item in section 1 has no prior detail', () => {
+		// Reviewer repro (review comment #3226887541):
+		// When section 1 has "- [ ] First" with no detail but the duplicate has
+		// "- [ ] First\n  Detail for duplicate First", convergence must NOT emit
+		// "  Detail for duplicate First" as orphaned prose after a blank line.
+		// It must be attached to "First" in the merged section.
+		const desc = '### AC\n- [ ] First\n\n### AC\n- [ ] First\n  Detail for duplicate First';
+
+		const result = upsertChecklistSection(desc, 'AC', []);
+
+		// Heading appears exactly once.
+		expect(result.match(/^### AC$/gm)).toHaveLength(1);
+		// Item present.
+		expect(result).toContain('- [ ] First');
+		// Detail is present.
+		expect(result).toContain('  Detail for duplicate First');
+		// Detail must immediately follow First with no blank-line gap (not orphaned).
+		const firstIdx = result.indexOf('- [ ] First');
+		const detailIdx = result.indexOf('  Detail for duplicate First');
+		const blankAfterFirst = result.indexOf('\n\n', firstIdx);
+		expect(detailIdx).toBeGreaterThan(firstIdx);
+		expect(blankAfterFirst === -1 || detailIdx < blankAfterFirst).toBe(true);
+	});
 });
 
 describe('upsertItemInChecklist', () => {
