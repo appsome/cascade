@@ -58,6 +58,12 @@ describe('workflowStatusDefinitionsRepository', () => {
 		expect(result?.key).toBe('prd');
 	});
 
+	it('returns null when custom workflow status is missing', async () => {
+		mockDb.chain.where.mockResolvedValueOnce([]);
+
+		await expect(getCustomWorkflowStatusDefinition('missing')).resolves.toBeNull();
+	});
+
 	it('creates a custom workflow status', async () => {
 		mockDb.chain.returning.mockResolvedValueOnce([dbRow]);
 
@@ -73,6 +79,29 @@ describe('workflowStatusDefinitionsRepository', () => {
 			statusKey: 'prd',
 			label: 'PRD',
 			agentType: 'prd',
+			sortOrder: 1000,
+		});
+	});
+
+	it('creates a custom workflow status with default agent and sort order', async () => {
+		mockDb.chain.returning.mockResolvedValueOnce([
+			{
+				...dbRow,
+				agentType: null,
+				sortOrder: 1000,
+			},
+		]);
+
+		const result = await createCustomWorkflowStatusDefinition({
+			key: 'qa',
+			label: 'QA',
+		});
+
+		expect(result.agentType).toBeNull();
+		expect(mockDb.chain.values).toHaveBeenCalledWith({
+			statusKey: 'qa',
+			label: 'QA',
+			agentType: null,
 			sortOrder: 1000,
 		});
 	});
@@ -96,9 +125,45 @@ describe('workflowStatusDefinitionsRepository', () => {
 		);
 	});
 
+	it('updates only the provided custom workflow status fields', async () => {
+		mockDb.chain.where.mockReturnValueOnce({ returning: mockDb.chain.returning });
+		mockDb.chain.returning.mockResolvedValueOnce([{ ...dbRow, sortOrder: 1100 }]);
+
+		const result = await updateCustomWorkflowStatusDefinition('prd', { sortOrder: 1100 });
+
+		expect(result?.sortOrder).toBe(1100);
+		expect(mockDb.chain.set).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sortOrder: 1100,
+				updatedAt: expect.any(Date),
+			}),
+		);
+	});
+
+	it('returns null when updating a missing custom workflow status', async () => {
+		mockDb.chain.where.mockReturnValueOnce({ returning: mockDb.chain.returning });
+		mockDb.chain.returning.mockResolvedValueOnce([]);
+
+		await expect(
+			updateCustomWorkflowStatusDefinition('missing', { label: 'Missing' }),
+		).resolves.toBeNull();
+	});
+
 	it('deletes a custom workflow status', async () => {
 		mockDb.chain.where.mockResolvedValueOnce({ rowCount: 1 });
 
 		await expect(deleteCustomWorkflowStatusDefinition('prd')).resolves.toBe(true);
+	});
+
+	it('returns false when deleting a missing custom workflow status', async () => {
+		mockDb.chain.where.mockResolvedValueOnce({ rowCount: 0 });
+
+		await expect(deleteCustomWorkflowStatusDefinition('missing')).resolves.toBe(false);
+	});
+
+	it('returns false when delete result omits rowCount', async () => {
+		mockDb.chain.where.mockResolvedValueOnce({});
+
+		await expect(deleteCustomWorkflowStatusDefinition('missing')).resolves.toBe(false);
 	});
 });

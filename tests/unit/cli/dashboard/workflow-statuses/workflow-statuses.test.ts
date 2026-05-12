@@ -113,6 +113,42 @@ describe('workflow-statuses CLI', () => {
 		});
 	});
 
+	it('outputs JSON when creating with --json', async () => {
+		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WorkflowStatusesCreate(
+			['--key', 'prd', '--label', 'PRD', '--agent-type', 'prd', '--json'],
+			oclifConfig as never,
+		);
+		await cmd.run();
+
+		expect(client.workflowStatuses.create.mutate).toHaveBeenCalledWith({
+			key: 'prd',
+			label: 'PRD',
+			agentType: 'prd',
+			sortOrder: undefined,
+		});
+	});
+
+	it('surfaces create errors', async () => {
+		const client = makeClient({
+			workflowStatuses: {
+				list: { query: vi.fn().mockResolvedValue([statusRow]) },
+				create: { mutate: vi.fn().mockRejectedValue(new Error('duplicate key')) },
+				update: { mutate: vi.fn().mockResolvedValue(statusRow) },
+				delete: { mutate: vi.fn().mockResolvedValue({ key: 'prd' }) },
+			},
+		});
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WorkflowStatusesCreate(
+			['--key', 'prd', '--label', 'PRD'],
+			oclifConfig as never,
+		);
+		await expect(cmd.run()).rejects.toThrow('duplicate key');
+	});
+
 	it('updates a workflow status', async () => {
 		const client = makeClient();
 		mockCreateDashboardClient.mockReturnValue(client);
@@ -128,6 +164,21 @@ describe('workflow-statuses CLI', () => {
 			label: 'Product Requirements',
 			agentType: 'prd-v2',
 			sortOrder: undefined,
+		});
+	});
+
+	it('updates only sort order', async () => {
+		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WorkflowStatusesUpdate(['prd', '--sort-order', '1100'], oclifConfig as never);
+		await cmd.run();
+
+		expect(client.workflowStatuses.update.mutate).toHaveBeenCalledWith({
+			key: 'prd',
+			label: undefined,
+			agentType: undefined,
+			sortOrder: 1100,
 		});
 	});
 
@@ -153,6 +204,39 @@ describe('workflow-statuses CLI', () => {
 		});
 	});
 
+	it('outputs JSON when updating with --json', async () => {
+		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WorkflowStatusesUpdate(
+			['prd', '--label', 'Product Requirements', '--json'],
+			oclifConfig as never,
+		);
+		await cmd.run();
+
+		expect(client.workflowStatuses.update.mutate).toHaveBeenCalledWith({
+			key: 'prd',
+			label: 'Product Requirements',
+			agentType: undefined,
+			sortOrder: undefined,
+		});
+	});
+
+	it('surfaces update errors', async () => {
+		const client = makeClient({
+			workflowStatuses: {
+				list: { query: vi.fn().mockResolvedValue([statusRow]) },
+				create: { mutate: vi.fn().mockResolvedValue(statusRow) },
+				update: { mutate: vi.fn().mockRejectedValue(new Error('missing status')) },
+				delete: { mutate: vi.fn().mockResolvedValue({ key: 'prd' }) },
+			},
+		});
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WorkflowStatusesUpdate(['prd', '--label', 'PRD'], oclifConfig as never);
+		await expect(cmd.run()).rejects.toThrow('missing status');
+	});
+
 	it('rejects update without changes', async () => {
 		const client = makeClient();
 		mockCreateDashboardClient.mockReturnValue(client);
@@ -170,6 +254,31 @@ describe('workflow-statuses CLI', () => {
 		await cmd.run();
 
 		expect(client.workflowStatuses.delete.mutate).toHaveBeenCalledWith({ key: 'prd' });
+	});
+
+	it('outputs JSON when deleting with --json', async () => {
+		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WorkflowStatusesDelete(['prd', '--yes', '--json'], oclifConfig as never);
+		await cmd.run();
+
+		expect(client.workflowStatuses.delete.mutate).toHaveBeenCalledWith({ key: 'prd' });
+	});
+
+	it('surfaces delete errors', async () => {
+		const client = makeClient({
+			workflowStatuses: {
+				list: { query: vi.fn().mockResolvedValue([statusRow]) },
+				create: { mutate: vi.fn().mockResolvedValue(statusRow) },
+				update: { mutate: vi.fn().mockResolvedValue(statusRow) },
+				delete: { mutate: vi.fn().mockRejectedValue(new Error('missing status')) },
+			},
+		});
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new WorkflowStatusesDelete(['prd', '--yes'], oclifConfig as never);
+		await expect(cmd.run()).rejects.toThrow('missing status');
 	});
 
 	it('requires --yes for delete', async () => {

@@ -115,6 +115,28 @@ describe('workflowStatusesRouter', () => {
 		});
 	});
 
+	it('creates a custom workflow status without a dispatch agent', async () => {
+		mockCreateCustomWorkflowStatusDefinition.mockResolvedValue({
+			id: 1,
+			key: 'qa',
+			label: 'QA',
+			agentType: null,
+			sortOrder: 1000,
+			createdAt: null,
+			updatedAt: null,
+		});
+
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+		await caller.create({ key: 'qa', label: 'QA', agentType: '' });
+
+		expect(mockResolveAgentDefinition).not.toHaveBeenCalled();
+		expect(mockCreateCustomWorkflowStatusDefinition).toHaveBeenCalledWith({
+			key: 'qa',
+			label: 'QA',
+			agentType: null,
+		});
+	});
+
 	it('rejects builtin key collisions', async () => {
 		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
 
@@ -122,6 +144,22 @@ describe('workflowStatusesRouter', () => {
 			caller.create({ key: 'todo', label: 'Todo override', agentType: 'prd' }),
 			'CONFLICT',
 		);
+	});
+
+	it('rejects duplicate custom status keys', async () => {
+		mockGetCustomWorkflowStatusDefinition.mockResolvedValue({
+			id: 1,
+			key: 'prd',
+			label: 'PRD',
+			agentType: 'prd',
+			sortOrder: 1000,
+			createdAt: null,
+			updatedAt: null,
+		});
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await expectTRPCError(caller.create({ key: 'prd', label: 'PRD' }), 'CONFLICT');
+		expect(mockCreateCustomWorkflowStatusDefinition).not.toHaveBeenCalled();
 	});
 
 	it('rejects unknown agent types', async () => {
@@ -160,6 +198,44 @@ describe('workflowStatusesRouter', () => {
 		});
 
 		expect(result.label).toBe('Product Requirements');
+		expect(mockUpdateCustomWorkflowStatusDefinition).toHaveBeenCalledWith('prd', {
+			label: 'Product Requirements',
+			agentType: null,
+			sortOrder: 1010,
+		});
+	});
+
+	it('updates only provided custom workflow status fields', async () => {
+		mockUpdateCustomWorkflowStatusDefinition.mockResolvedValue({
+			id: 1,
+			key: 'prd',
+			label: 'PRD',
+			agentType: 'prd-v2',
+			sortOrder: 1000,
+			createdAt: null,
+			updatedAt: null,
+		});
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await caller.update({ key: 'prd', agentType: 'prd-v2' });
+
+		expect(mockUpdateCustomWorkflowStatusDefinition).toHaveBeenCalledWith('prd', {
+			agentType: 'prd-v2',
+		});
+	});
+
+	it('rejects builtin workflow status updates', async () => {
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await expectTRPCError(caller.update({ key: 'todo', label: 'Todo' }), 'FORBIDDEN');
+		expect(mockUpdateCustomWorkflowStatusDefinition).not.toHaveBeenCalled();
+	});
+
+	it('returns not found when updating a missing custom status', async () => {
+		mockUpdateCustomWorkflowStatusDefinition.mockResolvedValue(null);
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await expectTRPCError(caller.update({ key: 'prd', label: 'PRD' }), 'NOT_FOUND');
 	});
 
 	it('deletes a custom workflow status', async () => {
@@ -167,5 +243,19 @@ describe('workflowStatusesRouter', () => {
 		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
 
 		await expect(caller.delete({ key: 'prd' })).resolves.toEqual({ key: 'prd' });
+	});
+
+	it('rejects builtin workflow status deletes', async () => {
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await expectTRPCError(caller.delete({ key: 'todo' }), 'FORBIDDEN');
+		expect(mockDeleteCustomWorkflowStatusDefinition).not.toHaveBeenCalled();
+	});
+
+	it('returns not found when deleting a missing custom status', async () => {
+		mockDeleteCustomWorkflowStatusDefinition.mockResolvedValue(false);
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await expectTRPCError(caller.delete({ key: 'prd' }), 'NOT_FOUND');
 	});
 });
