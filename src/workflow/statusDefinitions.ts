@@ -27,6 +27,7 @@ export const BUILTIN_WORKFLOW_STATUSES: readonly WorkflowStatusDefinition[] = [
 	{ key: 'done', label: 'Done', agentType: null, sortOrder: 70, isBuiltin: true },
 	{ key: 'merged', label: 'Merged', agentType: null, sortOrder: 80, isBuiltin: true },
 	{ key: 'alerts', label: 'Alerts', agentType: null, sortOrder: 90, isBuiltin: true },
+	{ key: 'friction', label: 'Friction', agentType: null, sortOrder: 100, isBuiltin: true },
 ] as const;
 
 export const BUILTIN_WORKFLOW_STATUS_KEYS = new Set(
