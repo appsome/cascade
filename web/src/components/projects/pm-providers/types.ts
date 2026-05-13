@@ -99,6 +99,7 @@ export interface ProviderSaveTriggerContext {
 	readonly workflowStatuses: ReadonlyArray<{
 		readonly key: string;
 		readonly agentType: string | null;
+		readonly isBuiltin: boolean;
 	}>;
 	readonly existingConfigs: ReadonlyArray<{
 		readonly agentType: string;

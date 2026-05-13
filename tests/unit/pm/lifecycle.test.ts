@@ -431,6 +431,14 @@ describe('pm/lifecycle', () => {
 				expect(mockProvider.moveWorkItem).toHaveBeenCalledWith('work-item-1', 'list-progress');
 			});
 
+			it('moves to custom status keys when moveOnPrepare uses a custom workflow status', async () => {
+				pmConfig.statuses.story = 'state-story';
+
+				await manager.prepareForAgent('work-item-1', { moveOnPrepare: 'story' });
+
+				expect(mockProvider.moveWorkItem).toHaveBeenCalledWith('work-item-1', 'state-story');
+			});
+
 			it('does not move work item when moveOnPrepare is not set', async () => {
 				await manager.prepareForAgent('work-item-1', {});
 
@@ -462,6 +470,15 @@ describe('pm/lifecycle', () => {
 
 				expect(mockProvider.addLabel).toHaveBeenCalledWith('work-item-1', 'label-done');
 				expect(mockProvider.moveWorkItem).toHaveBeenCalledWith('work-item-1', 'list-review');
+			});
+
+			it('moves to custom status keys when moveOnSuccess uses a custom workflow status', async () => {
+				pmConfig.statuses['phased-plan'] = 'state-phased-plan';
+
+				await manager.handleSuccess('work-item-1', { moveOnSuccess: 'phased-plan' });
+
+				expect(mockProvider.addLabel).toHaveBeenCalledWith('work-item-1', 'label-done');
+				expect(mockProvider.moveWorkItem).toHaveBeenCalledWith('work-item-1', 'state-phased-plan');
 			});
 
 			it('calls linkPR when prUrl is provided and linkPR hook is true', async () => {

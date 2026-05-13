@@ -159,9 +159,9 @@ describe('buildMissingStatusTriggerConfigs', () => {
 				story: '',
 			},
 			workflowStatuses: [
-				{ key: 'prd', agentType: 'prd' },
-				{ key: 'done', agentType: null },
-				{ key: 'story', agentType: 'story' },
+				{ key: 'prd', agentType: 'prd', isBuiltin: false },
+				{ key: 'done', agentType: null, isBuiltin: true },
+				{ key: 'story', agentType: 'story', isBuiltin: false },
 			],
 			existingConfigs: [],
 		});
@@ -178,11 +178,42 @@ describe('buildMissingStatusTriggerConfigs', () => {
 	it('does not overwrite existing status trigger configs', () => {
 		const result = buildMissingStatusTriggerConfigs({
 			statusMappings: { prd: 'state-prd' },
-			workflowStatuses: [{ key: 'prd', agentType: 'prd' }],
+			workflowStatuses: [{ key: 'prd', agentType: 'prd', isBuiltin: false }],
 			existingConfigs: [{ agentType: 'prd', triggerEvent: 'pm:status-changed' }],
 		});
 
 		expect(result).toEqual([]);
+	});
+
+	it('auto-enables only allowlisted built-in status trigger configs', () => {
+		const result = buildMissingStatusTriggerConfigs({
+			statusMappings: {
+				backlog: 'state-backlog',
+				planning: 'state-planning',
+				todo: 'state-todo',
+				inReview: 'state-review',
+			},
+			workflowStatuses: [
+				{ key: 'backlog', agentType: 'backlog-manager', isBuiltin: true },
+				{ key: 'planning', agentType: 'planning', isBuiltin: true },
+				{ key: 'todo', agentType: 'implementation', isBuiltin: true },
+				{ key: 'inReview', agentType: null, isBuiltin: true },
+			],
+			existingConfigs: [],
+		});
+
+		expect(result).toEqual([
+			{
+				agentType: 'planning',
+				triggerEvent: 'pm:status-changed',
+				enabled: true,
+			},
+			{
+				agentType: 'implementation',
+				triggerEvent: 'pm:status-changed',
+				enabled: true,
+			},
+		]);
 	});
 });
 

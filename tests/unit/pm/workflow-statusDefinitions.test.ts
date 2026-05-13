@@ -27,9 +27,15 @@ describe('workflow status definitions', () => {
 
 	it('exposes builtin workflow status keys and definitions', () => {
 		expect(BUILTIN_WORKFLOW_STATUS_KEYS.has('todo')).toBe(true);
+		expect(BUILTIN_WORKFLOW_STATUS_KEYS.has('friction')).toBe(true);
 		expect(getBuiltinWorkflowStatusDefinition('todo')).toMatchObject({
 			key: 'todo',
 			agentType: 'implementation',
+			isBuiltin: true,
+		});
+		expect(getBuiltinWorkflowStatusDefinition('friction')).toMatchObject({
+			key: 'friction',
+			agentType: null,
 			isBuiltin: true,
 		});
 		expect(getBuiltinWorkflowStatusDefinition('unknown')).toBeUndefined();

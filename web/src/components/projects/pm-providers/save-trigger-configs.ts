@@ -1,12 +1,15 @@
 interface StatusTriggerInput {
 	readonly key: string;
 	readonly agentType: string | null;
+	readonly isBuiltin: boolean;
 }
 
 interface ExistingTriggerInput {
 	readonly agentType: string;
 	readonly triggerEvent: string;
 }
+
+const AUTO_ENABLED_BUILTIN_STATUS_KEYS = new Set(['splitting', 'planning', 'todo']);
 
 export function buildMissingStatusTriggerConfigs(args: {
 	readonly statusMappings: Readonly<Record<string, string>>;
@@ -29,6 +32,7 @@ export function buildMissingStatusTriggerConfigs(args: {
 
 	return args.workflowStatuses.flatMap((status) => {
 		if (!status.agentType || !mappedKeys.has(status.key)) return [];
+		if (status.isBuiltin && !AUTO_ENABLED_BUILTIN_STATUS_KEYS.has(status.key)) return [];
 		if (seenAgents.has(status.agentType)) return [];
 		seenAgents.add(status.agentType);
 		if (existing.has(`${status.agentType}:pm:status-changed`)) return [];
