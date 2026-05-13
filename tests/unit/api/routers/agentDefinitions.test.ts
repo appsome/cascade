@@ -18,9 +18,11 @@ const {
 	mockGetAgentDefinitionMetadata,
 	mockUpsertAgentDefinition,
 	mockDeleteAgentDefinition,
+	mockClearAgentTypeReferences,
 	mockGetRawTemplate,
 	mockValidateTemplate,
 	mockLoadPartials,
+	mockLoggerInfo,
 } = vi.hoisted(() => ({
 	mockGetBuiltinAgentTypes: vi.fn<() => string[]>(),
 	mockIsBuiltinAgentType: vi.fn<(agentType: string) => boolean>(),
@@ -32,9 +34,11 @@ const {
 	mockGetAgentDefinitionMetadata: vi.fn(),
 	mockUpsertAgentDefinition: vi.fn(),
 	mockDeleteAgentDefinition: vi.fn(),
+	mockClearAgentTypeReferences: vi.fn(),
 	mockGetRawTemplate: vi.fn<(agentType: string) => string>(),
 	mockValidateTemplate: vi.fn(),
 	mockLoadPartials: vi.fn(),
+	mockLoggerInfo: vi.fn(),
 }));
 
 vi.mock('../../../../src/agents/definitions/loader.js', () => ({
@@ -53,6 +57,10 @@ vi.mock('../../../../src/db/repositories/agentDefinitionsRepository.js', () => (
 	deleteAgentDefinition: mockDeleteAgentDefinition,
 }));
 
+vi.mock('../../../../src/db/repositories/workflowStatusDefinitionsRepository.js', () => ({
+	clearAgentTypeReferences: mockClearAgentTypeReferences,
+}));
+
 vi.mock('../../../../src/agents/prompts/index.js', () => ({
 	getRawTemplate: mockGetRawTemplate,
 	validateTemplate: mockValidateTemplate,
@@ -60,6 +68,15 @@ vi.mock('../../../../src/agents/prompts/index.js', () => ({
 
 vi.mock('../../../../src/db/repositories/partialsRepository.js', () => ({
 	loadPartials: mockLoadPartials,
+}));
+
+vi.mock('../../../../src/utils/logging.js', () => ({
+	logger: {
+		info: mockLoggerInfo,
+		warn: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+	},
 }));
 
 // Re-export schema values (these are pure constants, not functions to mock)
@@ -118,6 +135,7 @@ describe('agentDefinitionsRouter', () => {
 		);
 		mockValidateTemplate.mockReturnValue({ valid: true });
 		mockLoadPartials.mockResolvedValue(new Map());
+		mockClearAgentTypeReferences.mockResolvedValue(0);
 	});
 
 	// =====================================================================
@@ -360,7 +378,31 @@ describe('agentDefinitionsRouter', () => {
 
 			expect(result).toEqual({ agentType: 'custom-agent' });
 			expect(mockDeleteAgentDefinition).toHaveBeenCalledWith('custom-agent');
+			expect(mockClearAgentTypeReferences).toHaveBeenCalledWith('custom-agent');
 			expect(mockInvalidateDefinitionCache).toHaveBeenCalled();
+		});
+
+		it('clears workflow status references when deleting a referenced custom agent definition', async () => {
+			mockGetAgentDefinitionMetadata.mockResolvedValue({
+				agentType: 'story-agent',
+				isBuiltin: false,
+			});
+			mockDeleteAgentDefinition.mockResolvedValue(undefined);
+			mockClearAgentTypeReferences.mockResolvedValue(2);
+
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
+			const result = await caller.delete({ agentType: 'story-agent' });
+
+			expect(result).toEqual({ agentType: 'story-agent' });
+			expect(mockDeleteAgentDefinition).toHaveBeenCalledWith('story-agent');
+			expect(mockClearAgentTypeReferences).toHaveBeenCalledWith('story-agent');
+			expect(mockLoggerInfo).toHaveBeenCalledWith(
+				'Cleared workflow status agent references after agent definition delete',
+				{
+					agentType: 'story-agent',
+					clearedWorkflowStatuses: 2,
+				},
+			);
 		});
 
 		it('deletes an invalid DB-only definition without parsing it', async () => {
@@ -375,6 +417,7 @@ describe('agentDefinitionsRouter', () => {
 
 			expect(result).toEqual({ agentType: 'email-joke' });
 			expect(mockDeleteAgentDefinition).toHaveBeenCalledWith('email-joke');
+			expect(mockClearAgentTypeReferences).toHaveBeenCalledWith('email-joke');
 		});
 
 		it('throws NOT_FOUND when definition not in DB', async () => {

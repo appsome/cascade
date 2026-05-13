@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+	clearAgentTypeReferences,
 	createCustomWorkflowStatusDefinition,
 	deleteCustomWorkflowStatusDefinition,
 	getCustomWorkflowStatusDefinition,
@@ -94,6 +95,45 @@ describe('workflowStatusDefinitionsRepository (integration)', () => {
 		expect(await deleteCustomWorkflowStatusDefinition('story')).toBe(true);
 		expect(await getCustomWorkflowStatusDefinition('story')).toBeNull();
 		expect(await deleteCustomWorkflowStatusDefinition('story')).toBe(false);
+	});
+
+	it('clears matching agent type references without touching other statuses', async () => {
+		await createCustomWorkflowStatusDefinition({
+			key: 'story',
+			label: 'Story',
+			agentType: 'story-agent',
+		});
+		await createCustomWorkflowStatusDefinition({
+			key: 'prd',
+			label: 'PRD',
+			agentType: 'story-agent',
+		});
+		await createCustomWorkflowStatusDefinition({
+			key: 'qa',
+			label: 'QA',
+			agentType: null,
+		});
+		await createCustomWorkflowStatusDefinition({
+			key: 'plan',
+			label: 'Plan',
+			agentType: 'plan-agent',
+		});
+
+		await expect(clearAgentTypeReferences('story-agent')).resolves.toBe(2);
+
+		await expect(getCustomWorkflowStatusDefinition('story')).resolves.toMatchObject({
+			agentType: null,
+		});
+		await expect(getCustomWorkflowStatusDefinition('prd')).resolves.toMatchObject({
+			agentType: null,
+		});
+		await expect(getCustomWorkflowStatusDefinition('qa')).resolves.toMatchObject({
+			agentType: null,
+		});
+		await expect(getCustomWorkflowStatusDefinition('plan')).resolves.toMatchObject({
+			agentType: 'plan-agent',
+		});
+		await expect(clearAgentTypeReferences('story-agent')).resolves.toBe(0);
 	});
 
 	it('merges built-in workflow statuses with custom database statuses', async () => {

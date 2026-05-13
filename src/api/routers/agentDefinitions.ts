@@ -22,6 +22,8 @@ import {
 	upsertAgentDefinition,
 } from '../../db/repositories/agentDefinitionsRepository.js';
 import { loadPartials } from '../../db/repositories/partialsRepository.js';
+import { clearAgentTypeReferences } from '../../db/repositories/workflowStatusDefinitionsRepository.js';
+import { logger } from '../../utils/logging.js';
 import { publicProcedure, router, superAdminProcedure } from '../trpc.js';
 import { TRIGGER_REGISTRY } from './_shared/triggerTypes.js';
 
@@ -209,7 +211,17 @@ export const agentDefinitionsRouter = router({
 				});
 			}
 
+			// Keep this sequential in the same delete code path. A hard FK is not possible
+			// because YAML-only agent types are valid workflow status references but have
+			// no DB row; the cleanup update is idempotent and safe if it matches zero rows.
 			await deleteAgentDefinition(input.agentType);
+			const clearedWorkflowStatuses = await clearAgentTypeReferences(input.agentType);
+			if (clearedWorkflowStatuses > 0) {
+				logger.info('Cleared workflow status agent references after agent definition delete', {
+					agentType: input.agentType,
+					clearedWorkflowStatuses,
+				});
+			}
 			invalidateDefinitionCache();
 			return { agentType: input.agentType };
 		}),

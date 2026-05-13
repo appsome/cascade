@@ -5,6 +5,7 @@ import { mockDbClientModule } from '../../../helpers/sharedMocks.js';
 vi.mock('../../../../src/db/client.js', () => mockDbClientModule);
 
 import {
+	clearAgentTypeReferences,
 	createCustomWorkflowStatusDefinition,
 	deleteCustomWorkflowStatusDefinition,
 	getCustomWorkflowStatusDefinition,
@@ -165,5 +166,32 @@ describe('workflowStatusDefinitionsRepository', () => {
 		mockDb.chain.where.mockResolvedValueOnce({});
 
 		await expect(deleteCustomWorkflowStatusDefinition('missing')).resolves.toBe(false);
+	});
+
+	it('clears matching agent type references and returns affected row count', async () => {
+		mockDb.chain.where.mockResolvedValueOnce({ rowCount: 2 });
+
+		await expect(clearAgentTypeReferences('prd-agent')).resolves.toBe(2);
+		expect(mockDb.db.update).toHaveBeenCalled();
+		expect(mockDb.chain.set).toHaveBeenCalledWith({
+			agentType: null,
+			updatedAt: expect.any(Date),
+		});
+		expect(mockDb.chain.where).toHaveBeenCalledTimes(1);
+	});
+
+	it('returns zero when no workflow status references match the agent type', async () => {
+		mockDb.chain.where.mockResolvedValueOnce({ rowCount: 0 });
+
+		await expect(clearAgentTypeReferences('missing-agent')).resolves.toBe(0);
+	});
+
+	it('does not touch null agent type rows because cleanup filters by exact agent type', async () => {
+		mockDb.chain.where.mockResolvedValueOnce({ rowCount: 1 });
+
+		await clearAgentTypeReferences('story-agent');
+
+		expect(mockDb.chain.set).toHaveBeenCalledWith(expect.objectContaining({ agentType: null }));
+		expect(mockDb.chain.where).toHaveBeenCalledTimes(1);
 	});
 });

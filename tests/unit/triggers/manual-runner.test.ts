@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../../src/agents/definitions/loader.js', () => ({
+	isPMFocusedAgent: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock('../../../src/db/repositories/runsRepository.js', () => ({
 	getRunById: vi.fn(),
 }));
@@ -48,6 +52,7 @@ vi.mock('../../../src/triggers/shared/agent-execution.js', () => ({
 	runAgentExecutionPipeline: vi.fn().mockResolvedValue(undefined),
 }));
 
+import { isPMFocusedAgent } from '../../../src/agents/definitions/loader.js';
 import { isAgentEnabledForProject } from '../../../src/db/repositories/agentConfigsRepository.js';
 import { getRunById } from '../../../src/db/repositories/runsRepository.js';
 import { withPMCredentials } from '../../../src/pm/context.js';
@@ -80,6 +85,7 @@ describe('triggerManualRun', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.mocked(runAgentExecutionPipeline).mockResolvedValue(undefined);
+		vi.mocked(isPMFocusedAgent).mockResolvedValue(false);
 		clearTriggerTracking();
 	});
 
@@ -193,6 +199,37 @@ describe('triggerManualRun', () => {
 			}),
 			mockProject,
 			mockConfig,
+			{
+				skipPrepareForAgent: true,
+				skipHandleFailure: true,
+				handleSuccessOnlyForAgentType: 'implementation',
+				logLabel: 'GitHub manual agent',
+			},
+		);
+	});
+
+	it('keeps PM lifecycle defaults for PR-based manual runs owned by PM-focused agents', async () => {
+		vi.mocked(isPMFocusedAgent).mockResolvedValueOnce(true);
+
+		await triggerManualRun(
+			{
+				projectId: 'test-project',
+				agentType: 'backlog-manager',
+				workItemId: 'card-1',
+				prNumber: 42,
+			},
+			mockProject,
+			mockConfig,
+		);
+
+		expect(runAgentExecutionPipeline).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentType: 'backlog-manager',
+				workItemId: 'card-1',
+				prNumber: 42,
+			}),
+			mockProject,
+			mockConfig,
 		);
 	});
 
@@ -249,6 +286,7 @@ describe('triggerRetryRun', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.mocked(runAgentExecutionPipeline).mockResolvedValue(undefined);
+		vi.mocked(isPMFocusedAgent).mockResolvedValue(false);
 		clearTriggerTracking();
 	});
 
@@ -321,6 +359,12 @@ describe('triggerRetryRun', () => {
 			}),
 			mockProject,
 			mockConfig,
+			{
+				skipPrepareForAgent: true,
+				skipHandleFailure: true,
+				handleSuccessOnlyForAgentType: 'implementation',
+				logLabel: 'GitHub manual agent',
+			},
 		);
 	});
 });

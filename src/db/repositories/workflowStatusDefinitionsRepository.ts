@@ -89,6 +89,15 @@ export async function deleteCustomWorkflowStatusDefinition(key: string): Promise
 	return (result.rowCount ?? 0) > 0;
 }
 
+export async function clearAgentTypeReferences(agentType: string): Promise<number> {
+	const db = getDb();
+	const result = await db
+		.update(workflowStatusDefinitions)
+		.set({ agentType: null, updatedAt: new Date() })
+		.where(eq(workflowStatusDefinitions.agentType, agentType));
+	return result.rowCount ?? 0;
+}
+
 function mapRow(
 	row: typeof workflowStatusDefinitions.$inferSelect,
 ): CustomWorkflowStatusDefinition {

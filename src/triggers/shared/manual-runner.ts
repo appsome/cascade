@@ -1,3 +1,4 @@
+import { isPMFocusedAgent } from '../../agents/definitions/loader.js';
 import { isAgentEnabledForProject } from '../../db/repositories/agentConfigsRepository.js';
 import { getRunById } from '../../db/repositories/runsRepository.js';
 import { withPMCredentials } from '../../pm/context.js';
@@ -6,6 +7,7 @@ import type { AgentInput, CascadeConfig, ProjectConfig, TriggerResult } from '..
 import { startWatchdog } from '../../utils/lifecycle.js';
 import { logger } from '../../utils/logging.js';
 import { runAgentExecutionPipeline } from './agent-execution.js';
+import type { AgentExecutionConfig } from './agent-execution-types.js';
 import { formatValidationErrors, validateIntegrations } from './integration-validation.js';
 
 /**
@@ -39,6 +41,20 @@ export function isTriggerRunning(key: string): boolean {
  */
 export function clearTriggerTracking(): void {
 	runningTriggers.clear();
+}
+
+async function resolveManualExecutionConfig(
+	input: ManualTriggerInput,
+): Promise<AgentExecutionConfig | undefined> {
+	if (!input.prNumber) return undefined;
+	if (await isPMFocusedAgent(input.agentType)) return undefined;
+
+	return {
+		skipPrepareForAgent: true,
+		skipHandleFailure: true,
+		handleSuccessOnlyForAgentType: 'implementation',
+		logLabel: 'GitHub manual agent',
+	};
 }
 
 /**
@@ -144,12 +160,17 @@ export async function triggerManualRun(
 		startWatchdog(project.watchdogTimeoutMs);
 
 		const pmProvider = createPMProvider(project);
+		const executionConfig = await resolveManualExecutionConfig(input);
 		await withPMCredentials(
 			project.id,
 			project.pm?.type,
 			(t) => pmRegistry.getOrNull(t),
 			() =>
-				withPMProvider(pmProvider, () => runAgentExecutionPipeline(triggerResult, project, config)),
+				withPMProvider(pmProvider, () =>
+					executionConfig
+						? runAgentExecutionPipeline(triggerResult, project, config, executionConfig)
+						: runAgentExecutionPipeline(triggerResult, project, config),
+				),
 		);
 		logger.info('Manual agent run completed', {
 			projectId: input.projectId,
