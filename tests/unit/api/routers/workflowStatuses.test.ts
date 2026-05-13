@@ -50,11 +50,25 @@ function mockAgentDefinition(): AgentDefinition {
 			required: ['fs:read', 'shell:exec', 'session:ctrl', 'pm:read', 'pm:write'],
 			optional: [],
 		},
-		triggers: [],
+		triggers: [
+			{
+				event: 'pm:status-changed',
+				label: 'Status Changed',
+				defaultEnabled: false,
+				parameters: [],
+			},
+		],
 		strategies: {},
 		hint: 'Write a PRD.',
 		prompts: { taskPrompt: 'Write a PRD for <%= it.workItemId %>.' },
 		requiredContext: [],
+	};
+}
+
+function mockAgentDefinitionWithoutStatusTrigger(): AgentDefinition {
+	return {
+		...mockAgentDefinition(),
+		triggers: [],
 	};
 }
 
@@ -172,6 +186,17 @@ describe('workflowStatusesRouter', () => {
 		);
 	});
 
+	it('rejects agents that do not support status-changed dispatch on create', async () => {
+		mockResolveAgentDefinition.mockResolvedValue(mockAgentDefinitionWithoutStatusTrigger());
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await expectTRPCError(
+			caller.create({ key: 'prd', label: 'PRD', agentType: 'prd' }),
+			'BAD_REQUEST',
+		);
+		expect(mockCreateCustomWorkflowStatusDefinition).not.toHaveBeenCalled();
+	});
+
 	it('rejects mutation from non-superadmin users', async () => {
 		const caller = createCaller({ user, effectiveOrgId: user.orgId });
 
@@ -222,6 +247,14 @@ describe('workflowStatusesRouter', () => {
 		expect(mockUpdateCustomWorkflowStatusDefinition).toHaveBeenCalledWith('prd', {
 			agentType: 'prd-v2',
 		});
+	});
+
+	it('rejects agents that do not support status-changed dispatch on update', async () => {
+		mockResolveAgentDefinition.mockResolvedValue(mockAgentDefinitionWithoutStatusTrigger());
+		const caller = createCaller({ user: superAdmin, effectiveOrgId: superAdmin.orgId });
+
+		await expectTRPCError(caller.update({ key: 'prd', agentType: 'debug' }), 'BAD_REQUEST');
+		expect(mockUpdateCustomWorkflowStatusDefinition).not.toHaveBeenCalled();
 	});
 
 	it('rejects builtin workflow status updates', async () => {

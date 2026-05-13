@@ -13,6 +13,8 @@ import {
 } from '../../workflow/statusDefinitions.js';
 import { protectedProcedure, router, superAdminProcedure } from '../trpc.js';
 
+const STATUS_CHANGED_TRIGGER_EVENT = 'pm:status-changed';
+
 const StatusKeySchema = z
 	.string()
 	.trim()
@@ -50,12 +52,19 @@ function assertCustomStatusKey(key: string) {
 
 async function validateAgentType(agentType: string | null | undefined) {
 	if (!agentType) return;
+	let definition: Awaited<ReturnType<typeof resolveAgentDefinition>>;
 	try {
-		await resolveAgentDefinition(agentType);
+		definition = await resolveAgentDefinition(agentType);
 	} catch {
 		throw new TRPCError({
 			code: 'BAD_REQUEST',
 			message: `Unknown agent type: ${agentType}`,
+		});
+	}
+	if (!definition.triggers.some((trigger) => trigger.event === STATUS_CHANGED_TRIGGER_EVENT)) {
+		throw new TRPCError({
+			code: 'BAD_REQUEST',
+			message: `Agent type does not support ${STATUS_CHANGED_TRIGGER_EVENT}: ${agentType}`,
 		});
 	}
 }
