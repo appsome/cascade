@@ -178,6 +178,7 @@ export const agentDefinitionsRouter = router({
 				});
 			}
 			const isBuiltin = isBuiltinAgentType(input.agentType);
+			await assertWorkflowStatusDispatchCompatibility(input.agentType, input.definition);
 			await upsertAgentDefinition(input.agentType, input.definition, isBuiltin);
 			invalidateDefinitionCache();
 			return { agentType: input.agentType };

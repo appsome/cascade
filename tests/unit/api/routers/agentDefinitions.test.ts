@@ -295,6 +295,28 @@ describe('agentDefinitionsRouter', () => {
 			expect(mockUpsertAgentDefinition).toHaveBeenCalledWith('implementation', def, true);
 		});
 
+		it('rejects creating a builtin override without status-changed support while referenced by a workflow status', async () => {
+			mockGetAgentDefinitionMetadata.mockResolvedValue(null);
+			mockListWorkflowStatusDefinitions.mockResolvedValue([
+				{
+					key: 'todo',
+					label: 'Todo',
+					agentType: 'implementation',
+					sortOrder: 40,
+					isBuiltin: true,
+				},
+			]);
+			const def = createMockDefinition({ triggers: [] });
+
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
+			await expectTRPCError(
+				caller.create({ agentType: 'implementation', definition: def }),
+				'BAD_REQUEST',
+			);
+
+			expect(mockUpsertAgentDefinition).not.toHaveBeenCalled();
+		});
+
 		it('throws CONFLICT when agent type already exists', async () => {
 			mockGetAgentDefinitionMetadata.mockResolvedValue({ agentType: 'existing', isBuiltin: false });
 			const def = createMockDefinition();
