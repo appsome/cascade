@@ -10,7 +10,7 @@ vi.mock('../../../src/utils/logging.js', () => ({
 }));
 vi.mock('../../../src/router/queue.js', () => ({
 	addJob: vi.fn(),
-	hasPendingCoalescedJob: vi.fn().mockResolvedValue(false),
+	getPendingCoalescedJobData: vi.fn().mockResolvedValue(undefined),
 	scheduleCoalescedJob: vi.fn().mockResolvedValue({ jobId: 'coalesce:key', superseded: false }),
 }));
 vi.mock('../../../src/pm/coalesce-config.js', () => ({
@@ -52,7 +52,11 @@ import type { RouterProjectConfig } from '../../../src/router/config.js';
 import { classifyLockState } from '../../../src/router/lock-state-classifier.js';
 import type { RouterPlatformAdapter } from '../../../src/router/platform-adapter.js';
 import type { CascadeJob } from '../../../src/router/queue.js';
-import { addJob, hasPendingCoalescedJob, scheduleCoalescedJob } from '../../../src/router/queue.js';
+import {
+	addJob,
+	getPendingCoalescedJobData,
+	scheduleCoalescedJob,
+} from '../../../src/router/queue.js';
 import { processRouterWebhook } from '../../../src/router/webhook-processor.js';
 import {
 	clearWorkItemEnqueued,
@@ -650,7 +654,7 @@ describe('processRouterWebhook', () => {
 		beforeEach(() => {
 			vi.mocked(isWorkItemLocked).mockReset();
 			vi.mocked(checkAgentTypeConcurrency).mockReset();
-			vi.mocked(hasPendingCoalescedJob).mockReset();
+			vi.mocked(getPendingCoalescedJobData).mockReset();
 			vi.mocked(scheduleCoalescedJob).mockReset();
 			vi.mocked(isWorkItemLocked).mockResolvedValue({ locked: false });
 			vi.mocked(checkAgentTypeConcurrency).mockResolvedValue({
@@ -663,7 +667,7 @@ describe('processRouterWebhook', () => {
 			vi.mocked(clearWorkItemEnqueued).mockClear();
 			vi.mocked(clearAgentTypeEnqueued).mockClear();
 			vi.mocked(clearRecentlyDispatched).mockClear();
-			vi.mocked(hasPendingCoalescedJob).mockResolvedValue(false);
+			vi.mocked(getPendingCoalescedJobData).mockResolvedValue(undefined);
 			vi.mocked(scheduleCoalescedJob).mockResolvedValue({
 				jobId: 'coalesce:p1:PROJ-1',
 				superseded: false,
@@ -686,7 +690,7 @@ describe('processRouterWebhook', () => {
 
 			expect(result.shouldProcess).toBe(true);
 			expect(result.decisionReason).toMatch(/Coalesced dispatch scheduled/);
-			expect(hasPendingCoalescedJob).toHaveBeenCalledWith('p1:PROJ-1');
+			expect(getPendingCoalescedJobData).toHaveBeenCalledWith('p1:PROJ-1');
 			expect(scheduleCoalescedJob).toHaveBeenCalledOnce();
 			// Immediate addJob must NOT be called for coalesced path
 			expect(addJob).not.toHaveBeenCalled();
@@ -752,7 +756,6 @@ describe('processRouterWebhook', () => {
 		});
 
 		it('releases superseded job locks when supersededJobData is returned', async () => {
-			vi.mocked(hasPendingCoalescedJob).mockResolvedValue(true);
 			const supersededJobData: CascadeJob = {
 				type: 'jira',
 				source: 'jira',
@@ -794,10 +797,19 @@ describe('processRouterWebhook', () => {
 		});
 
 		it('allows a pending coalesced job to be superseded even while its in-memory lock exists', async () => {
-			vi.mocked(hasPendingCoalescedJob).mockResolvedValue(true);
-			vi.mocked(isWorkItemLocked).mockResolvedValueOnce({
-				locked: true,
-				reason: 'in-memory same-type: 1 enqueued (max 1 per type)',
+			vi.mocked(getPendingCoalescedJobData).mockResolvedValue({
+				type: 'jira',
+				source: 'jira',
+				payload: {},
+				projectId: 'p1',
+				issueKey: 'PROJ-1',
+				webhookEvent: 'jira:issue_updated',
+				receivedAt: new Date().toISOString(),
+				triggerResult: {
+					agentType: 'planning',
+					workItemId: 'PROJ-1',
+					agentInput: {},
+				},
 			});
 			vi.mocked(scheduleCoalescedJob).mockResolvedValue({
 				jobId: 'coalesce:p1:PROJ-1',
@@ -816,12 +828,92 @@ describe('processRouterWebhook', () => {
 			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
 
 			expect(result.decisionReason).toMatch(/Coalesced dispatch scheduled/);
-			expect(isWorkItemLocked).not.toHaveBeenCalled();
+			expect(clearWorkItemEnqueued).toHaveBeenCalledWith('p1', 'PROJ-1', 'planning');
+			expect(isWorkItemLocked).toHaveBeenCalledWith('p1', 'PROJ-1', 'planning');
 			expect(scheduleCoalescedJob).toHaveBeenCalledOnce();
 		});
 
+		it('does not skip active same-type locks just because another pending coalesced job exists for the key', async () => {
+			vi.mocked(getPendingCoalescedJobData).mockResolvedValue({
+				type: 'linear',
+				source: 'linear',
+				payload: {},
+				projectId: 'p1',
+				workItemId: 'TF-38',
+				eventType: 'Issue',
+				receivedAt: new Date().toISOString(),
+				triggerResult: {
+					agentType: 'planning',
+					workItemId: 'TF-38',
+					agentInput: {},
+				},
+			});
+			vi.mocked(isWorkItemLocked).mockResolvedValueOnce({
+				locked: true,
+				reason: 'same-type: 1 running, 0 enqueued (max 1 per type)',
+			});
+			const adapter = makeMockAdapter({
+				type: 'linear',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'TF-38' },
+					workItemId: 'TF-38',
+					coalesceKey: 'ats:TF-38',
+				}),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			expect(result.decisionReason).toBe(
+				'Awaiting worker slot: same-type: 1 running, 0 enqueued (max 1 per type)',
+			);
+			expect(clearWorkItemEnqueued).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+			expect(markWorkItemEnqueued).not.toHaveBeenCalled();
+		});
+
+		it('restores pending own locks when agent-type concurrency blocks the replacement dispatch', async () => {
+			vi.mocked(getPendingCoalescedJobData).mockResolvedValue({
+				type: 'linear',
+				source: 'linear',
+				payload: {},
+				projectId: 'p1',
+				workItemId: 'TF-38',
+				eventType: 'Issue',
+				receivedAt: new Date().toISOString(),
+				triggerResult: {
+					agentType: 'implementation',
+					workItemId: 'TF-38',
+					agentInput: {},
+				},
+			});
+			vi.mocked(checkAgentTypeConcurrency).mockResolvedValueOnce({
+				maxConcurrency: 1,
+				blocked: true,
+			});
+			const adapter = makeMockAdapter({
+				type: 'linear',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'TF-38' },
+					workItemId: 'TF-38',
+					coalesceKey: 'ats:TF-38',
+				}),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			expect(result.decisionReason).toBe('Agent type concurrency limit reached');
+			expect(clearWorkItemEnqueued).toHaveBeenCalledWith('p1', 'TF-38', 'implementation');
+			expect(clearAgentTypeEnqueued).toHaveBeenCalledWith('p1', 'implementation');
+			expect(clearRecentlyDispatched).toHaveBeenCalledWith('p1', 'implementation', 'TF-38');
+			expect(markWorkItemEnqueued).toHaveBeenCalledWith('p1', 'TF-38', 'implementation');
+			expect(markAgentTypeEnqueued).toHaveBeenCalledWith('p1', 'implementation');
+			expect(markRecentlyDispatched).toHaveBeenCalledWith('p1', 'implementation', 'TF-38');
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+		});
+
 		it('blocks a late duplicate coalesced dispatch when the same work item and agent type are already locked', async () => {
-			vi.mocked(hasPendingCoalescedJob).mockResolvedValue(false);
 			vi.mocked(isWorkItemLocked).mockResolvedValueOnce({
 				locked: true,
 				reason: 'in-memory same-type: 1 enqueued (max 1 per type)',

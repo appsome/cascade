@@ -154,8 +154,15 @@ export async function addJob(job: CascadeJob): Promise<string> {
 }
 
 export async function hasPendingCoalescedJob(coalesceKey: string): Promise<boolean> {
+	return (await getPendingCoalescedJobData(coalesceKey)) !== undefined;
+}
+
+export async function getPendingCoalescedJobData(
+	coalesceKey: string,
+): Promise<CascadeJob | undefined> {
 	const [delayed, waiting] = await Promise.all([jobQueue.getDelayed(), jobQueue.getWaiting()]);
-	return [...delayed, ...waiting].some((j) => j.name === coalesceKey);
+	const pending = [...delayed, ...waiting].find((j) => j.name === coalesceKey);
+	return pending?.data as CascadeJob | undefined;
 }
 
 export interface ScheduleCoalescedJobResult {

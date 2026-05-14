@@ -51,6 +51,7 @@ vi.mock('../../../src/sentry.js', () => ({
 import type { CascadeJob } from '../../../src/router/queue.js';
 import {
 	addJob,
+	getPendingCoalescedJobData,
 	getQueueStats,
 	hasPendingCoalescedJob,
 	scheduleCoalescedJob,
@@ -126,6 +127,12 @@ describe('scheduleCoalescedJob', () => {
 
 		await expect(hasPendingCoalescedJob('proj-1:PROJ-42')).resolves.toBe(true);
 		await expect(hasPendingCoalescedJob('missing:key')).resolves.toBe(false);
+	});
+
+	it('returns data for the first pending coalesced job', async () => {
+		mockQueueInstance.getDelayed.mockResolvedValueOnce([makeFakeJob('proj-1:PROJ-42', sampleJob)]);
+
+		await expect(getPendingCoalescedJobData('proj-1:PROJ-42')).resolves.toEqual(sampleJob);
 	});
 
 	it('returns queue stats from BullMQ counters', async () => {

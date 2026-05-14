@@ -5,7 +5,7 @@ import { logger } from '../utils/logging.js';
 import { clearAgentTypeEnqueued, clearRecentlyDispatched } from './agent-type-lock.js';
 import type { RouterProjectConfig } from './config.js';
 import type { ParsedWebhookEvent, RouterPlatformAdapter } from './platform-adapter.js';
-import { addJob, hasPendingCoalescedJob, scheduleCoalescedJob } from './queue.js';
+import { addJob, getPendingCoalescedJobData, scheduleCoalescedJob } from './queue.js';
 import {
 	checkDispatchLocks,
 	markCoalescedDispatchEnqueued,
@@ -190,20 +190,30 @@ async function maybeHandleCoalescedDispatch({
 	}
 
 	try {
-		const hasPendingForKey = await hasPendingCoalescedJob(result.coalesceKey);
-		if (!hasPendingForKey) {
-			const lockCheck = await checkDispatchLocks({
-				adapterType: adapter.type,
-				projectId: project.id,
-				result: result as TriggerResult & { agentType: string },
-			});
-			if (lockCheck.blocked) {
-				return {
-					shouldProcess: true,
-					projectId: project.id,
-					decisionReason: lockCheck.decisionReason,
-				};
+		const pendingJobData = await getPendingCoalescedJobData(result.coalesceKey);
+		const shouldIgnorePendingOwnLock = shouldTemporarilyReleasePendingJobLocks({
+			pendingJobData,
+			projectId: project.id,
+			result: result as TriggerResult & { agentType: string },
+		});
+		if (shouldIgnorePendingOwnLock) {
+			releaseSupersededJobLocks(pendingJobData);
+		}
+
+		const lockCheck = await checkDispatchLocks({
+			adapterType: adapter.type,
+			projectId: project.id,
+			result: result as TriggerResult & { agentType: string },
+		});
+		if (lockCheck.blocked) {
+			if (shouldIgnorePendingOwnLock) {
+				restoreSupersededJobLocks(pendingJobData);
 			}
+			return {
+				shouldProcess: true,
+				projectId: project.id,
+				decisionReason: lockCheck.decisionReason,
+			};
 		}
 
 		const { superseded, supersededJobData } = await scheduleCoalescedJob(
@@ -265,6 +275,26 @@ async function maybeHandleCoalescedDispatch({
 	};
 }
 
+function shouldTemporarilyReleasePendingJobLocks({
+	pendingJobData,
+	projectId,
+	result,
+}: {
+	pendingJobData: Awaited<ReturnType<typeof getPendingCoalescedJobData>>;
+	projectId: string;
+	result: TriggerResult & { agentType: string };
+}): boolean {
+	if (!pendingJobData || pendingJobData.type === 'github') return false;
+	if (pendingJobData.projectId !== projectId) return false;
+
+	const pendingResult = pendingJobData.triggerResult;
+	if (pendingResult?.agentType !== result.agentType) return false;
+
+	const pendingLockKey = pendingResult.lockKey ?? pendingResult.workItemId;
+	const newLockKey = result.lockKey ?? result.workItemId;
+	return pendingLockKey !== undefined && pendingLockKey === newLockKey;
+}
+
 function releaseSupersededJobLocks(
 	supersededJobData: Awaited<ReturnType<typeof scheduleCoalescedJob>>['supersededJobData'],
 ): void {
@@ -284,6 +314,19 @@ function releaseSupersededJobLocks(
 		oldAgentType,
 		supersededJobData.triggerResult?.workItemId,
 	);
+}
+
+function restoreSupersededJobLocks(
+	supersededJobData: Awaited<ReturnType<typeof getPendingCoalescedJobData>>,
+): void {
+	if (!supersededJobData || supersededJobData.type === 'github') return;
+	const oldAgentType = supersededJobData.triggerResult?.agentType;
+	if (!oldAgentType) return;
+
+	markCoalescedDispatchEnqueued({
+		projectId: supersededJobData.projectId,
+		result: supersededJobData.triggerResult as TriggerResult & { agentType: string },
+	});
 }
 
 async function handleImmediateDispatch({
