@@ -175,7 +175,6 @@ describe('workflowStatusDefinitionsRepository', () => {
 		expect(mockDb.db.update).toHaveBeenCalled();
 		expect(mockDb.chain.set).toHaveBeenCalledWith({
 			agentType: null,
-			updatedAt: expect.any(Date),
 		});
 		expect(mockDb.chain.where).toHaveBeenCalledTimes(1);
 	});

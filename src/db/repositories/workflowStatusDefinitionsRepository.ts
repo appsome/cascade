@@ -93,7 +93,7 @@ export async function clearAgentTypeReferences(agentType: string): Promise<numbe
 	const db = getDb();
 	const result = await db
 		.update(workflowStatusDefinitions)
-		.set({ agentType: null, updatedAt: new Date() })
+		.set({ agentType: null })
 		.where(eq(workflowStatusDefinitions.agentType, agentType));
 	return result.rowCount ?? 0;
 }

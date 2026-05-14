@@ -24,8 +24,11 @@ import {
 import { loadPartials } from '../../db/repositories/partialsRepository.js';
 import { clearAgentTypeReferences } from '../../db/repositories/workflowStatusDefinitionsRepository.js';
 import { logger } from '../../utils/logging.js';
+import { listWorkflowStatusDefinitions } from '../../workflow/statusDefinitions.js';
 import { publicProcedure, router, superAdminProcedure } from '../trpc.js';
 import { TRIGGER_REGISTRY } from './_shared/triggerTypes.js';
+
+const STATUS_CHANGED_TRIGGER_EVENT = 'pm:status-changed';
 
 async function validatePromptIfPresent(prompt: string | null | undefined) {
 	if (!prompt) return;
@@ -52,6 +55,25 @@ async function resolveDefinitionOrThrow(agentType: string) {
 			message: `Agent definition not found: ${agentType}`,
 		});
 	}
+}
+
+async function assertWorkflowStatusDispatchCompatibility(
+	agentType: string,
+	definition: AgentDefinition,
+) {
+	if (definition.triggers.some((trigger) => trigger.event === STATUS_CHANGED_TRIGGER_EVENT)) {
+		return;
+	}
+
+	const referencingStatuses = (await listWorkflowStatusDefinitions()).filter(
+		(status) => status.agentType === agentType,
+	);
+	if (referencingStatuses.length === 0) return;
+
+	throw new TRPCError({
+		code: 'BAD_REQUEST',
+		message: `Agent definition '${agentType}' is used by workflow status dispatch and must declare ${STATUS_CHANGED_TRIGGER_EVENT}`,
+	});
 }
 
 export const agentDefinitionsRouter = router({
@@ -180,6 +202,9 @@ export const agentDefinitionsRouter = router({
 			const merged = { ...current, ...input.patch };
 			// Full-schema validate the merged result
 			const validated = AgentDefinitionSchema.parse(merged);
+			if ('triggers' in input.patch) {
+				await assertWorkflowStatusDispatchCompatibility(input.agentType, validated);
+			}
 
 			const isBuiltin = isBuiltinAgentType(input.agentType);
 			await upsertAgentDefinition(input.agentType, validated, isBuiltin);
@@ -247,6 +272,7 @@ export const agentDefinitionsRouter = router({
 			// restore the hard-coded YAML defaults.
 			invalidateDefinitionCache();
 			const yamlDefinition = loadBuiltinDefinition(input.agentType);
+			await assertWorkflowStatusDispatchCompatibility(input.agentType, yamlDefinition);
 			await upsertAgentDefinition(input.agentType, yamlDefinition, true);
 			invalidateDefinitionCache();
 			return { agentType: input.agentType };

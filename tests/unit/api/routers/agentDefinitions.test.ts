@@ -23,6 +23,7 @@ const {
 	mockValidateTemplate,
 	mockLoadPartials,
 	mockLoggerInfo,
+	mockListWorkflowStatusDefinitions,
 } = vi.hoisted(() => ({
 	mockGetBuiltinAgentTypes: vi.fn<() => string[]>(),
 	mockIsBuiltinAgentType: vi.fn<(agentType: string) => boolean>(),
@@ -39,6 +40,7 @@ const {
 	mockValidateTemplate: vi.fn(),
 	mockLoadPartials: vi.fn(),
 	mockLoggerInfo: vi.fn(),
+	mockListWorkflowStatusDefinitions: vi.fn(),
 }));
 
 vi.mock('../../../../src/agents/definitions/loader.js', () => ({
@@ -77,6 +79,10 @@ vi.mock('../../../../src/utils/logging.js', () => ({
 		error: vi.fn(),
 		debug: vi.fn(),
 	},
+}));
+
+vi.mock('../../../../src/workflow/statusDefinitions.js', () => ({
+	listWorkflowStatusDefinitions: mockListWorkflowStatusDefinitions,
 }));
 
 // Re-export schema values (these are pure constants, not functions to mock)
@@ -136,6 +142,7 @@ describe('agentDefinitionsRouter', () => {
 		mockValidateTemplate.mockReturnValue({ valid: true });
 		mockLoadPartials.mockResolvedValue(new Map());
 		mockClearAgentTypeReferences.mockResolvedValue(0);
+		mockListWorkflowStatusDefinitions.mockResolvedValue([]);
 	});
 
 	// =====================================================================
@@ -337,6 +344,21 @@ describe('agentDefinitionsRouter', () => {
 			expect(mockInvalidateDefinitionCache).toHaveBeenCalled();
 		});
 
+		it('does not query workflow statuses when updating fields other than triggers', async () => {
+			const current = createMockDefinition();
+			mockResolveAgentDefinition.mockResolvedValue(current);
+			mockUpsertAgentDefinition.mockResolvedValue(undefined);
+			mockListWorkflowStatusDefinitions.mockClear();
+
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
+			await caller.update({
+				agentType: 'implementation',
+				patch: { hint: 'updated hint' },
+			});
+
+			expect(mockListWorkflowStatusDefinitions).not.toHaveBeenCalled();
+		});
+
 		it('throws NOT_FOUND when definition does not exist', async () => {
 			mockResolveAgentDefinition.mockRejectedValue(new Error('not found'));
 
@@ -344,6 +366,38 @@ describe('agentDefinitionsRouter', () => {
 			await expect(
 				caller.update({ agentType: 'missing', patch: { hint: 'x' } }),
 			).rejects.toMatchObject({ code: 'NOT_FOUND' });
+		});
+
+		it('rejects removing status-changed support while referenced by a workflow status', async () => {
+			mockResolveAgentDefinition.mockResolvedValue(
+				createMockDefinition({
+					triggers: [
+						{
+							event: 'pm:status-changed',
+							label: 'Status Changed',
+							defaultEnabled: false,
+							parameters: [],
+						},
+					],
+				}),
+			);
+			mockListWorkflowStatusDefinitions.mockResolvedValue([
+				{
+					key: 'story',
+					label: 'Story',
+					agentType: 'story-agent',
+					sortOrder: 1000,
+					isBuiltin: false,
+				},
+			]);
+
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
+			await expectTRPCError(
+				caller.update({ agentType: 'story-agent', patch: { triggers: [] } }),
+				'BAD_REQUEST',
+			);
+
+			expect(mockUpsertAgentDefinition).not.toHaveBeenCalled();
 		});
 
 		it('throws FORBIDDEN when non-superadmin tries to update', async () => {
@@ -478,6 +532,25 @@ describe('agentDefinitionsRouter', () => {
 			await expect(caller.reset({ agentType: 'custom-agent' })).rejects.toMatchObject({
 				code: 'BAD_REQUEST',
 			});
+		});
+
+		it('rejects resetting a referenced builtin to YAML defaults without status-changed support', async () => {
+			mockLoadBuiltinDefinition.mockReturnValue(createMockDefinition({ triggers: [] }));
+			mockListWorkflowStatusDefinitions.mockResolvedValue([
+				{
+					key: 'review-ready',
+					label: 'Review Ready',
+					agentType: 'review',
+					sortOrder: 1000,
+					isBuiltin: false,
+				},
+			]);
+			mockUpsertAgentDefinition.mockClear();
+
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
+			await expectTRPCError(caller.reset({ agentType: 'review' }), 'BAD_REQUEST');
+
+			expect(mockUpsertAgentDefinition).not.toHaveBeenCalled();
 		});
 
 		it('throws FORBIDDEN when non-superadmin tries to reset', async () => {

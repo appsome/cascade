@@ -20,6 +20,7 @@ import {
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { rootRoute } from '../__root.js';
 import { AGENT_DEFINITIONS_TABS, type AgentDefinitionsTab } from './definitions-tabs.js';
+import { getStatusDispatchAgentTypes } from './definitions-utils.js';
 
 type Tab = AgentDefinitionsTab;
 type EditTarget =
@@ -229,7 +230,7 @@ type WorkflowStatusRow = RouterOutput['workflowStatuses']['list'][number];
 function WorkflowStatusesTab() {
 	const queryClient = useQueryClient();
 	const statusesQuery = useQuery(trpc.workflowStatuses.list.queryOptions());
-	const agentTypesQuery = useQuery(trpc.agentDefinitions.knownTypes.queryOptions());
+	const agentDefinitionsQuery = useQuery(trpc.agentDefinitions.list.queryOptions());
 	const queryKey = trpc.workflowStatuses.list.queryOptions().queryKey;
 
 	const [draft, setDraft] = useState({
@@ -280,7 +281,7 @@ function WorkflowStatusesTab() {
 		},
 	});
 
-	const agentTypes = agentTypesQuery.data ?? [];
+	const agentTypes = getStatusDispatchAgentTypes(agentDefinitionsQuery.data ?? []);
 	const statuses = statusesQuery.data ?? [];
 
 	function beginEdit(row: WorkflowStatusRow) {
