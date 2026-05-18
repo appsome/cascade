@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockProject } from '../../helpers/factories.js';
 import { createMockPMProvider } from '../../helpers/mockPMProvider.js';
-import { mockGithubClient, mockLogger } from '../../helpers/sharedMocks.js';
+import { mockGithubClient, mockLogger, mockWithGitHubToken } from '../../helpers/sharedMocks.js';
 
 vi.mock('../../../src/utils/logging.js', () => ({ logger: mockLogger }));
 vi.mock('../../../src/github/client.js', () => ({
+	withGitHubToken: mockWithGitHubToken,
 	githubClient: mockGithubClient,
+}));
+vi.mock('../../../src/github/personas.js', () => ({
+	getPersonaToken: vi.fn().mockResolvedValue('github-token'),
 }));
 
 vi.mock('../../../src/db/repositories/runsRepository.js', () => ({
@@ -20,6 +24,7 @@ vi.mock('../../../src/db/repositories/prWorkItemsRepository.js', () => ({
 
 import { listPRsForWorkItem } from '../../../src/db/repositories/prWorkItemsRepository.js';
 import { countActiveRuns, getRunsByWorkItem } from '../../../src/db/repositories/runsRepository.js';
+import { getPersonaToken } from '../../../src/github/personas.js';
 import {
 	evaluateImplementationFreshness,
 	postFreshnessSkipNotice,
@@ -63,6 +68,8 @@ beforeEach(() => {
 	vi.mocked(countActiveRuns).mockResolvedValue(0);
 	vi.mocked(getRunsByWorkItem).mockResolvedValue([]);
 	vi.mocked(listPRsForWorkItem).mockResolvedValue([]);
+	vi.mocked(getPersonaToken).mockResolvedValue('github-token');
+	mockWithGitHubToken.mockImplementation((_token, fn) => fn());
 });
 
 describe('evaluateImplementationFreshness', () => {
@@ -313,6 +320,8 @@ describe('evaluateImplementationFreshness', () => {
 
 			expect(outcome.kind).toBe('implementation_pr_exists');
 			expect(outcome.message).toContain('/pull/42');
+			expect(getPersonaToken).toHaveBeenCalledWith('project-1', 'implementation');
+			expect(mockWithGitHubToken).toHaveBeenCalledWith('github-token', expect.any(Function));
 		});
 
 		it('returns already_implemented when a linked PR is merged', async () => {
@@ -391,6 +400,45 @@ describe('evaluateImplementationFreshness', () => {
 			});
 
 			expect(outcome.kind).toBe('dispatchable');
+		});
+
+		it('allows manual reimplementation when a run-derived PR is closed-unmerged', async () => {
+			const provider = createMockPMProvider();
+			provider.getChecklists.mockResolvedValue([]);
+			vi.mocked(listPRsForWorkItem).mockResolvedValue([]);
+			vi.mocked(getRunsByWorkItem).mockResolvedValue([
+				makeRunRow({
+					id: 'run-success',
+					success: true,
+					prUrl: 'https://github.com/org/repo/pull/77',
+					completedAt: new Date(),
+				}),
+			]);
+			mockGithubClient.getPR.mockResolvedValue({
+				number: 77,
+				title: 'closed retry target',
+				body: null,
+				state: 'closed',
+				htmlUrl: 'https://github.com/org/repo/pull/77',
+				headRef: 'feature/x',
+				headSha: 'sha',
+				baseRef: 'main',
+				merged: false,
+				mergeable: null,
+				user: { login: 'cascade-bot' },
+			});
+
+			const outcome = await evaluateImplementationFreshness({
+				agentType: 'implementation',
+				workItemId: 'card-1',
+				project: baseProject,
+				provider,
+			});
+
+			expect(outcome.kind).toBe('dispatchable');
+			expect(getPersonaToken).toHaveBeenCalledWith('project-1', 'implementation');
+			expect(mockWithGitHubToken).toHaveBeenCalledWith('github-token', expect.any(Function));
+			expect(mockGithubClient.getPR).toHaveBeenCalledWith('org', 'repo', 77);
 		});
 
 		it('merges PR candidates from recent runs that point to a PR', async () => {
@@ -538,7 +586,7 @@ describe('evaluateImplementationFreshness', () => {
 			expect(outcome.evidence.uncertaintyReason).toBe('successful_implementation_without_pr');
 		});
 
-		it('stays dispatchable when checklist read fails and nothing else suggests duplicate work', async () => {
+		it('fails closed when checklist read fails even without other duplicate-work evidence', async () => {
 			const provider = createMockPMProvider();
 			provider.getChecklists.mockRejectedValue(new Error('PM read failed'));
 			vi.mocked(countActiveRuns).mockResolvedValue(0);
@@ -552,7 +600,38 @@ describe('evaluateImplementationFreshness', () => {
 				provider,
 			});
 
-			expect(outcome.kind).toBe('dispatchable');
+			expect(outcome.kind).toBe('needs_human_reconciliation');
+			expect(outcome.evidence.uncertaintyReason).toBe('checklist_read_failed');
+		});
+
+		it('fails closed when a pr_work_items candidate cannot be verified', async () => {
+			const provider = createMockPMProvider();
+			provider.getChecklists.mockResolvedValue([]);
+			vi.mocked(countActiveRuns).mockResolvedValue(0);
+			vi.mocked(listPRsForWorkItem).mockResolvedValue([
+				{
+					prNumber: 88,
+					repoFullName: 'org/repo',
+					prUrl: 'https://github.com/org/repo/pull/88',
+					prTitle: 'possibly open',
+					workItemId: 'card-1',
+					workItemUrl: null,
+					workItemTitle: null,
+					runCount: 1,
+				},
+			]);
+			vi.mocked(getRunsByWorkItem).mockResolvedValue([]);
+			mockGithubClient.getPR.mockRejectedValue(new Error('No GitHub client in scope'));
+
+			const outcome = await evaluateImplementationFreshness({
+				agentType: 'implementation',
+				workItemId: 'card-1',
+				project: baseProject,
+				provider,
+			});
+
+			expect(outcome.kind).toBe('needs_human_reconciliation');
+			expect(outcome.evidence.uncertaintyReason).toBe('pr_lookup_failed');
 		});
 	});
 });

@@ -21,12 +21,10 @@
  * respond-to-ci, respond-to-pr-comment, …) keep their existing dispatch
  * path.
  *
- * The gate is *fail-closed*: when live PM/DB/GitHub lookups raise
- * unexpected errors AND we already have credible duplicate-ownership
- * evidence, the gate returns `needs_human_reconciliation` rather than
- * letting a stale implementation start. When evidence is empty and
- * everything errors, the gate still returns `dispatchable` (we cannot
- * synthesise an ownership signal out of nothing).
+ * The gate is *fail-closed*: checklist read uncertainty always returns
+ * `needs_human_reconciliation`, and PR lookup uncertainty does the same
+ * when a DB/run-linked candidate exists. We would rather stop for human
+ * reconciliation than let a stale implementation start.
  */
 
 import { listPRsForWorkItem } from '../../db/repositories/prWorkItemsRepository.js';
@@ -35,7 +33,8 @@ import {
 	DEFAULT_STALE_RUN_THRESHOLD_MS,
 	getRunsByWorkItem,
 } from '../../db/repositories/runsRepository.js';
-import { githubClient } from '../../github/client.js';
+import { githubClient, withGitHubToken } from '../../github/client.js';
+import { getPersonaToken } from '../../github/personas.js';
 import type { PMProvider } from '../../pm/index.js';
 import type { AgentInput, ProjectConfig } from '../../types/index.js';
 import { logger } from '../../utils/logging.js';
@@ -268,16 +267,17 @@ interface InspectedPR {
 }
 
 /**
- * Verify each candidate PR via GitHub. Uses the existing token scope
- * established by `runAgentWithCredentials` — callers MUST be inside
- * `withGitHubToken(...)` already.
+ * Verify each candidate PR via GitHub. The shared execution pipeline has
+ * callers that do not establish an ambient GitHub scope (manual/retry jobs),
+ * so this function resolves and scopes the implementation persona token
+ * itself before touching the scoped singleton.
  *
  * `errored` collects PRs whose metadata could not be retrieved despite
- * being credible candidates. The pipeline uses this list to decide
- * between dispatching anyway (no useful evidence to verify) and failing
- * closed (other terminal signals make uncertainty unsafe).
+ * being credible candidates. The pipeline fails closed when this list is
+ * non-empty rather than assuming the linked PR is safe to ignore.
  */
 async function inspectPullRequests(
+	projectId: string,
 	repo: string,
 	candidates: CandidatePR[],
 ): Promise<{ inspected: InspectedPR[]; errored: CandidatePR[] }> {
@@ -296,23 +296,36 @@ async function inspectPullRequests(
 		return { inspected: [], errored: [...candidates] };
 	}
 
-	for (const candidate of candidates) {
-		try {
-			const pr = await githubClient.getPR(owner, repoName, candidate.prNumber);
-			inspected.push({
-				prNumber: candidate.prNumber,
-				prUrl: pr.htmlUrl ?? candidate.prUrl,
-				state: pr.state,
-				merged: pr.merged,
-			});
-		} catch (err) {
-			errored.push(candidate);
-			logger.warn('[freshness-gate] failed to load PR metadata', {
-				prNumber: candidate.prNumber,
-				error: String(err),
-			});
-		}
+	let githubToken: string;
+	try {
+		githubToken = await getPersonaToken(projectId, 'implementation');
+	} catch (err) {
+		logger.warn('[freshness-gate] failed to resolve GitHub token for PR verification', {
+			projectId,
+			error: String(err),
+		});
+		return { inspected: [], errored: [...candidates] };
 	}
+
+	await withGitHubToken(githubToken, async () => {
+		for (const candidate of candidates) {
+			try {
+				const pr = await githubClient.getPR(owner, repoName, candidate.prNumber);
+				inspected.push({
+					prNumber: candidate.prNumber,
+					prUrl: pr.htmlUrl ?? candidate.prUrl,
+					state: pr.state,
+					merged: pr.merged,
+				});
+			} catch (err) {
+				errored.push(candidate);
+				logger.warn('[freshness-gate] failed to load PR metadata', {
+					prNumber: candidate.prNumber,
+					error: String(err),
+				});
+			}
+		}
+	});
 
 	return { inspected, errored };
 }
@@ -356,7 +369,7 @@ async function gatherFreshnessSignals(
 	let inspectedPRs: InspectedPR[] = [];
 	let erroredPRs: CandidatePR[] = [];
 	if (input.project.repo && candidates.length > 0) {
-		const verification = await inspectPullRequests(input.project.repo, candidates);
+		const verification = await inspectPullRequests(projectId, input.project.repo, candidates);
 		inspectedPRs = verification.inspected;
 		erroredPRs = verification.errored;
 	}
@@ -458,27 +471,16 @@ function decideFailClosedOutcome(
 		};
 	}
 
-	const otherSignalsBesidesChecklist =
-		(signals.activeRuns?.count ?? 0) > 0 ||
-		signals.successfulRunsWithPR.length > 0 ||
-		signals.inspectedPRs.length > 0;
-
 	if (signals.erroredPRs.length > 0) {
-		const haveOtherEvidence =
-			signals.completedChecklistNames.length > 0 ||
-			(signals.activeRuns?.count ?? 0) > 0 ||
-			signals.successfulRunsWithPR.length > 0;
-		if (haveOtherEvidence) {
-			return {
-				kind: 'needs_human_reconciliation',
-				message:
-					'Implementation not started: needs human reconciliation — could not verify the state of an existing PR linked to this work item.',
-				evidence: { ...evidence, uncertaintyReason: 'pr_lookup_failed' },
-			};
-		}
+		return {
+			kind: 'needs_human_reconciliation',
+			message:
+				'Implementation not started: needs human reconciliation — could not verify the state of an existing PR linked to this work item.',
+			evidence: { ...evidence, uncertaintyReason: 'pr_lookup_failed' },
+		};
 	}
 
-	if (!signals.checklistsResult && otherSignalsBesidesChecklist) {
+	if (!signals.checklistsResult) {
 		return {
 			kind: 'needs_human_reconciliation',
 			message:
@@ -495,7 +497,7 @@ function decideFailClosedOutcome(
  *
  * The contract is intentionally narrow:
  *   - implementation-only, with a resolved workItemId
- *   - reload live PM checklists (treat read failure as uncertain)
+ *   - reload live PM checklists (fail closed when the read is uncertain)
  *   - count active same-type runs, recent completed implementations
  *   - inspect linked open / merged PRs through GitHub
  */
