@@ -107,12 +107,16 @@ function buildZodField(def: ParameterDefinition) {
 
 /**
  * Convert a ParameterMap to a Zod object schema.
- * Gadget schemas include ALL parameters (including gadgetOnly params like `comment`).
+ * Gadget schemas include `gadgetOnly` params (like `comment`) but EXCLUDE
+ * `cliOnly` params (CLI-only output destination flags such as
+ * `get-pr-diff --output-file`) — those have no meaningful in-process semantics.
  */
 export function buildZodSchema(parameters: ParameterMap) {
 	const shape: Record<string, ReturnType<typeof buildZodField>> = {};
 
 	for (const [name, def] of Object.entries(parameters)) {
+		// MNG-1059: cliOnly params are not part of the SDK gadget surface.
+		if (def.cliOnly) continue;
 		shape[name] = buildZodField(def);
 	}
 

@@ -433,6 +433,124 @@ describe('buildToolGuidance', () => {
 			expect(paramLine).not.toContain('#');
 		});
 	});
+
+	// -------------------------------------------------------------------------
+	// MNG-1059: shell-sensitive multiline example suppression
+	// -------------------------------------------------------------------------
+	describe('formatParam — shell-sensitive example suppression (MNG-1059)', () => {
+		it('suppresses inline example for direct text param when example contains backticks AND a file-input companion is declared', () => {
+			const result = buildToolGuidance([
+				makeManifest({
+					parameters: {
+						body: {
+							type: 'string',
+							required: true,
+							example: 'Use `npm test` to verify',
+							fileInputAlternative: 'body-file',
+						},
+						'body-file': {
+							type: 'string',
+							fileInputFor: 'body',
+							description: 'Read body from file (use - for stdin)',
+						},
+					},
+				}),
+			]);
+
+			expect(result).not.toContain("--body 'Use `npm test` to verify'");
+			expect(result).toContain('--body-file <path>');
+			expect(result).toContain('shell-sensitive');
+		});
+
+		it('suppresses inline example for direct text param when example contains $(...) AND a file-input companion is declared', () => {
+			const result = buildToolGuidance([
+				makeManifest({
+					parameters: {
+						details: {
+							type: 'string',
+							required: true,
+							example: 'Detected $(whoami) running unexpectedly',
+							fileInputAlternative: 'details-file',
+						},
+						'details-file': {
+							type: 'string',
+							fileInputFor: 'details',
+							description: 'Read details from file (use - for stdin)',
+						},
+					},
+				}),
+			]);
+
+			expect(result).not.toContain("'Detected $(whoami)");
+			expect(result).toContain('--details-file <path>');
+		});
+
+		it('suppresses inline example for direct text param when example contains a newline AND a file-input companion is declared', () => {
+			const result = buildToolGuidance([
+				makeManifest({
+					parameters: {
+						body: {
+							type: 'string',
+							required: true,
+							example: '## Summary\n\nMultiline content',
+							fileInputAlternative: 'body-file',
+						},
+						'body-file': {
+							type: 'string',
+							fileInputFor: 'body',
+							description: 'Read body from file (use - for stdin)',
+						},
+					},
+				}),
+			]);
+
+			expect(result).not.toContain("'## Summary");
+			expect(result).toContain('--body-file <path>');
+		});
+
+		it('keeps inline example for shell-safe scalar values even when a file companion exists', () => {
+			const result = buildToolGuidance([
+				makeManifest({
+					parameters: {
+						body: {
+							type: 'string',
+							required: true,
+							example: 'LGTM',
+							fileInputAlternative: 'body-file',
+						},
+						'body-file': {
+							type: 'string',
+							fileInputFor: 'body',
+							description: 'Read body from file (use - for stdin)',
+						},
+					},
+				}),
+			]);
+
+			// LGTM is shell-safe — renderer keeps it inline (bare, no quotes).
+			expect(result).toContain('# example: --body LGTM');
+			expect(result).not.toContain('--body-file <path>  #');
+		});
+
+		it('keeps inline example for shell-sensitive content when NO file-input companion is declared', () => {
+			// Without a fileInputAlternative the renderer has no safer flag to
+			// redirect to — preserve the original behavior so existing gadgets
+			// without a file companion still render their examples.
+			const result = buildToolGuidance([
+				makeManifest({
+					parameters: {
+						body: {
+							type: 'string',
+							required: true,
+							example: 'Use `code` here',
+						},
+					},
+				}),
+			]);
+
+			expect(result).toContain("--body 'Use `code` here'");
+		});
+	});
 });
 
 // ───────── buildSystemPrompt ─────────
@@ -531,6 +649,42 @@ describe('buildSystemPrompt', () => {
 			expect(result).toContain('### ReadWorkItem');
 			expect(result).toContain('cascade-tools pm read-work-item');
 			expect(result).toContain('--workItemId <string>');
+		});
+	});
+
+	// MNG-1059: the cascade-tools shell-safety rules must be visible in the
+	// rendered system prompt so agents know to prefer --*-file paths and to
+	// avoid passing two stdin consumers in a single command.
+	describe('cascade-tools shell-safety rules (MNG-1059)', () => {
+		it('renders the shell-safety section header', () => {
+			const result = buildSystemPrompt('Agent prompt.', []);
+			expect(result).toContain('### cascade-tools shell-safety rules');
+		});
+
+		it('tells agents to prefer --*-file <path> for markdown / multiline / backticks', () => {
+			const result = buildSystemPrompt('Agent prompt.', []);
+			expect(result).toContain('--body-file');
+			expect(result).toContain('markdown');
+			expect(result).toContain('multiline');
+		});
+
+		it('warns about the one-stdin-consumer invariant', () => {
+			const result = buildSystemPrompt('Agent prompt.', []);
+			expect(result).toContain('Only **one**');
+			expect(result).toContain('stdin (fd 0)');
+			expect(result).toContain('drained once');
+		});
+
+		it('shows the heredoc pattern for one payload', () => {
+			const result = buildSystemPrompt('Agent prompt.', []);
+			expect(result).toContain('post-pr-comment');
+			expect(result).toContain('--body-file -');
+		});
+
+		it('shows the two-payload pattern (one temp file + one heredoc)', () => {
+			const result = buildSystemPrompt('Agent prompt.', []);
+			expect(result).toContain('create-pr-review');
+			expect(result).toContain('--comments-file -');
 		});
 	});
 });
