@@ -814,6 +814,20 @@ describe('processRouterWebhook', () => {
 			vi.mocked(scheduleCoalescedJob).mockResolvedValue({
 				jobId: 'coalesce:p1:PROJ-1',
 				superseded: true,
+				supersededJobData: {
+					type: 'jira',
+					source: 'jira',
+					payload: {},
+					projectId: 'p1',
+					issueKey: 'PROJ-1',
+					webhookEvent: 'jira:issue_updated',
+					receivedAt: new Date().toISOString(),
+					triggerResult: {
+						agentType: 'planning',
+						workItemId: 'PROJ-1',
+						agentInput: {},
+					},
+				},
 			});
 			const adapter = makeMockAdapter({
 				type: 'jira',
@@ -829,7 +843,9 @@ describe('processRouterWebhook', () => {
 
 			expect(result.decisionReason).toMatch(/Coalesced dispatch scheduled/);
 			expect(clearWorkItemEnqueued).toHaveBeenCalledWith('p1', 'PROJ-1', 'planning');
-			expect(isWorkItemLocked).toHaveBeenCalledWith('p1', 'PROJ-1', 'planning');
+			expect(isWorkItemLocked).toHaveBeenCalledWith('p1', 'PROJ-1', 'planning', {
+				ignoreInMemoryCount: 1,
+			});
 			expect(scheduleCoalescedJob).toHaveBeenCalledOnce();
 		});
 
@@ -872,7 +888,7 @@ describe('processRouterWebhook', () => {
 			expect(markWorkItemEnqueued).not.toHaveBeenCalled();
 		});
 
-		it('restores pending own locks when agent-type concurrency blocks the replacement dispatch', async () => {
+		it('leaves pending own locks intact when agent-type concurrency blocks the replacement dispatch', async () => {
 			vi.mocked(getPendingCoalescedJobData).mockResolvedValue({
 				type: 'linear',
 				source: 'linear',
@@ -904,13 +920,50 @@ describe('processRouterWebhook', () => {
 			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
 
 			expect(result.decisionReason).toBe('Agent type concurrency limit reached');
-			expect(clearWorkItemEnqueued).toHaveBeenCalledWith('p1', 'TF-38', 'implementation');
-			expect(clearAgentTypeEnqueued).toHaveBeenCalledWith('p1', 'implementation');
-			expect(clearRecentlyDispatched).toHaveBeenCalledWith('p1', 'implementation', 'TF-38');
-			expect(markWorkItemEnqueued).toHaveBeenCalledWith('p1', 'TF-38', 'implementation');
-			expect(markAgentTypeEnqueued).toHaveBeenCalledWith('p1', 'implementation');
-			expect(markRecentlyDispatched).toHaveBeenCalledWith('p1', 'implementation', 'TF-38');
+			expect(clearWorkItemEnqueued).not.toHaveBeenCalled();
+			expect(clearAgentTypeEnqueued).not.toHaveBeenCalled();
+			expect(clearRecentlyDispatched).not.toHaveBeenCalled();
+			expect(markWorkItemEnqueued).not.toHaveBeenCalled();
+			expect(markAgentTypeEnqueued).not.toHaveBeenCalled();
+			expect(markRecentlyDispatched).not.toHaveBeenCalled();
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+		});
+
+		it('does not release pending own locks when replacement scheduling fails', async () => {
+			vi.mocked(getPendingCoalescedJobData).mockResolvedValue({
+				type: 'linear',
+				source: 'linear',
+				payload: {},
+				projectId: 'p1',
+				workItemId: 'TF-38',
+				eventType: 'Issue',
+				receivedAt: new Date().toISOString(),
+				triggerResult: {
+					agentType: 'implementation',
+					workItemId: 'TF-38',
+					agentInput: {},
+				},
+			});
+			vi.mocked(scheduleCoalescedJob).mockRejectedValue(new Error('Redis down'));
+			const adapter = makeMockAdapter({
+				type: 'linear',
+				dispatchWithCredentials: vi.fn().mockResolvedValue({
+					agentType: 'implementation',
+					agentInput: { workItemId: 'TF-38' },
+					workItemId: 'TF-38',
+					coalesceKey: 'ats:TF-38',
+				}),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+
+			expect(result.decisionReason).toBe('Failed to schedule coalesced job to Redis');
+			expect(clearWorkItemEnqueued).not.toHaveBeenCalled();
+			expect(clearAgentTypeEnqueued).not.toHaveBeenCalled();
+			expect(clearRecentlyDispatched).not.toHaveBeenCalled();
+			expect(markWorkItemEnqueued).not.toHaveBeenCalled();
+			expect(markAgentTypeEnqueued).not.toHaveBeenCalled();
+			expect(markRecentlyDispatched).not.toHaveBeenCalled();
 		});
 
 		it('blocks a late duplicate coalesced dispatch when the same work item and agent type are already locked', async () => {

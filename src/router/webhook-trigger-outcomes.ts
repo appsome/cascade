@@ -191,24 +191,19 @@ async function maybeHandleCoalescedDispatch({
 
 	try {
 		const pendingJobData = await getPendingCoalescedJobData(result.coalesceKey);
-		const shouldIgnorePendingOwnLock = shouldTemporarilyReleasePendingJobLocks({
+		const shouldIgnorePendingOwnLock = shouldIgnorePendingOwnLocks({
 			pendingJobData,
 			projectId: project.id,
 			result: result as TriggerResult & { agentType: string },
 		});
-		if (shouldIgnorePendingOwnLock) {
-			releaseSupersededJobLocks(pendingJobData);
-		}
 
 		const lockCheck = await checkDispatchLocks({
 			adapterType: adapter.type,
 			projectId: project.id,
 			result: result as TriggerResult & { agentType: string },
+			ignorePendingOwnLock: shouldIgnorePendingOwnLock,
 		});
 		if (lockCheck.blocked) {
-			if (shouldIgnorePendingOwnLock) {
-				restoreSupersededJobLocks(pendingJobData);
-			}
 			return {
 				shouldProcess: true,
 				projectId: project.id,
@@ -275,7 +270,7 @@ async function maybeHandleCoalescedDispatch({
 	};
 }
 
-function shouldTemporarilyReleasePendingJobLocks({
+function shouldIgnorePendingOwnLocks({
 	pendingJobData,
 	projectId,
 	result,
@@ -314,19 +309,6 @@ function releaseSupersededJobLocks(
 		oldAgentType,
 		supersededJobData.triggerResult?.workItemId,
 	);
-}
-
-function restoreSupersededJobLocks(
-	supersededJobData: Awaited<ReturnType<typeof getPendingCoalescedJobData>>,
-): void {
-	if (!supersededJobData || supersededJobData.type === 'github') return;
-	const oldAgentType = supersededJobData.triggerResult?.agentType;
-	if (!oldAgentType) return;
-
-	markCoalescedDispatchEnqueued({
-		projectId: supersededJobData.projectId,
-		result: supersededJobData.triggerResult as TriggerResult & { agentType: string },
-	});
 }
 
 async function handleImmediateDispatch({
