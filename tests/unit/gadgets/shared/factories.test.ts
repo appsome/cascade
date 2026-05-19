@@ -365,6 +365,38 @@ describe('createGadgetClass', () => {
 		expect(instance.examples?.[0]?.comment).toBe('Basic usage');
 	});
 
+	it('filters examples that use CLI-only params out of SDK gadget examples', () => {
+		const coreFn: GadgetCoreFn = async () => 'ok';
+		const def: ToolDefinition = {
+			name: 'CliOnlyExampleTool',
+			description: 'A tool with a CLI-only example',
+			parameters: {
+				value: { type: 'string', describe: 'A value', required: true },
+				outputFile: {
+					type: 'string',
+					describe: 'Write output to a file',
+					optional: true,
+					cliOnly: true,
+				},
+			},
+			examples: [
+				{
+					params: { value: 'visible' },
+					comment: 'SDK-safe example',
+				},
+				{
+					params: { value: 'cli', outputFile: '/tmp/out.txt' },
+					comment: 'CLI-only example',
+				},
+			],
+		};
+		const GadgetClass = createGadgetClass(def, coreFn);
+
+		const instance = new GadgetClass();
+		expect(instance.examples).toHaveLength(1);
+		expect(instance.examples?.[0]?.params).toEqual({ value: 'visible' });
+	});
+
 	it('handles definition with no examples', () => {
 		const coreFn: GadgetCoreFn = async () => 'ok';
 		const noExamplesDef: ToolDefinition = {

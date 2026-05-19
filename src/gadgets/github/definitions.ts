@@ -304,7 +304,7 @@ export const getPRDetailsDef: ToolDefinition = {
 export const getPRDiffDef: ToolDefinition = {
 	name: 'GetPRDiff',
 	description:
-		'Get the unified diff of all file changes in a GitHub pull request. Shows each file with additions, deletions, and the patch content. For large diffs or one-line JSON patches that would truncate stdout, use --output-file <path> to write the full diff to disk and return a compact summary.',
+		'Get the unified diff of all file changes in a GitHub pull request. Shows each file with additions, deletions, and the patch content. CLI/native-tool users can pass --outputFile <path> to write large diffs or one-line JSON patches to disk and return a compact summary.',
 	timeoutMs: 30000,
 	parameters: {
 		comment: {
@@ -342,6 +342,7 @@ export const getPRDiffDef: ToolDefinition = {
 				'Optional path: when set, write the raw multiline diff text to this file and return a compact JSON summary {outputFile, fileCount, bytes, pathFilter} instead of the full payload. Use this for large diffs / one-line JSON patches that would truncate stdout.',
 			optional: true,
 			cliOnly: true,
+			cliAliases: ['output-file'],
 		},
 	},
 	examples: [

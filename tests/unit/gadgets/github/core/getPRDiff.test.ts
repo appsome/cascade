@@ -255,10 +255,10 @@ describe('formatPRDiffPayload', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MNG-1059: --output-file mode
+// MNG-1059: --outputFile mode
 // ---------------------------------------------------------------------------
 
-describe('getPRDiff with --output-file', () => {
+describe('getPRDiff with --outputFile', () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
@@ -369,7 +369,7 @@ describe('getPRDiff with --output-file', () => {
 		expect(written).toBe('No changed file matched path: src/missing.ts');
 	});
 
-	it('throws on githubClient failure (output-file mode follows the throw convention)', async () => {
+	it('throws on githubClient failure (outputFile mode follows the throw convention)', async () => {
 		mockGithub.getPRDiff.mockRejectedValue(new Error('API rate limit'));
 		const outputPath = join(tmpDir, 'diff.md');
 

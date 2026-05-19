@@ -49,7 +49,7 @@ export function formatPRDiffPayload(files: PRDiffFile[], path: string | undefine
 }
 
 /**
- * MNG-1059: the compact JSON summary returned when `--output-file` is set.
+ * MNG-1059: the compact JSON summary returned when `--outputFile` is set.
  * Keeps the raw multi-megabyte diff text off stdout (terminal truncation,
  * agent context bloat) while preserving the cascade-tools JSON contract.
  */

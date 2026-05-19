@@ -173,16 +173,16 @@ describe('GetPRDiff command', () => {
 		expect(output.success).toBe(true);
 	});
 
-	// MNG-1059: --output-file mode streams the raw multiline diff to disk and
+	// MNG-1059: --outputFile mode streams the raw multiline diff to disk and
 	// returns a compact summary, sidestepping stdout truncation on big diffs.
-	it('passes --output-file through to getPRDiff', async () => {
+	it('passes --output-file alias through to getPRDiff', async () => {
 		vi.mocked(getPRDiff).mockResolvedValue({
 			outputFile: '/tmp/diff.md',
 			fileCount: 1,
 			bytes: 1234,
 		} as never);
 		const cmd = new GetPRDiff(
-			['--prNumber', '15', '--outputFile', '/tmp/diff.md'],
+			['--prNumber', '15', '--output-file', '/tmp/diff.md'],
 			makeMockConfig() as never,
 		);
 		const logSpy = vi.spyOn(cmd, 'log');
