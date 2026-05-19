@@ -259,8 +259,8 @@ export function formatSkippedFilesInjection(
 		// the agent about the file-output escape hatch so it does not lose
 		// content to terminal truncation.
 		prNumber !== undefined
-			? `  • \`cascade-tools scm get-pr-diff --prNumber ${prNumber} --path <path> --outputFile /tmp/diff-<path>.md\` for large or one-line JSON diffs, then \`Read /tmp/diff-<path>.md\``
-			: '  • `cascade-tools scm get-pr-diff --prNumber <PR_NUMBER> --path <path> --outputFile /tmp/diff-<path>.md` for large or one-line JSON diffs, then `Read /tmp/diff-<path>.md`',
+			? `  • \`cascade-tools scm get-pr-diff --prNumber ${prNumber} --path <path> --outputFile /tmp/pr-diff.md\` for large or one-line JSON diffs, then \`Read /tmp/pr-diff.md\``
+			: '  • `cascade-tools scm get-pr-diff --prNumber <PR_NUMBER> --path <path> --outputFile /tmp/pr-diff.md` for large or one-line JSON diffs, then `Read /tmp/pr-diff.md`',
 		'  • `Read <path>` to read the post-PR file content',
 		'  • `Grep <pattern> <path>` to search inside the file',
 		'',
