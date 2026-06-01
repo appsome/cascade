@@ -12,7 +12,13 @@ vi.mock('../../../../src/config/provider.js', () => ({
 }));
 
 vi.mock('../../../../src/gitlab/personas.js', () => ({
-	resolvePersonaIdentities: vi.fn().mockResolvedValue({}),
+	resolvePersonaIdentities: vi
+		.fn()
+		.mockResolvedValue({ implementer: 'cascade-impl', reviewer: 'cascade-reviewer' }),
+	isCascadeBot: vi.fn(
+		(username: string, identities: { implementer: string; reviewer: string }) =>
+			username === identities.implementer || username === identities.reviewer,
+	),
 }));
 
 vi.mock('../../../../src/gitlab/client.js', () => ({
@@ -258,12 +264,59 @@ describe('GitLabRouterAdapter', () => {
 			expect(result).toBe(false);
 		});
 
-		it('returns false for comment events (not yet implemented)', async () => {
+		it('returns true when the note author is a CASCADE persona (loop prevention)', async () => {
 			const result = await adapter.isSelfAuthored(
-				{ projectIdentifier: 'group/repo', eventType: 'Note Hook', isCommentEvent: true },
+				{
+					projectIdentifier: 'group/repo',
+					eventType: 'Note Hook',
+					isCommentEvent: true,
+					projectPath: 'group/repo',
+				} as never,
 				{ user: { username: 'cascade-impl' } },
 			);
-			// The adapter currently returns false for all cases (TODO in source)
+			expect(result).toBe(true);
+		});
+
+		it('returns false when the note author is a human (not a CASCADE persona)', async () => {
+			const result = await adapter.isSelfAuthored(
+				{
+					projectIdentifier: 'group/repo',
+					eventType: 'Note Hook',
+					isCommentEvent: true,
+					projectPath: 'group/repo',
+				} as never,
+				{ user: { username: 'human-dev' } },
+			);
+			expect(result).toBe(false);
+		});
+
+		it('returns false when the payload has no note author', async () => {
+			const result = await adapter.isSelfAuthored(
+				{
+					projectIdentifier: 'group/repo',
+					eventType: 'Note Hook',
+					isCommentEvent: true,
+					projectPath: 'group/repo',
+				} as never,
+				{},
+			);
+			expect(result).toBe(false);
+		});
+
+		it('returns false when no project matches the path', async () => {
+			vi.mocked(loadProjectConfig).mockResolvedValueOnce({
+				projects: [],
+				fullProjects: [],
+			} as never);
+			const result = await adapter.isSelfAuthored(
+				{
+					projectIdentifier: 'group/other',
+					eventType: 'Note Hook',
+					isCommentEvent: true,
+					projectPath: 'group/other',
+				} as never,
+				{ user: { username: 'cascade-impl' } },
+			);
 			expect(result).toBe(false);
 		});
 	});

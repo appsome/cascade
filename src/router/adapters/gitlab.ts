@@ -9,7 +9,11 @@
 
 import { getIntegrationCredential } from '../../config/provider.js';
 import { withGitLabToken } from '../../gitlab/client.js';
-import { type PersonaIdentities, resolvePersonaIdentities } from '../../gitlab/personas.js';
+import {
+	isCascadeBot,
+	type PersonaIdentities,
+	resolvePersonaIdentities,
+} from '../../gitlab/personas.js';
 import { withPMCredentials, withPMProvider } from '../../pm/context.js';
 import { pmRegistry } from '../../pm/registry.js';
 import type { TriggerRegistry } from '../../triggers/registry.js';
@@ -82,23 +86,24 @@ export class GitLabRouterAdapter implements RouterPlatformAdapter {
 	}
 
 	async isSelfAuthored(event: ParsedWebhookEvent, payload: unknown): Promise<boolean> {
-		// Only relevant for comment (Note Hook) events
+		// Only relevant for comment (Note Hook) events. GitLab sends the note
+		// author at payload.user.username.
 		if (!event.isCommentEvent) return false;
 		const p = payload as Record<string, unknown>;
 		const user = p.user as Record<string, unknown> | undefined;
 		const username = user?.username as string | undefined;
 		if (!username) return false;
 
-		// Look up the project to check if the commenter is a CASCADE bot.
-		// GitLab persona detection will be implemented when the GitLab integration
-		// module ships; for now return false (no self-authored detection).
+		// Resolve the project's persona identities and check whether the note
+		// author is one of the CASCADE bots. Without this, the implementer
+		// persona's own MR notes re-trigger mr-comment-mention → comment loop.
 		try {
 			const projectPath = (event as GitLabParsedEvent).projectPath;
 			const config = await loadProjectConfig();
 			const fullProject = config.fullProjects.find((fp) => fp.repo === projectPath);
 			if (!fullProject) return false;
-			// TODO: Implement GitLab persona detection (isCascadeBot equivalent)
-			return false;
+			const personas = await resolvePersonaIdentities(fullProject.id);
+			return isCascadeBot(username, personas);
 		} catch {
 			return false;
 		}
