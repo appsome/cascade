@@ -148,6 +148,37 @@ New domain commands should not add branches in these helpers. They declare behav
 
 Core functions passed to `createCLICommand()` own domain work only. On fatal runtime/API/provider failures they throw, and the shared factory converts that exception into the structured `{"success":false,"error":{"type":"runtime","message":"..."}}` stdout envelope plus exit code 1. A returned value is always serialized as successful `data`, so gadgets must not return sentinel error strings such as `Error reading work item: ...` for fatal failures. Non-fatal command states that are part of the contract, such as guarded PM move no-ops or friction retry queueing, remain successful returns.
 
+### Mutation result contract (MNG-1422 → MNG-1428)
+
+Every PM mutation core and the SCM PR comment/reply/update/review mutation cores covered by MNG-1428 return structured objects, never prose. The CLI factory serialises those objects verbatim into `{"success":true,"data":{...}}`, so consumers (downstream agents, sidecars, review/respond workflows) can read structured keys directly.
+
+These targeted mutations surface these contract fields on `success.data`:
+
+| Field | Meaning |
+|---|---|
+| `status` | The MUTATION OUTCOME — `"created"`/`"updated"`/`"moved"`/`"noop"`/`"aborted"`/`"deleted"` (PM) or `"ok"`/`"no-op"`/`"aborted"` (SCM). Branch on this, not on prose. |
+| `updatedAt` | ISO 8601 timestamp string. It is always present and parseable; the source varies by mutation and fallback path. |
+
+Identity and URL fields are mutation-specific. Work-item and comment mutations expose `id` plus their canonical resource URL (`url` or, for PM comments, `workItemUrl`). `AddChecklist` exposes `checklistId` and `workItemUrl`, plus `itemIds` / `itemCount`; `PMUpdateChecklistItem` and `PMDeleteChecklistItem` expose `checkItemId` and `workItemUrl`. Targeted SCM PR comment/reply/update/review mutations additionally surface `id`, `url`, `repoFullName`, and `prNumber` (the latter widens to `number | null` for `UpdatePRComment` when GitHub returns an issue-only comment URL). `CreatePRReview` extends with `reviewUrl`, `event`, `submittedAt`, and `inlineCommentCount`. `CreatePR` is also a structured SCM mutation, but it is outside MNG-1428's shared `status` / `updatedAt` / `id` / `url` contract and keeps its existing shape: `prNumber`, `prUrl`, `repoFullName`, and `alreadyExisted` plus optional commit/push details. The full per-mutation shapes live on the matching `ToolDefinition.outputShape` blocks under `src/gadgets/{pm,github}/definitions.ts`.
+
+**`status` vs `workflowStatus` naming.** `status` is reserved for the mutation outcome alone. The PM provider's workflow state — Linear's "In Progress", a Trello list name, a JIRA status — lives on its own keys: `workflowStatus` (human-readable) and `workflowStatusId` (native ID). `MoveWorkItem` also exposes `previousStatus` / `previousStatusId` for the work item's pre-move workflow state on the guarded path. Mixing the two surfaces once cost ~2½ minutes of agent time (prod run `5d993b04`); the dual-key naming is now load-bearing.
+
+**Fatal failures throw.** Cores propagate runtime/API/provider errors as exceptions; the CLI factory emits the spec-014 runtime envelope (`{"success":false,"error":{"type":"runtime","message":"..."}}`). Do NOT return sentinel strings like `"Error creating work item: ..."` — the CLI cannot distinguish a string return from a successful `data` payload, so the envelope would say `success: true` and the agent would silently mis-act.
+
+**Timestamp fallback semantics.** The stable contract is that `updatedAt` is always present and parseable. `okResult` still rejects empty timestamps, so call sites using the shared success helper must provide one, but some successful PM writes synthesise timestamps today: `PostComment` uses `currentTimestamp()` for `created` / `updated`, and `MoveWorkItem` can fall back through `pickTimestamp(undefined)` for `moved`. `noOpResult` and `abortedResult` synthesise via `currentTimestamp()` because no provider write happened — the synthetic "now" reflects when the gadget evaluated the guard. Read-back failures after a successful checklist mutation fall back to a synthesised URL + timestamp in `readWorkItemContext` rather than masking the mutation success and risking an idempotency retry storm (Trello native-checklist retries duplicate rows).
+
+The regression coverage lives in `tests/unit/cli/pm/pm-commands.test.ts`, `tests/unit/cli/scm/scm-commands.test.ts`, `tests/unit/gadgets/pm/definitions.test.ts`, and `tests/unit/gadgets/github/definitions.test.ts`. Run the focused suite with:
+
+```bash
+npx vitest run --project unit-core \
+  tests/unit/cli/pm/pm-commands.test.ts \
+  tests/unit/cli/scm/scm-commands.test.ts \
+  tests/unit/gadgets/pm/definitions.test.ts \
+  tests/unit/gadgets/github/definitions.test.ts
+```
+
+The full pre-PR gate remains `npm run lint && npm run typecheck && npm test`.
+
 ### Shell-safety contract (MNG-1059)
 
 cascade-tools commands that accept text bodies, descriptions, or markdown payloads declare a `--*-file <path>` companion via `cli.fileInputAlternatives` (`--body-file`, `--text-file`, `--description-file`, `--details-file`, `--comments-file`). Agents are instructed to prefer the file form for any content containing backticks, code fences, `$(...)`, or newlines — shells expand those tokens even inside single quotes when the command is layered through `bash -c`, and newlines break argv parsing.
