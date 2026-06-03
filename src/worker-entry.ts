@@ -325,6 +325,7 @@ export async function dispatchJob(
 		case 'trello': {
 			logger.info('[Worker] Processing Trello job', {
 				jobId,
+				projectId: jobData.projectId,
 				workItemId: jobData.workItemId,
 				actionType: jobData.actionType,
 				ackCommentId: jobData.ackCommentId,
@@ -392,6 +393,7 @@ export async function dispatchJob(
 		case 'jira': {
 			logger.info('[Worker] Processing JIRA job', {
 				jobId,
+				projectId: jobData.projectId,
 				issueKey: jobData.issueKey,
 				webhookEvent: jobData.webhookEvent,
 				ackCommentId: jobData.ackCommentId,

@@ -19,6 +19,7 @@ export interface TrelloWizardStateSlice {
 	trelloListMappings: Record<string, string>;
 	trelloLabelMappings: Record<string, string>;
 	trelloCostFieldId: string;
+	trelloRequiredLabelId: string;
 }
 
 interface VerificationState {
@@ -35,6 +36,7 @@ export type TrelloWizardAction =
 	| { type: 'SET_TRELLO_LIST_MAPPING'; key: string; value: string }
 	| { type: 'SET_TRELLO_LABEL_MAPPING'; key: string; value: string }
 	| { type: 'SET_TRELLO_COST_FIELD'; id: string }
+	| { type: 'SET_TRELLO_REQUIRED_LABEL'; id: string }
 	| { type: 'ADD_TRELLO_BOARD_LABEL'; label: { id: string; name: string; color: string } }
 	| {
 			type: 'ADD_TRELLO_BOARD_CUSTOM_FIELD';
@@ -51,6 +53,7 @@ export function createInitialTrelloState(): TrelloWizardStateSlice {
 		trelloListMappings: {},
 		trelloLabelMappings: {},
 		trelloCostFieldId: '',
+		trelloRequiredLabelId: '',
 	};
 }
 
@@ -98,6 +101,8 @@ export function trelloWizardReducer<T extends TrelloWizardStateSlice & Verificat
 			};
 		case 'SET_TRELLO_COST_FIELD':
 			return { ...state, trelloCostFieldId: action.id };
+		case 'SET_TRELLO_REQUIRED_LABEL':
+			return { ...state, trelloRequiredLabelId: action.id };
 		case 'ADD_TRELLO_BOARD_LABEL':
 			if (!state.trelloBoardDetails) return state;
 			return {
@@ -128,6 +133,7 @@ export function resetTrelloBoardState(
 	| 'trelloListMappings'
 	| 'trelloLabelMappings'
 	| 'trelloCostFieldId'
+	| 'trelloRequiredLabelId'
 > {
 	return {
 		trelloBoardId,
@@ -135,5 +141,6 @@ export function resetTrelloBoardState(
 		trelloListMappings: {},
 		trelloLabelMappings: {},
 		trelloCostFieldId: '',
+		trelloRequiredLabelId: '',
 	};
 }

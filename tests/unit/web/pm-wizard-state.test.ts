@@ -89,6 +89,7 @@ describe('provider state slices', () => {
 			trelloListMappings: {},
 			trelloLabelMappings: {},
 			trelloCostFieldId: '',
+			trelloRequiredLabelId: '',
 		});
 	});
 
@@ -128,6 +129,7 @@ describe('provider state slices', () => {
 			trelloListMappings: {},
 			trelloLabelMappings: {},
 			trelloCostFieldId: '',
+			trelloRequiredLabelId: '',
 		});
 	});
 

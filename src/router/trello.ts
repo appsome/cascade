@@ -5,6 +5,7 @@
  * whether a Trello webhook event is processable and whether it was self-authored.
  */
 
+import { trelloClient } from '../trello/client.js';
 import { logger } from '../utils/logging.js';
 import { resolveTrelloBotMemberId } from './acknowledgments.js';
 import type { RouterProjectConfig } from './config.js';
@@ -91,6 +92,25 @@ export function isAgentLogAttachmentUploaded(
 		return true;
 	}
 	return false;
+}
+
+/**
+ * Check whether a Trello card has the required label.
+ *
+ * Returns `true` when:
+ * - `requiredLabelId` is falsy (no filter configured), OR
+ * - the card's labels include an entry with `id === requiredLabelId`
+ *
+ * Must be called inside a `withTrelloCredentials` scope so the Trello API
+ * client is configured with the correct credentials.
+ */
+export async function checkCardHasRequiredLabel(
+	cardId: string,
+	requiredLabelId: string | undefined,
+): Promise<boolean> {
+	if (!requiredLabelId) return true;
+	const card = await trelloClient.getCard(cardId);
+	return card.labels.some((l) => l.id === requiredLabelId);
 }
 
 export async function isSelfAuthoredTrelloComment(
