@@ -100,7 +100,7 @@ export function buildPromptContext(
 		...listIds,
 		backlogListId,
 		workItemCreateContainerId,
-		pmType: pmProvider?.type,
+		pmType: pmProvider && pmProvider.type !== 'none' ? pmProvider.type : undefined,
 		...terminology,
 		maxInFlightItems: project.maxInFlightItems ?? 1,
 		...(prContext && {
