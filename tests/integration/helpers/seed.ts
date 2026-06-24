@@ -7,6 +7,7 @@ import {
 	agentRuns,
 	agentTriggerConfigs,
 	organizations,
+	orgMemberships,
 	projectIntegrations,
 	projects,
 	promptPartials,
@@ -273,7 +274,12 @@ export async function seedPromptPartial(
 /**
  * Seeds a session for a user.
  */
-export async function seedSession(overrides: { userId: string; token?: string; expiresAt?: Date }) {
+export async function seedSession(overrides: {
+	userId: string;
+	token?: string;
+	expiresAt?: Date;
+	activeOrgId?: string | null;
+}) {
 	const db = getDb();
 	const futureDate = new Date();
 	futureDate.setDate(futureDate.getDate() + 30);
@@ -283,6 +289,24 @@ export async function seedSession(overrides: { userId: string; token?: string; e
 			userId: overrides.userId,
 			token: overrides.token ?? 'test-session-token',
 			expiresAt: overrides.expiresAt ?? futureDate,
+			activeOrgId: overrides.activeOrgId ?? null,
+		})
+		.returning();
+	return row;
+}
+
+/**
+ * Seeds an org membership row (spec 021): links a user to an org with a
+ * per-org role.
+ */
+export async function seedMembership(overrides: { userId: string; orgId?: string; role?: string }) {
+	const db = getDb();
+	const [row] = await db
+		.insert(orgMemberships)
+		.values({
+			userId: overrides.userId,
+			orgId: overrides.orgId ?? 'test-org',
+			role: overrides.role ?? 'member',
 		})
 		.returning();
 	return row;

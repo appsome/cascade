@@ -9,6 +9,7 @@ import {
 	listOrgUsers,
 	updateUser,
 } from '../../db/repositories/usersRepository.js';
+import { resolveActorRoleInOrg } from '../context.js';
 import { adminProcedure, router } from '../trpc.js';
 
 type Role = 'member' | 'admin' | 'superadmin';
@@ -16,8 +17,39 @@ type ActorContext = { id: string; role: Role; effectiveOrgId: string };
 type TargetUser = { id: string; orgId: string; role: string };
 
 /**
+ * Resolve the caller's role *in the effective org* (spec 021 plan 2).
+ *
+ * The `adminProcedure` middleware is a coarse global-role gate; this refines it
+ * with the per-org membership role so an org admin who has switched into an org
+ * where they are only a member cannot perform admin actions there (spec AC #8).
+ * Superadmin stays global (spec AC #7).
+ */
+function resolveActorRole(ctx: {
+	user: { id: string; role: Role; orgId: string };
+	effectiveOrgId: string;
+}): Promise<Role> {
+	return resolveActorRoleInOrg({
+		userId: ctx.user.id,
+		globalRole: ctx.user.role,
+		homeOrgId: ctx.user.orgId,
+		orgId: ctx.effectiveOrgId,
+	});
+}
+
+/** Require the caller to be an admin (or superadmin) in the effective org. */
+function assertOrgAdmin(actorRole: Role): void {
+	if (actorRole !== 'admin' && actorRole !== 'superadmin') {
+		throw new TRPCError({ code: 'FORBIDDEN', message: 'Admin access required' });
+	}
+}
+
+/**
  * Centralizes the permission rules for editing/deleting a user. Throws TRPCError
  * with the appropriate code on any policy violation; returns silently if allowed.
+ *
+ * `actor.role` is the caller's PER-ORG role (resolved via `resolveActorRole`),
+ * not the global `users.role` — per-org membership governs permissions
+ * (spec 021 AC #4).
  *
  * Rules (apply to both `update` and `delete`):
  *   1. Cross-org access is hidden as `NOT_FOUND` (don't leak existence) unless
@@ -61,7 +93,9 @@ function assertUserAccessAllowed(
 
 export const usersRouter = router({
 	list: adminProcedure.query(async ({ ctx }) => {
-		if (ctx.user.role === 'superadmin') {
+		const actorRole = await resolveActorRole(ctx);
+		assertOrgAdmin(actorRole);
+		if (actorRole === 'superadmin') {
 			return listOrgUsers(ctx.effectiveOrgId);
 		}
 		return listOrgUsers(ctx.effectiveOrgId, { excludeRole: 'superadmin' });
@@ -77,10 +111,13 @@ export const usersRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			const actorRole = await resolveActorRole(ctx);
+			assertOrgAdmin(actorRole);
+
 			const role = input.role ?? 'member';
 
 			// Only superadmins can create users with superadmin role
-			if (role === 'superadmin' && ctx.user.role !== 'superadmin') {
+			if (role === 'superadmin' && actorRole !== 'superadmin') {
 				throw new TRPCError({
 					code: 'FORBIDDEN',
 					message: 'Only superadmins can create superadmin users',
@@ -109,6 +146,9 @@ export const usersRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			const actorRole = await resolveActorRole(ctx);
+			assertOrgAdmin(actorRole);
+
 			const targetUser = await getUserById(input.id);
 			if (!targetUser) {
 				throw new TRPCError({ code: 'NOT_FOUND' });
@@ -117,7 +157,7 @@ export const usersRouter = router({
 			assertUserAccessAllowed(
 				{
 					id: ctx.user.id,
-					role: ctx.user.role as Role,
+					role: actorRole,
 					effectiveOrgId: ctx.effectiveOrgId,
 				},
 				targetUser,
@@ -148,6 +188,9 @@ export const usersRouter = router({
 		}),
 
 	delete: adminProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+		const actorRole = await resolveActorRole(ctx);
+		assertOrgAdmin(actorRole);
+
 		// Prevent self-deletion
 		if (ctx.user.id === input.id) {
 			throw new TRPCError({
@@ -162,7 +205,7 @@ export const usersRouter = router({
 		}
 
 		assertUserAccessAllowed(
-			{ id: ctx.user.id, role: ctx.user.role as Role, effectiveOrgId: ctx.effectiveOrgId },
+			{ id: ctx.user.id, role: actorRole, effectiveOrgId: ctx.effectiveOrgId },
 			targetUser,
 			{ verb: 'delete' },
 		);

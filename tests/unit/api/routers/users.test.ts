@@ -10,6 +10,7 @@ const {
 	mockGetUserById,
 	mockDeleteUserSessions,
 	mockBcryptHash,
+	mockGetOrgMembership,
 } = vi.hoisted(() => ({
 	mockListOrgUsers: vi.fn(),
 	mockCreateUser: vi.fn(),
@@ -18,6 +19,7 @@ const {
 	mockGetUserById: vi.fn(),
 	mockDeleteUserSessions: vi.fn(),
 	mockBcryptHash: vi.fn(),
+	mockGetOrgMembership: vi.fn(),
 }));
 
 vi.mock('../../../../src/db/repositories/usersRepository.js', () => ({
@@ -27,6 +29,14 @@ vi.mock('../../../../src/db/repositories/usersRepository.js', () => ({
 	deleteUser: mockDeleteUser,
 	getUserById: mockGetUserById,
 	deleteUserSessions: mockDeleteUserSessions,
+}));
+
+// Per-org actor-role helper (spec 021 plan 2) reads memberships through this
+// repository. Default: no membership row → resolveActorRoleInOrg falls back to
+// the global role for the home org, so the existing admin/member/superadmin
+// tests (which act in their home org) are unaffected.
+vi.mock('../../../../src/db/repositories/orgMembershipsRepository.js', () => ({
+	getOrgMembership: mockGetOrgMembership,
 }));
 
 vi.mock('bcrypt', () => ({
@@ -47,6 +57,9 @@ describe('usersRouter', () => {
 	beforeEach(() => {
 		mockBcryptHash.mockResolvedValue('hashed-password');
 		mockDeleteUserSessions.mockResolvedValue(undefined);
+		// Default: caller has no explicit membership row, so the per-org role
+		// resolver falls back to the global role for their home org.
+		mockGetOrgMembership.mockResolvedValue(null);
 	});
 
 	describe('list', () => {
@@ -516,6 +529,78 @@ describe('usersRouter', () => {
 			await expect(caller.delete({ id: 'user-2' })).rejects.toMatchObject({
 				code: 'FORBIDDEN',
 			});
+		});
+	});
+
+	// =====================================================================
+	// Per-org role governs user management (spec 021 plan 2)
+	//   AC #4: per-org role governs permissions
+	//   AC #7: superadmin cross-org unchanged
+	//   AC #8: an org admin can't act cross-org
+	// =====================================================================
+	describe('per-org role (spec 021 plan 2)', () => {
+		it('list: an org admin switched to an org where they are only a member is denied (AC #8)', async () => {
+			mockGetOrgMembership.mockResolvedValue({ orgId: 'org-2', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
+
+			await expect(caller.list()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+			expect(mockListOrgUsers).not.toHaveBeenCalled();
+			expect(mockGetOrgMembership).toHaveBeenCalledWith('user-1', 'org-2');
+		});
+
+		it('list: an admin in the switched org lists that org with the per-org admin role (AC #4)', async () => {
+			mockGetOrgMembership.mockResolvedValue({ orgId: 'org-2', role: 'admin' });
+			mockListOrgUsers.mockResolvedValue([]);
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
+
+			await caller.list();
+
+			expect(mockListOrgUsers).toHaveBeenCalledWith('org-2', { excludeRole: 'superadmin' });
+		});
+
+		it('create: an org admin switched to a member-org cannot create users there (AC #8)', async () => {
+			mockGetOrgMembership.mockResolvedValue({ orgId: 'org-2', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
+
+			await expect(
+				caller.create({ email: 'x@example.com', name: 'X', password: 'secret123456789' }),
+			).rejects.toMatchObject({ code: 'FORBIDDEN' });
+			expect(mockCreateUser).not.toHaveBeenCalled();
+		});
+
+		it('update: an org admin switched to a member-org cannot edit users there (AC #8)', async () => {
+			mockGetOrgMembership.mockResolvedValue({ orgId: 'org-2', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
+
+			await expect(caller.update({ id: 'user-2', name: 'X' })).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+			// Denied before the target is even loaded.
+			expect(mockGetUserById).not.toHaveBeenCalled();
+			expect(mockUpdateUser).not.toHaveBeenCalled();
+		});
+
+		it('delete: an org admin switched to a member-org cannot delete users there (AC #8)', async () => {
+			mockGetOrgMembership.mockResolvedValue({ orgId: 'org-2', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
+
+			await expect(caller.delete({ id: 'user-2' })).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+			expect(mockDeleteUser).not.toHaveBeenCalled();
+		});
+
+		it('superadmin acts in any org without a membership row (AC #7)', async () => {
+			// No membership in org-2; the global superadmin role short-circuits the
+			// per-org resolver, so getOrgMembership is never consulted.
+			mockGetUserById.mockResolvedValue({ id: 'user-2', orgId: 'org-2', role: 'member' });
+			mockUpdateUser.mockResolvedValue(undefined);
+			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: 'org-2' });
+
+			await caller.update({ id: 'user-2', name: 'Renamed' });
+
+			expect(mockUpdateUser).toHaveBeenCalledWith('user-2', { name: 'Renamed' });
+			expect(mockGetOrgMembership).not.toHaveBeenCalled();
 		});
 	});
 });
