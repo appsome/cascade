@@ -60,9 +60,15 @@ export async function listOrgMembershipsForUser(userId: string): Promise<MyOrg[]
 }
 
 /**
- * A member of an org: the account's identity plus its PER-ORG role (from the
- * membership row, not the global `users.role`). `orgId` is the org being
+ * A member of an org: the account's identity plus BOTH its PER-ORG role (from
+ * the membership row) and its GLOBAL `users.role`. `orgId` is the org being
  * listed.
+ *
+ * Both roles are returned because the live Settings → Users editor still
+ * reads/writes the global `users.role` via `users.update`: surfacing the per-org
+ * `role` while editing the global one would let the editor silently revert a
+ * user's global role (PR #1441 review). Consumers that manage the account use
+ * `globalRole`; per-org role display/reconciliation lands with the plan-4 UI.
  */
 export interface OrgMember {
 	id: string;
@@ -71,6 +77,8 @@ export interface OrgMember {
 	name: string;
 	/** Per-org membership role ('member' | 'admin'). */
 	role: string;
+	/** Global account role from `users.role` ('member' | 'admin' | 'superadmin'). */
+	globalRole: string;
 	createdAt: Date | null;
 	updatedAt: Date | null;
 }
@@ -79,7 +87,7 @@ export interface OrgMember {
  * List an org's true membership (spec 021 plan 3) by joining `org_memberships`
  * to `users`. Unlike the legacy `users.org_id`-scoped listing, this returns
  * every account that belongs to the org — including users whose *home* org is
- * elsewhere — and reports each one's PER-ORG role.
+ * elsewhere — and reports each one's PER-ORG role alongside its GLOBAL role.
  *
  * Pass `opts.excludeGlobalRole` to hide accounts whose GLOBAL `users.role`
  * matches (e.g. 'superadmin'), preserving the rule that a regular org admin
@@ -101,6 +109,7 @@ export async function listOrgMembers(
 			email: users.email,
 			name: users.name,
 			role: orgMemberships.role,
+			globalRole: users.role,
 			createdAt: users.createdAt,
 			updatedAt: users.updatedAt,
 		})

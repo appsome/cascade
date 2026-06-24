@@ -40,7 +40,6 @@ import {
 	getSessionByToken,
 	getUserByEmail,
 	getUserById,
-	listOrgUsers,
 	setSessionActiveOrg,
 	updateUser,
 } from '../../../../src/db/repositories/usersRepository.js';
@@ -170,57 +169,6 @@ describe('usersRepository', () => {
 
 			await deleteExpiredSessions();
 			expect(mockDb.db.delete).toHaveBeenCalled();
-		});
-	});
-
-	describe('listOrgUsers', () => {
-		it('returns all users for org without passwordHash', async () => {
-			const mockUsers = [
-				{
-					id: 'u1',
-					orgId: 'org-1',
-					email: 'alice@example.com',
-					name: 'Alice',
-					role: 'admin',
-					createdAt: new Date('2024-01-01'),
-					updatedAt: new Date('2024-01-01'),
-				},
-				{
-					id: 'u2',
-					orgId: 'org-1',
-					email: 'bob@example.com',
-					name: 'Bob',
-					role: 'member',
-					createdAt: new Date('2024-02-01'),
-					updatedAt: new Date('2024-02-01'),
-				},
-			];
-			mockDb.chain.where.mockResolvedValueOnce(mockUsers);
-
-			const result = await listOrgUsers('org-1');
-
-			expect(result).toHaveLength(2);
-			expect(result[0]).toEqual(mockUsers[0]);
-			expect(result[1]).toEqual(mockUsers[1]);
-			// Verify passwordHash is not in the result
-			for (const user of result) {
-				expect(user).not.toHaveProperty('passwordHash');
-			}
-		});
-
-		it('returns empty array when no users in org', async () => {
-			mockDb.chain.where.mockResolvedValueOnce([]);
-
-			const result = await listOrgUsers('empty-org');
-			expect(result).toEqual([]);
-		});
-
-		it('queries by orgId', async () => {
-			mockDb.chain.where.mockResolvedValueOnce([]);
-
-			await listOrgUsers('org-123');
-
-			expect(mockDb.db.select).toHaveBeenCalledTimes(1);
 		});
 	});
 

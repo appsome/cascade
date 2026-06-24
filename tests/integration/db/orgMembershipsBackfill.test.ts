@@ -27,19 +27,26 @@ import { seedOrg, seedSession, seedUser } from '../helpers/seed.js';
 const MIGRATION_PATH = fileURLToPath(
 	new URL('../../../src/db/migrations/0053_org_memberships.sql', import.meta.url),
 );
+const BACKFILL_RERUN_PATH = fileURLToPath(
+	new URL('../../../src/db/migrations/0054_org_memberships_backfill.sql', import.meta.url),
+);
 
 /**
- * Re-runs the migration body minus its transaction wrappers (drizzle's raw sql
- * tag runs inside its own connection). The migration is fully idempotent, so
- * re-running after seeding users is safe.
+ * Re-runs a migration body minus its transaction wrappers (drizzle's raw sql
+ * tag runs inside its own connection). These backfill migrations are fully
+ * idempotent, so re-running after seeding users is safe.
  */
-async function runMigration(): Promise<void> {
-	const migrationText = await readFile(MIGRATION_PATH, 'utf-8');
+async function runMigrationFile(path: string): Promise<void> {
+	const migrationText = await readFile(path, 'utf-8');
 	const body = migrationText
 		.split('\n')
 		.filter((line) => !/^\s*(BEGIN|COMMIT)\s*;\s*$/i.test(line))
 		.join('\n');
 	await getDb().execute(sql.raw(body));
+}
+
+async function runMigration(): Promise<void> {
+	await runMigrationFile(MIGRATION_PATH);
 }
 
 async function listMemberships() {
@@ -178,6 +185,48 @@ describe('migration 0053 — org_memberships table + active-org + backfill', () 
 					.insert(orgMemberships)
 					.values({ userId: user.id, orgId: 'test-org', role: 'admin' }),
 			).rejects.toThrow();
+		});
+	});
+
+	// Migration 0054 re-runs the idempotent backfill so accounts created via the
+	// old `createUser` (or the bootstrap superadmin tool) between the 0053 snapshot
+	// and the plan-3 deploy gain a home-org membership and stop vanishing from the
+	// membership-based listing (PR #1441 review).
+	describe('migration 0054 — backfill re-run heals membership-less accounts', () => {
+		it('mirrors a home-org membership for an account that has none', async () => {
+			// A user seeded WITHOUT a membership row simulates the gap: an account
+			// created via the old createUser after the 0053 backfill snapshot.
+			const orphan = await seedUser({ email: 'orphan@example.com', role: 'member' });
+			expect(await listMemberships()).toHaveLength(0);
+
+			await runMigrationFile(BACKFILL_RERUN_PATH);
+
+			const byUser = new Map((await listMemberships()).map((m) => [m.userId, m]));
+			expect(byUser.get(orphan.id)).toMatchObject({ orgId: 'test-org', role: 'member' });
+		});
+
+		it('maps a membership-less global superadmin to an admin membership', async () => {
+			const sa = await seedUser({ email: 'boot-super@example.com', role: 'superadmin' });
+
+			await runMigrationFile(BACKFILL_RERUN_PATH);
+
+			const [membership] = await listMemberships();
+			expect(membership).toMatchObject({ userId: sa.id, orgId: 'test-org', role: 'admin' });
+		});
+
+		it('leaves an existing diverged per-org role untouched (grant mutation owns it)', async () => {
+			// Account is a home-org member globally but was granted 'admin' here.
+			const user = await seedUser({ email: 'granted@example.com', role: 'member' });
+			await getDb()
+				.insert(orgMemberships)
+				.values({ userId: user.id, orgId: 'test-org', role: 'admin' });
+
+			await runMigrationFile(BACKFILL_RERUN_PATH);
+
+			// ON CONFLICT DO NOTHING — the diverged per-org admin role survives.
+			const [membership] = await listMemberships();
+			expect(membership).toMatchObject({ userId: user.id, role: 'admin' });
+			expect(await listMemberships()).toHaveLength(1);
 		});
 	});
 });

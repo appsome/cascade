@@ -10,16 +10,6 @@ export interface DashboardUser {
 	role: 'member' | 'admin' | 'superadmin';
 }
 
-export interface OrgUser {
-	id: string;
-	orgId: string;
-	email: string;
-	name: string;
-	role: string;
-	createdAt: Date | null;
-	updatedAt: Date | null;
-}
-
 export async function getUserByEmail(email: string) {
 	const db = getDb();
 	const [row] = await db.select().from(users).where(eq(users.email, email));
@@ -121,33 +111,6 @@ export async function deleteUserSessions(userId: string, excludeToken?: string):
 // ============================================================================
 // CRUD for users (org-scoped)
 // ============================================================================
-
-/**
- * List all users in an org. Never returns passwordHash.
- * Pass `opts.excludeRole` to filter out users with that role (e.g. 'superadmin').
- */
-export async function listOrgUsers(
-	orgId: string,
-	opts?: { excludeRole?: string },
-): Promise<OrgUser[]> {
-	const db = getDb();
-	const conditions = [eq(users.orgId, orgId)];
-	if (opts?.excludeRole !== undefined) {
-		conditions.push(ne(users.role, opts.excludeRole));
-	}
-	return db
-		.select({
-			id: users.id,
-			orgId: users.orgId,
-			email: users.email,
-			name: users.name,
-			role: users.role,
-			createdAt: users.createdAt,
-			updatedAt: users.updatedAt,
-		})
-		.from(users)
-		.where(and(...conditions));
-}
 
 /**
  * Create a new user AND their membership in the same org, atomically

@@ -28,7 +28,14 @@ interface User {
 	orgId: string;
 	name: string;
 	email: string;
+	/** Per-org membership role (spec 021 plan 3). */
 	role: string;
+	/**
+	 * Global account role (`users.role`). The role column + CLI guard + editor
+	 * target this column because `users.update` still writes the global role;
+	 * per-org role rendering lands with the plan-4 UI (PR #1441 review).
+	 */
+	globalRole: string;
 	createdAt: string | null;
 	updatedAt: string | null;
 }
@@ -78,13 +85,13 @@ export function UsersTable({ users }: { users: User[] }) {
 								<TableCell className="font-medium">{u.name}</TableCell>
 								<TableCell className="text-sm">{u.email}</TableCell>
 								<TableCell>
-									<Badge variant={roleVariant(u.role)}>{u.role}</Badge>
+									<Badge variant={roleVariant(u.globalRole)}>{u.globalRole}</Badge>
 								</TableCell>
 								<TableCell className="hidden md:table-cell text-sm text-muted-foreground">
 									{u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—'}
 								</TableCell>
 								<TableCell>
-									{u.role === 'superadmin' ? (
+									{u.globalRole === 'superadmin' ? (
 										<span className="text-xs text-muted-foreground">Manage via CLI</span>
 									) : (
 										<div className="flex gap-1">

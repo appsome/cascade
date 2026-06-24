@@ -79,9 +79,21 @@ describe('multi-org membership management (integration)', () => {
 
 			expect(members).toEqual(
 				expect.arrayContaining([
-					expect.objectContaining({ id: local.id, email: 'local@example.com', role: 'member' }),
-					// Per-org role (admin) wins over the guest's global role (member).
-					expect.objectContaining({ id: guest.id, email: 'guest@example.com', role: 'admin' }),
+					expect.objectContaining({
+						id: local.id,
+						email: 'local@example.com',
+						role: 'member',
+						globalRole: 'member',
+					}),
+					// Per-org role (admin) wins over the guest's global role (member),
+					// but the GLOBAL role is also surfaced so the editor keeps targeting
+					// users.role (PR #1441 review).
+					expect.objectContaining({
+						id: guest.id,
+						email: 'guest@example.com',
+						role: 'admin',
+						globalRole: 'member',
+					}),
 				]),
 			);
 			expect(members).toHaveLength(2);
