@@ -100,6 +100,35 @@ describe('UsersList (list)', () => {
 		const cmd = new UsersList([], oclifConfig as never);
 		await expect(cmd.run()).resolves.toBeUndefined();
 	});
+
+	it('renders the GLOBAL role, not the per-org membership role (PR #1441 review)', async () => {
+		// `listOrgMembers` returns a per-org `role` (only ever member|admin)
+		// alongside the global `globalRole`. A superadmin must still show as
+		// 'superadmin' in the CLI table — printing the per-org `role` would
+		// mislabel them as 'admin'.
+		const client = makeClient();
+		(client.users.list.query as ReturnType<typeof vi.fn>).mockResolvedValue([
+			{
+				id: 'super-1',
+				email: 'super@example.com',
+				name: 'Super Admin',
+				role: 'admin',
+				globalRole: 'superadmin',
+				createdAt: '2024-01-01T00:00:00.000Z',
+			},
+		]);
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		try {
+			const cmd = new UsersList([], oclifConfig as never);
+			await cmd.run();
+			const output = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+			expect(output).toContain('superadmin');
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
