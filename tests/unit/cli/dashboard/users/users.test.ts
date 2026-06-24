@@ -22,6 +22,7 @@ vi.mock('chalk', () => ({
 	},
 }));
 
+import UsersAddToOrg from '../../../../../src/cli/dashboard/users/add-to-org.js';
 import UsersCreate from '../../../../../src/cli/dashboard/users/create.js';
 import UsersDelete from '../../../../../src/cli/dashboard/users/delete.js';
 import UsersList from '../../../../../src/cli/dashboard/users/list.js';
@@ -47,6 +48,15 @@ function makeClient(overrides: Record<string, unknown> = {}) {
 			create: { mutate: vi.fn().mockResolvedValue(sampleUser) },
 			update: { mutate: vi.fn().mockResolvedValue(undefined) },
 			delete: { mutate: vi.fn().mockResolvedValue(undefined) },
+			addExistingUserToOrg: {
+				mutate: vi.fn().mockResolvedValue({
+					userId: 'user-uuid-123',
+					email: 'alice@example.com',
+					orgId: 'org-1',
+					role: 'member',
+					alreadyMember: false,
+				}),
+			},
 		},
 		...overrides,
 	};
@@ -317,6 +327,60 @@ describe('UsersDelete (delete)', () => {
 		mockCreateDashboardClient.mockReturnValue(makeClient());
 
 		const cmd = new UsersDelete(['--yes'], oclifConfig as never);
+		await expect(cmd.run()).rejects.toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// users add-to-org (spec 021 plan 3)
+// ---------------------------------------------------------------------------
+describe('UsersAddToOrg (add-to-org)', () => {
+	beforeEach(() => {
+		mockLoadConfig.mockReturnValue(baseConfig);
+	});
+
+	it('passes --email and default member role to addExistingUserToOrg.mutate', async () => {
+		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new UsersAddToOrg(['--email', 'alice@example.com'], oclifConfig as never);
+		await cmd.run();
+
+		expect(client.users.addExistingUserToOrg.mutate).toHaveBeenCalledWith({
+			email: 'alice@example.com',
+			role: 'member',
+		});
+	});
+
+	it('passes the --role flag through to the mutation', async () => {
+		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new UsersAddToOrg(
+			['--email', 'alice@example.com', '--role', 'admin'],
+			oclifConfig as never,
+		);
+		await cmd.run();
+
+		expect(client.users.addExistingUserToOrg.mutate).toHaveBeenCalledWith({
+			email: 'alice@example.com',
+			role: 'admin',
+		});
+	});
+
+	it('outputs json when --json flag is set', async () => {
+		const client = makeClient();
+		mockCreateDashboardClient.mockReturnValue(client);
+
+		const cmd = new UsersAddToOrg(['--email', 'alice@example.com', '--json'], oclifConfig as never);
+		await expect(cmd.run()).resolves.toBeUndefined();
+		expect(client.users.addExistingUserToOrg.mutate).toHaveBeenCalled();
+	});
+
+	it('requires the --email flag', async () => {
+		mockCreateDashboardClient.mockReturnValue(makeClient());
+
+		const cmd = new UsersAddToOrg([], oclifConfig as never);
 		await expect(cmd.run()).rejects.toThrow();
 	});
 });

@@ -1,14 +1,15 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { getDb } from '../client.js';
-import { organizations, orgMemberships } from '../schema/index.js';
+import { organizations, orgMemberships, users } from '../schema/index.js';
 
 /**
- * Read helpers for the multi-org membership model (spec 021, plan 2 of 4).
+ * Read + grant helpers for the multi-org membership model (spec 021).
  *
- * Plan 1 shipped the `org_memberships` table dormant; plan 2 is the first
- * consumer. These reads drive effective-org resolution, the active-org switch
- * endpoint, and the per-org actor-role helper that user-management permission
- * checks consume. Grant/create/list mutations land in plan 3.
+ * Plan 1 shipped the `org_memberships` table dormant; plan 2 added the reads
+ * that drive effective-org resolution, the active-org switch endpoint, and the
+ * per-org actor-role helper. Plan 3 adds the management surface: granting an
+ * existing account a membership (`addOrgMembership`) and listing an org's true
+ * membership (`listOrgMembers`).
  */
 
 /** A user's membership in a single org. */
@@ -56,4 +57,76 @@ export async function listOrgMembershipsForUser(userId: string): Promise<MyOrg[]
 		.from(orgMemberships)
 		.innerJoin(organizations, eq(orgMemberships.orgId, organizations.id))
 		.where(eq(orgMemberships.userId, userId));
+}
+
+/**
+ * A member of an org: the account's identity plus its PER-ORG role (from the
+ * membership row, not the global `users.role`). `orgId` is the org being
+ * listed.
+ */
+export interface OrgMember {
+	id: string;
+	orgId: string;
+	email: string;
+	name: string;
+	/** Per-org membership role ('member' | 'admin'). */
+	role: string;
+	createdAt: Date | null;
+	updatedAt: Date | null;
+}
+
+/**
+ * List an org's true membership (spec 021 plan 3) by joining `org_memberships`
+ * to `users`. Unlike the legacy `users.org_id`-scoped listing, this returns
+ * every account that belongs to the org — including users whose *home* org is
+ * elsewhere — and reports each one's PER-ORG role.
+ *
+ * Pass `opts.excludeGlobalRole` to hide accounts whose GLOBAL `users.role`
+ * matches (e.g. 'superadmin'), preserving the rule that a regular org admin
+ * never sees global superadmins. Never returns passwordHash.
+ */
+export async function listOrgMembers(
+	orgId: string,
+	opts?: { excludeGlobalRole?: string },
+): Promise<OrgMember[]> {
+	const db = getDb();
+	const conditions = [eq(orgMemberships.orgId, orgId)];
+	if (opts?.excludeGlobalRole !== undefined) {
+		conditions.push(ne(users.role, opts.excludeGlobalRole));
+	}
+	return db
+		.select({
+			id: users.id,
+			orgId: orgMemberships.orgId,
+			email: users.email,
+			name: users.name,
+			role: orgMemberships.role,
+			createdAt: users.createdAt,
+			updatedAt: users.updatedAt,
+		})
+		.from(orgMemberships)
+		.innerJoin(users, eq(orgMemberships.userId, users.id))
+		.where(and(...conditions));
+}
+
+/**
+ * Grant (or re-grant) a user a membership in an org with a per-org role
+ * (spec 021 plan 3). Idempotent: re-granting an existing membership updates the
+ * role rather than failing on the `(user_id, org_id)` unique index, so the
+ * grant mutation can be retried safely.
+ */
+export async function addOrgMembership(params: {
+	userId: string;
+	orgId: string;
+	role?: string;
+}): Promise<void> {
+	const db = getDb();
+	const role = params.role ?? 'member';
+	await db
+		.insert(orgMemberships)
+		.values({ userId: params.userId, orgId: params.orgId, role })
+		.onConflictDoUpdate({
+			target: [orgMemberships.userId, orgMemberships.orgId],
+			set: { role, updatedAt: new Date() },
+		});
 }

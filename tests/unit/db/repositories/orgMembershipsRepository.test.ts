@@ -15,10 +15,21 @@ vi.mock('../../../../src/db/schema/index.js', () => ({
 		id: 'id',
 		name: 'name',
 	},
+	users: {
+		id: 'id',
+		orgId: 'org_id',
+		email: 'email',
+		name: 'name',
+		role: 'role',
+		createdAt: 'created_at',
+		updatedAt: 'updated_at',
+	},
 }));
 
 import {
+	addOrgMembership,
 	getOrgMembership,
+	listOrgMembers,
 	listOrgMembershipsForUser,
 } from '../../../../src/db/repositories/orgMembershipsRepository.js';
 
@@ -26,7 +37,7 @@ describe('orgMembershipsRepository', () => {
 	let mockDb: ReturnType<typeof createMockDbWithGetDb>;
 
 	beforeEach(() => {
-		mockDb = createMockDbWithGetDb();
+		mockDb = createMockDbWithGetDb({ withUpsert: true });
 	});
 
 	describe('getOrgMembership', () => {
@@ -63,6 +74,79 @@ describe('orgMembershipsRepository', () => {
 
 			const result = await listOrgMembershipsForUser('user-1');
 			expect(result).toEqual([]);
+		});
+	});
+
+	describe('listOrgMembers', () => {
+		it('returns the org membership joined with each account, using the per-org role', async () => {
+			const rows = [
+				{
+					id: 'user-1',
+					orgId: 'org-2',
+					email: 'alice@example.com',
+					name: 'Alice',
+					role: 'admin',
+					createdAt: null,
+					updatedAt: null,
+				},
+				{
+					id: 'user-2',
+					orgId: 'org-2',
+					email: 'bob@example.com',
+					name: 'Bob',
+					role: 'member',
+					createdAt: null,
+					updatedAt: null,
+				},
+			];
+			mockDb.chain.where.mockResolvedValueOnce(rows);
+
+			const result = await listOrgMembers('org-2');
+			expect(result).toEqual(rows);
+			expect(mockDb.chain.innerJoin).toHaveBeenCalled();
+		});
+
+		it('applies the excludeGlobalRole filter when provided', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([]);
+
+			await listOrgMembers('org-2', { excludeGlobalRole: 'superadmin' });
+			// The join + filtered where is the terminal; both conditions land there.
+			expect(mockDb.chain.innerJoin).toHaveBeenCalled();
+			expect(mockDb.chain.where).toHaveBeenCalledTimes(1);
+		});
+
+		it('returns an empty array when the org has no members', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([]);
+
+			const result = await listOrgMembers('empty-org');
+			expect(result).toEqual([]);
+		});
+	});
+
+	describe('addOrgMembership', () => {
+		it('upserts the membership with the given role (idempotent re-grant)', async () => {
+			await addOrgMembership({ userId: 'user-1', orgId: 'org-2', role: 'admin' });
+
+			expect(mockDb.db.insert).toHaveBeenCalledTimes(1);
+			expect(mockDb.chain.values).toHaveBeenCalledWith({
+				userId: 'user-1',
+				orgId: 'org-2',
+				role: 'admin',
+			});
+			expect(mockDb.chain.onConflictDoUpdate).toHaveBeenCalledTimes(1);
+			const setArg = mockDb.chain.onConflictDoUpdate.mock.calls[0][0].set;
+			expect(setArg.role).toBe('admin');
+			expect(setArg.updatedAt).toBeInstanceOf(Date);
+		});
+
+		it('defaults the role to member when omitted', async () => {
+			await addOrgMembership({ userId: 'user-1', orgId: 'org-2' });
+
+			expect(mockDb.chain.values).toHaveBeenCalledWith({
+				userId: 'user-1',
+				orgId: 'org-2',
+				role: 'member',
+			});
 		});
 	});
 });

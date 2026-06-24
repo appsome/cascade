@@ -147,7 +147,7 @@ erDiagram
 | `pr_work_items` | Maps PRs and external alert sources to PM work items for run-link display and alert idempotency | Partial unique indexes on `(project_id, pr_number)`, `(project_id, work_item_id)`, and `(project_id, external_source, external_id)` when those values are present |
 | `webhook_logs` | Raw webhook payloads for debugging | — |
 | `users` | Dashboard users (email, bcrypt hash, role) | Org-scoped (`org_id` = home org, `role` = global role) |
-| `org_memberships` | Multi-org membership: links a user to an org with a per-org role, so one account can belong to many orgs. `users.org_id`/`users.role` remain the home org + global role. Read by effective-org resolution + the per-org actor-role helper (spec 021 plan 2). | UNIQUE(`user_id`, `org_id`) |
+| `org_memberships` | Multi-org membership: links a user to an org with a per-org role, so one account can belong to many orgs. `users.org_id`/`users.role` remain the home org + global role. Read by effective-org resolution + the per-org actor-role helper (spec 021 plan 2); written by the grant mutation (`users.addExistingUserToOrg`) and the membership-mirroring create, and read by membership-based member listing (spec 021 plan 3). | UNIQUE(`user_id`, `org_id`) |
 | `sessions` | Session tokens for cookie auth (30-day expiry); `active_org_id` (nullable) tracks the org the session is currently acting in for multi-org | — |
 | `debug_analyses` | AI debug analysis results | — |
 

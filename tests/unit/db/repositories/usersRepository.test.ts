@@ -22,11 +22,17 @@ vi.mock('../../../../src/db/schema/index.js', () => ({
 		expiresAt: 'expires_at',
 		activeOrgId: 'active_org_id',
 	},
+	orgMemberships: {
+		id: 'id',
+		userId: 'user_id',
+		orgId: 'org_id',
+		role: 'role',
+	},
 }));
 
 import {
 	createSession,
-	createUser,
+	createUserWithMembership,
 	deleteExpiredSessions,
 	deleteSession,
 	deleteUser,
@@ -218,39 +224,71 @@ describe('usersRepository', () => {
 		});
 	});
 
-	describe('createUser', () => {
-		it('inserts user and returns id', async () => {
-			mockDb.chain.returning.mockResolvedValueOnce([{ id: 'new-user-uuid' }]);
+	describe('createUserWithMembership', () => {
+		/**
+		 * createUserWithMembership runs both inserts inside db.transaction(). Mock
+		 * the transaction to invoke its callback with a tx whose insert chain we
+		 * can assert on (mirrors the agentTriggerConfigs transaction test pattern).
+		 */
+		function mockTransaction() {
+			const txChain: Record<string, ReturnType<typeof vi.fn>> = {};
+			txChain.returning = vi.fn().mockResolvedValue([{ id: 'new-user-uuid' }]);
+			txChain.values = vi.fn().mockReturnValue({ returning: txChain.returning });
+			const txInsert = vi.fn().mockReturnValue({ values: txChain.values });
+			const tx = { insert: txInsert };
+			(mockDb.db as unknown as Record<string, unknown>).transaction = vi
+				.fn()
+				.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(tx));
+			return { txChain, txInsert };
+		}
 
-			const result = await createUser({
+		it('inserts the user and the membership and returns the new id', async () => {
+			const { txChain, txInsert } = mockTransaction();
+
+			const result = await createUserWithMembership({
+				orgId: 'org-1',
+				email: 'newuser@example.com',
+				passwordHash: '$2b$10$hashed',
+				name: 'New User',
+				role: 'member',
+				membershipRole: 'member',
+			});
+
+			expect(result).toEqual({ id: 'new-user-uuid' });
+			// One insert for users, one for org_memberships — same transaction.
+			expect(txInsert).toHaveBeenCalledTimes(2);
+			expect(txChain.values).toHaveBeenCalledWith({
 				orgId: 'org-1',
 				email: 'newuser@example.com',
 				passwordHash: '$2b$10$hashed',
 				name: 'New User',
 				role: 'member',
 			});
-
-			expect(result).toEqual({ id: 'new-user-uuid' });
-			expect(mockDb.db.insert).toHaveBeenCalledTimes(1);
+			expect(txChain.values).toHaveBeenCalledWith({
+				userId: 'new-user-uuid',
+				orgId: 'org-1',
+				role: 'member',
+			});
 		});
 
-		it('stores pre-hashed password without modification', async () => {
-			mockDb.chain.returning.mockResolvedValueOnce([{ id: 'u1' }]);
-			const hashedPassword = '$2b$10$somehash';
+		it('grants the membership with the mapped per-org role (superadmin → admin)', async () => {
+			const { txChain } = mockTransaction();
 
-			await createUser({
+			await createUserWithMembership({
 				orgId: 'org-1',
-				email: 'test@example.com',
-				passwordHash: hashedPassword,
-				name: 'Test User',
-				role: 'admin',
+				email: 'super@example.com',
+				passwordHash: '$2b$10$somehash',
+				name: 'Super User',
+				role: 'superadmin',
+				membershipRole: 'admin',
 			});
 
-			expect(mockDb.chain.values).toHaveBeenCalledWith({
+			// users insert keeps the global role…
+			expect(txChain.values).toHaveBeenCalledWith(expect.objectContaining({ role: 'superadmin' }));
+			// …while the membership gets the per-org role.
+			expect(txChain.values).toHaveBeenCalledWith({
+				userId: 'new-user-uuid',
 				orgId: 'org-1',
-				email: 'test@example.com',
-				passwordHash: hashedPassword,
-				name: 'Test User',
 				role: 'admin',
 			});
 		});

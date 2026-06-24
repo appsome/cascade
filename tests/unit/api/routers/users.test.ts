@@ -3,40 +3,47 @@ import { createMockSuperAdmin, createMockUser } from '../../../helpers/factories
 import { createCallerFor } from '../../../helpers/trpcTestHarness.js';
 
 const {
-	mockListOrgUsers,
-	mockCreateUser,
+	mockListOrgMembers,
+	mockCreateUserWithMembership,
 	mockUpdateUser,
 	mockDeleteUser,
 	mockGetUserById,
+	mockGetUserByEmail,
 	mockDeleteUserSessions,
 	mockBcryptHash,
 	mockGetOrgMembership,
+	mockAddOrgMembership,
 } = vi.hoisted(() => ({
-	mockListOrgUsers: vi.fn(),
-	mockCreateUser: vi.fn(),
+	mockListOrgMembers: vi.fn(),
+	mockCreateUserWithMembership: vi.fn(),
 	mockUpdateUser: vi.fn(),
 	mockDeleteUser: vi.fn(),
 	mockGetUserById: vi.fn(),
+	mockGetUserByEmail: vi.fn(),
 	mockDeleteUserSessions: vi.fn(),
 	mockBcryptHash: vi.fn(),
 	mockGetOrgMembership: vi.fn(),
+	mockAddOrgMembership: vi.fn(),
 }));
 
 vi.mock('../../../../src/db/repositories/usersRepository.js', () => ({
-	listOrgUsers: mockListOrgUsers,
-	createUser: mockCreateUser,
+	createUserWithMembership: mockCreateUserWithMembership,
 	updateUser: mockUpdateUser,
 	deleteUser: mockDeleteUser,
 	getUserById: mockGetUserById,
+	getUserByEmail: mockGetUserByEmail,
 	deleteUserSessions: mockDeleteUserSessions,
 }));
 
 // Per-org actor-role helper (spec 021 plan 2) reads memberships through this
 // repository. Default: no membership row → resolveActorRoleInOrg falls back to
 // the global role for the home org, so the existing admin/member/superadmin
-// tests (which act in their home org) are unaffected.
+// tests (which act in their home org) are unaffected. Plan 3 adds the
+// membership-based listing + grant mutation, also mocked here.
 vi.mock('../../../../src/db/repositories/orgMembershipsRepository.js', () => ({
 	getOrgMembership: mockGetOrgMembership,
+	listOrgMembers: mockListOrgMembers,
+	addOrgMembership: mockAddOrgMembership,
 }));
 
 vi.mock('bcrypt', () => ({
@@ -57,14 +64,15 @@ describe('usersRouter', () => {
 	beforeEach(() => {
 		mockBcryptHash.mockResolvedValue('hashed-password');
 		mockDeleteUserSessions.mockResolvedValue(undefined);
+		mockAddOrgMembership.mockResolvedValue(undefined);
 		// Default: caller has no explicit membership row, so the per-org role
 		// resolver falls back to the global role for their home org.
 		mockGetOrgMembership.mockResolvedValue(null);
 	});
 
 	describe('list', () => {
-		it('returns org-scoped user list without passwordHash (admin caller excludes superadmins)', async () => {
-			const orgUsers = [
+		it('returns the org membership list without passwordHash (admin caller excludes global superadmins)', async () => {
+			const orgMembers = [
 				{
 					id: 'user-1',
 					orgId: 'org-1',
@@ -84,20 +92,20 @@ describe('usersRouter', () => {
 					updatedAt: null,
 				},
 			];
-			mockListOrgUsers.mockResolvedValue(orgUsers);
+			mockListOrgMembers.mockResolvedValue(orgMembers);
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
 
 			const result = await caller.list();
 
-			expect(mockListOrgUsers).toHaveBeenCalledWith('org-1', { excludeRole: 'superadmin' });
-			expect(result).toEqual(orgUsers);
-			// Note: passwordHash exclusion is enforced at the repository layer (listOrgUsers selects
+			expect(mockListOrgMembers).toHaveBeenCalledWith('org-1', { excludeGlobalRole: 'superadmin' });
+			expect(result).toEqual(orgMembers);
+			// Note: passwordHash exclusion is enforced at the repository layer (listOrgMembers selects
 			// specific columns). The mock already returns data without passwordHash, reflecting
 			// the contract that the repository never returns this field.
 		});
 
-		it('superadmin caller receives full user list including superadmins', async () => {
-			const orgUsers = [
+		it('superadmin caller receives the full membership list including global superadmins', async () => {
+			const orgMembers = [
 				{
 					id: 'user-1',
 					orgId: 'org-1',
@@ -112,22 +120,22 @@ describe('usersRouter', () => {
 					orgId: 'org-1',
 					email: 'super@example.com',
 					name: 'Super',
-					role: 'superadmin',
+					role: 'admin',
 					createdAt: null,
 					updatedAt: null,
 				},
 			];
-			mockListOrgUsers.mockResolvedValue(orgUsers);
+			mockListOrgMembers.mockResolvedValue(orgMembers);
 			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
 
 			const result = await caller.list();
 
-			expect(mockListOrgUsers).toHaveBeenCalledWith('org-1');
-			expect(result).toEqual(orgUsers);
+			expect(mockListOrgMembers).toHaveBeenCalledWith('org-1');
+			expect(result).toEqual(orgMembers);
 		});
 
-		it('returns empty array when no users', async () => {
-			mockListOrgUsers.mockResolvedValue([]);
+		it('returns empty array when no members', async () => {
+			mockListOrgMembers.mockResolvedValue([]);
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
 
 			const result = await caller.list();
@@ -146,8 +154,8 @@ describe('usersRouter', () => {
 	});
 
 	describe('create', () => {
-		it('creates user with hashed password', async () => {
-			mockCreateUser.mockResolvedValue({ id: 'new-user-1' });
+		it('creates user with hashed password and a mirrored membership', async () => {
+			mockCreateUserWithMembership.mockResolvedValue({ id: 'new-user-1' });
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
 
 			const result = await caller.create({
@@ -157,18 +165,19 @@ describe('usersRouter', () => {
 			});
 
 			expect(mockBcryptHash).toHaveBeenCalledWith('secret123456789', 10);
-			expect(mockCreateUser).toHaveBeenCalledWith({
+			expect(mockCreateUserWithMembership).toHaveBeenCalledWith({
 				orgId: 'org-1',
 				email: 'newuser@example.com',
 				name: 'New User',
 				passwordHash: 'hashed-password',
 				role: 'member',
+				membershipRole: 'member',
 			});
 			expect(result).toEqual({ id: 'new-user-1' });
 		});
 
-		it('creates admin user when role is specified', async () => {
-			mockCreateUser.mockResolvedValue({ id: 'new-admin-1' });
+		it('creates admin user with an admin membership when role is specified', async () => {
+			mockCreateUserWithMembership.mockResolvedValue({ id: 'new-admin-1' });
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
 
 			await caller.create({
@@ -178,7 +187,9 @@ describe('usersRouter', () => {
 				role: 'admin',
 			});
 
-			expect(mockCreateUser).toHaveBeenCalledWith(expect.objectContaining({ role: 'admin' }));
+			expect(mockCreateUserWithMembership).toHaveBeenCalledWith(
+				expect.objectContaining({ role: 'admin', membershipRole: 'admin' }),
+			);
 		});
 
 		it('rejects superadmin role assignment when caller is not superadmin (FORBIDDEN)', async () => {
@@ -193,11 +204,11 @@ describe('usersRouter', () => {
 				}),
 			).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
-			expect(mockCreateUser).not.toHaveBeenCalled();
+			expect(mockCreateUserWithMembership).not.toHaveBeenCalled();
 		});
 
-		it('allows superadmin to create superadmin users', async () => {
-			mockCreateUser.mockResolvedValue({ id: 'new-super-1' });
+		it('allows superadmin to create superadmin users, mapping membership to admin', async () => {
+			mockCreateUserWithMembership.mockResolvedValue({ id: 'new-super-1' });
 			const caller = createCaller({ user: mockSuperAdmin, effectiveOrgId: mockSuperAdmin.orgId });
 
 			await caller.create({
@@ -207,7 +218,9 @@ describe('usersRouter', () => {
 				role: 'superadmin',
 			});
 
-			expect(mockCreateUser).toHaveBeenCalledWith(expect.objectContaining({ role: 'superadmin' }));
+			expect(mockCreateUserWithMembership).toHaveBeenCalledWith(
+				expect.objectContaining({ role: 'superadmin', membershipRole: 'admin' }),
+			);
 		});
 
 		it('rejects password shorter than 12 characters', async () => {
@@ -217,20 +230,20 @@ describe('usersRouter', () => {
 				caller.create({ email: 'x@example.com', name: 'X', password: 'short' }),
 			).rejects.toThrow();
 
-			expect(mockCreateUser).not.toHaveBeenCalled();
+			expect(mockCreateUserWithMembership).not.toHaveBeenCalled();
 		});
 
 		it('accepts password of exactly 12 characters', async () => {
-			mockCreateUser.mockResolvedValue({ id: 'new-user-1' });
+			mockCreateUserWithMembership.mockResolvedValue({ id: 'new-user-1' });
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
 
 			await caller.create({ email: 'x@example.com', name: 'X', password: 'exactly12chr' });
 
-			expect(mockCreateUser).toHaveBeenCalled();
+			expect(mockCreateUserWithMembership).toHaveBeenCalled();
 		});
 
 		it('accepts password longer than 12 characters', async () => {
-			mockCreateUser.mockResolvedValue({ id: 'new-user-2' });
+			mockCreateUserWithMembership.mockResolvedValue({ id: 'new-user-2' });
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
 
 			await caller.create({
@@ -239,7 +252,7 @@ describe('usersRouter', () => {
 				password: 'this-is-a-very-long-password-123',
 			});
 
-			expect(mockCreateUser).toHaveBeenCalled();
+			expect(mockCreateUserWithMembership).toHaveBeenCalled();
 		});
 
 		it('throws UNAUTHORIZED when not authenticated', async () => {
@@ -254,6 +267,186 @@ describe('usersRouter', () => {
 			await expect(
 				caller.create({ email: 'x@x.com', name: 'X', password: 'x' }),
 			).rejects.toMatchObject({ code: 'FORBIDDEN' });
+		});
+
+		// =================================================================
+		// Graceful duplicate-email create (spec 021 plan 3, AC #2 — no 500)
+		// =================================================================
+		it('maps a duplicate-email unique violation to CONFLICT — already a member here', async () => {
+			mockCreateUserWithMembership.mockRejectedValue(
+				Object.assign(new Error('duplicate key value'), { code: '23505' }),
+			);
+			// The existing account's home org IS this org → already a member here.
+			// Leave getOrgMembership at its default (null) so the admin actor still
+			// resolves to admin in their home org.
+			mockGetUserByEmail.mockResolvedValue({ id: 'existing-1', orgId: 'org-1', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(
+				caller.create({
+					email: 'dupe@example.com',
+					name: 'Dupe',
+					password: 'secret123456789',
+				}),
+			).rejects.toMatchObject({
+				code: 'CONFLICT',
+				message: expect.stringContaining('already a member'),
+			});
+		});
+
+		it('maps a duplicate-email for an out-of-org account to CONFLICT — add-to-org guidance', async () => {
+			// Realistic drizzle shape: DrizzleQueryError wrapping the pg error on
+			// `.cause`. isUniqueViolation must walk the cause chain.
+			mockCreateUserWithMembership.mockRejectedValue(
+				Object.assign(new Error('Failed query'), {
+					cause: Object.assign(new Error('duplicate key value'), { code: '23505' }),
+				}),
+			);
+			// Account exists but its home org is elsewhere and it has no membership here.
+			mockGetUserByEmail.mockResolvedValue({
+				id: 'existing-2',
+				orgId: 'other-org',
+				role: 'member',
+			});
+			mockGetOrgMembership.mockResolvedValue(null);
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(
+				caller.create({
+					email: 'elsewhere@example.com',
+					name: 'Elsewhere',
+					password: 'secret123456789',
+				}),
+			).rejects.toMatchObject({
+				code: 'CONFLICT',
+				message: expect.stringContaining('add-to-org'),
+			});
+		});
+
+		it('rethrows non-unique-violation errors unchanged', async () => {
+			mockCreateUserWithMembership.mockRejectedValue(new Error('connection reset'));
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(
+				caller.create({ email: 'x@example.com', name: 'X', password: 'secret123456789' }),
+			).rejects.toThrow('connection reset');
+		});
+	});
+
+	// =====================================================================
+	// addExistingUserToOrg grant mutation (spec 021 plan 3, AC #1)
+	// =====================================================================
+	describe('addExistingUserToOrg', () => {
+		it('grants an existing account a membership in the effective org', async () => {
+			mockGetUserByEmail.mockResolvedValue({
+				id: 'existing-1',
+				orgId: 'other-org',
+				email: 'alice@example.com',
+				role: 'member',
+			});
+			mockGetOrgMembership.mockResolvedValue(null);
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			const result = await caller.addExistingUserToOrg({
+				email: 'alice@example.com',
+				role: 'admin',
+			});
+
+			expect(mockAddOrgMembership).toHaveBeenCalledWith({
+				userId: 'existing-1',
+				orgId: 'org-1',
+				role: 'admin',
+			});
+			expect(result).toEqual({
+				userId: 'existing-1',
+				email: 'alice@example.com',
+				orgId: 'org-1',
+				role: 'admin',
+				alreadyMember: false,
+			});
+		});
+
+		it('defaults the granted role to member', async () => {
+			mockGetUserByEmail.mockResolvedValue({
+				id: 'existing-1',
+				orgId: 'other-org',
+				email: 'alice@example.com',
+				role: 'member',
+			});
+			mockGetOrgMembership.mockResolvedValue(null);
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			const result = await caller.addExistingUserToOrg({ email: 'alice@example.com' });
+
+			expect(mockAddOrgMembership).toHaveBeenCalledWith(
+				expect.objectContaining({ role: 'member' }),
+			);
+			expect(result.role).toBe('member');
+		});
+
+		it('is idempotent: re-granting an existing membership reports alreadyMember', async () => {
+			mockGetUserByEmail.mockResolvedValue({
+				id: 'existing-1',
+				orgId: 'org-1',
+				email: 'alice@example.com',
+				role: 'member',
+			});
+			// Per-org resolver consults membership for the actor; default null is
+			// fine (admin acting in home org). The grant target's prior membership
+			// is the second lookup — return an existing row.
+			mockGetOrgMembership.mockResolvedValueOnce(null).mockResolvedValueOnce({
+				orgId: 'org-1',
+				role: 'member',
+			});
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			const result = await caller.addExistingUserToOrg({
+				email: 'alice@example.com',
+				role: 'admin',
+			});
+
+			expect(result.alreadyMember).toBe(true);
+			expect(mockAddOrgMembership).toHaveBeenCalledWith({
+				userId: 'existing-1',
+				orgId: 'org-1',
+				role: 'admin',
+			});
+		});
+
+		it('throws NOT_FOUND when no account owns the email', async () => {
+			mockGetUserByEmail.mockResolvedValue(null);
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(
+				caller.addExistingUserToOrg({ email: 'ghost@example.com' }),
+			).rejects.toMatchObject({ code: 'NOT_FOUND' });
+			expect(mockAddOrgMembership).not.toHaveBeenCalled();
+		});
+
+		it('throws UNAUTHORIZED when not authenticated', async () => {
+			const caller = createCaller({ user: null, effectiveOrgId: null });
+			await expect(caller.addExistingUserToOrg({ email: 'a@example.com' })).rejects.toMatchObject({
+				code: 'UNAUTHORIZED',
+			});
+		});
+
+		it('throws FORBIDDEN when caller is a member', async () => {
+			const caller = createCaller({ user: mockMember, effectiveOrgId: mockMember.orgId });
+			await expect(caller.addExistingUserToOrg({ email: 'a@example.com' })).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+			expect(mockAddOrgMembership).not.toHaveBeenCalled();
+		});
+
+		it('denies an org admin switched to an org where they are only a member (AC #8)', async () => {
+			mockGetOrgMembership.mockResolvedValue({ orgId: 'org-2', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
+
+			await expect(
+				caller.addExistingUserToOrg({ email: 'a@example.com', role: 'admin' }),
+			).rejects.toMatchObject({ code: 'FORBIDDEN' });
+			expect(mockGetUserByEmail).not.toHaveBeenCalled();
+			expect(mockAddOrgMembership).not.toHaveBeenCalled();
 		});
 	});
 
@@ -544,18 +737,18 @@ describe('usersRouter', () => {
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
 
 			await expect(caller.list()).rejects.toMatchObject({ code: 'FORBIDDEN' });
-			expect(mockListOrgUsers).not.toHaveBeenCalled();
+			expect(mockListOrgMembers).not.toHaveBeenCalled();
 			expect(mockGetOrgMembership).toHaveBeenCalledWith('user-1', 'org-2');
 		});
 
 		it('list: an admin in the switched org lists that org with the per-org admin role (AC #4)', async () => {
 			mockGetOrgMembership.mockResolvedValue({ orgId: 'org-2', role: 'admin' });
-			mockListOrgUsers.mockResolvedValue([]);
+			mockListOrgMembers.mockResolvedValue([]);
 			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: 'org-2' });
 
 			await caller.list();
 
-			expect(mockListOrgUsers).toHaveBeenCalledWith('org-2', { excludeRole: 'superadmin' });
+			expect(mockListOrgMembers).toHaveBeenCalledWith('org-2', { excludeGlobalRole: 'superadmin' });
 		});
 
 		it('create: an org admin switched to a member-org cannot create users there (AC #8)', async () => {
@@ -565,7 +758,7 @@ describe('usersRouter', () => {
 			await expect(
 				caller.create({ email: 'x@example.com', name: 'X', password: 'secret123456789' }),
 			).rejects.toMatchObject({ code: 'FORBIDDEN' });
-			expect(mockCreateUser).not.toHaveBeenCalled();
+			expect(mockCreateUserWithMembership).not.toHaveBeenCalled();
 		});
 
 		it('update: an org admin switched to a member-org cannot edit users there (AC #8)', async () => {
