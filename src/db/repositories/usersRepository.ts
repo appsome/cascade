@@ -68,10 +68,29 @@ export async function getSessionByToken(token: string) {
 			sessionId: sessions.id,
 			userId: sessions.userId,
 			expiresAt: sessions.expiresAt,
+			// Multi-org membership (spec 021 plan 2): the org this session is
+			// currently acting in. NULL falls back to the user's home org so an
+			// existing session is never logged out.
+			activeOrgId: sessions.activeOrgId,
 		})
 		.from(sessions)
 		.where(and(eq(sessions.token, token), gt(sessions.expiresAt, now)));
 	return row ?? null;
+}
+
+/**
+ * Set (or clear) the active org on a session, identified by its token.
+ * Pass `null` to fall back to the user's home org on the next request.
+ *
+ * Callers must validate the target org against the user's membership before
+ * calling this (spec 021 plan 2 — `auth.setActiveOrg`).
+ */
+export async function setSessionActiveOrg(
+	token: string,
+	activeOrgId: string | null,
+): Promise<void> {
+	const db = getDb();
+	await db.update(sessions).set({ activeOrgId }).where(eq(sessions.token, token));
 }
 
 export async function deleteSession(token: string): Promise<void> {

@@ -20,6 +20,7 @@ vi.mock('../../../../src/db/schema/index.js', () => ({
 		userId: 'user_id',
 		token: 'token',
 		expiresAt: 'expires_at',
+		activeOrgId: 'active_org_id',
 	},
 }));
 
@@ -34,6 +35,7 @@ import {
 	getUserByEmail,
 	getUserById,
 	listOrgUsers,
+	setSessionActiveOrg,
 	updateUser,
 } from '../../../../src/db/repositories/usersRepository.js';
 
@@ -125,6 +127,25 @@ describe('usersRepository', () => {
 
 			const result = await getSessionByToken('expired-token');
 			expect(result).toBeNull();
+		});
+	});
+
+	describe('setSessionActiveOrg', () => {
+		it('updates the active org on the session by token', async () => {
+			mockDb.chain.where.mockResolvedValueOnce(undefined);
+
+			await setSessionActiveOrg('session-token', 'org-2');
+
+			expect(mockDb.db.update).toHaveBeenCalled();
+			expect(mockDb.chain.set).toHaveBeenCalledWith({ activeOrgId: 'org-2' });
+		});
+
+		it('clears the active org when passed null', async () => {
+			mockDb.chain.where.mockResolvedValueOnce(undefined);
+
+			await setSessionActiveOrg('session-token', null);
+
+			expect(mockDb.chain.set).toHaveBeenCalledWith({ activeOrgId: null });
 		});
 	});
 
