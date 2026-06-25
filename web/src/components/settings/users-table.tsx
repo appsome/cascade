@@ -46,10 +46,43 @@ interface User {
 	updatedAt: string | null;
 }
 
-function roleVariant(role: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+export function roleVariant(role: string): 'default' | 'secondary' | 'destructive' | 'outline' {
 	if (role === 'superadmin') return 'destructive';
 	if (role === 'admin') return 'default';
 	return 'secondary';
+}
+
+/**
+ * Display model for one membership row (spec 021 plan 4, AC #5). Surfaces BOTH
+ * roles the listing returns:
+ *  - `accountRole` — the global `users.role`; this is the column the editor still
+ *    reads/writes (`users.update`).
+ *  - `orgRole` — the PER-ORG membership role, rendered alongside so an admin can
+ *    see a member's standing in *this* org even when it differs from the account
+ *    role.
+ *
+ * `isGuest` marks an account whose home org is elsewhere (a cross-home member
+ * granted via add-to-org); `manageViaCli` flags global superadmins, whose
+ * accounts are intentionally not editable from the dashboard.
+ */
+export interface MemberRowSummary {
+	accountRole: string;
+	orgRole: string;
+	isGuest: boolean;
+	manageViaCli: boolean;
+}
+
+export function describeMemberRow(member: {
+	role: string;
+	globalRole: string;
+	isGuest?: boolean;
+}): MemberRowSummary {
+	return {
+		accountRole: member.globalRole,
+		orgRole: member.role,
+		isGuest: member.isGuest ?? false,
+		manageViaCli: member.globalRole === 'superadmin',
+	};
 }
 
 export function UsersTable({ users }: { users: User[] }) {
@@ -85,7 +118,8 @@ export function UsersTable({ users }: { users: User[] }) {
 						<TableRow>
 							<TableHead>Name</TableHead>
 							<TableHead>Email</TableHead>
-							<TableHead>Role</TableHead>
+							<TableHead>Account</TableHead>
+							<TableHead>Org role</TableHead>
 							<TableHead className="hidden md:table-cell">Created</TableHead>
 							<TableHead className="w-20" />
 						</TableRow>
@@ -93,58 +127,77 @@ export function UsersTable({ users }: { users: User[] }) {
 					<TableBody>
 						{users.length === 0 && (
 							<TableRow>
-								<TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-									No users yet
+								<TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+									No members yet
 								</TableCell>
 							</TableRow>
 						)}
-						{users.map((u) => (
-							<TableRow key={u.id}>
-								<TableCell className="font-medium">{u.name}</TableCell>
-								<TableCell className="text-sm">{u.email}</TableCell>
-								<TableCell>
-									<Badge variant={roleVariant(u.globalRole)}>{u.globalRole}</Badge>
-								</TableCell>
-								<TableCell className="hidden md:table-cell text-sm text-muted-foreground">
-									{u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—'}
-								</TableCell>
-								<TableCell>
-									{u.globalRole === 'superadmin' ? (
-										<span className="text-xs text-muted-foreground">Manage via CLI</span>
-									) : (
-										<div className="flex gap-1">
-											<button
-												type="button"
-												onClick={() => setEditUser(u)}
-												className="p-1 text-muted-foreground hover:text-foreground"
-												title="Edit user"
-											>
-												<Pencil className="h-4 w-4" />
-											</button>
-											{u.isGuest ? (
-												<button
-													type="button"
-													onClick={() => setRemoveFromOrgId(u.id)}
-													className="p-1 text-muted-foreground hover:text-destructive"
-													title="Remove from this organization"
+						{users.map((u) => {
+							const summary = describeMemberRow(u);
+							return (
+								<TableRow key={u.id}>
+									<TableCell className="font-medium">
+										<div className="flex items-center gap-2">
+											<span className="truncate">{u.name}</span>
+											{summary.isGuest && (
+												<Badge
+													variant="outline"
+													className="text-[10px] font-normal"
+													title="This account's home organization is elsewhere"
 												>
-													<UserMinus className="h-4 w-4" />
-												</button>
-											) : (
-												<button
-													type="button"
-													onClick={() => setDeleteId(u.id)}
-													className="p-1 text-muted-foreground hover:text-destructive"
-													title="Delete account"
-												>
-													<Trash2 className="h-4 w-4" />
-												</button>
+													Guest
+												</Badge>
 											)}
 										</div>
-									)}
-								</TableCell>
-							</TableRow>
-						))}
+									</TableCell>
+									<TableCell className="text-sm">{u.email}</TableCell>
+									<TableCell>
+										<Badge variant={roleVariant(summary.accountRole)}>{summary.accountRole}</Badge>
+									</TableCell>
+									<TableCell>
+										<Badge variant="outline">{summary.orgRole}</Badge>
+									</TableCell>
+									<TableCell className="hidden md:table-cell text-sm text-muted-foreground">
+										{u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—'}
+									</TableCell>
+									<TableCell>
+										{summary.manageViaCli ? (
+											<span className="text-xs text-muted-foreground">Manage via CLI</span>
+										) : (
+											<div className="flex gap-1">
+												<button
+													type="button"
+													onClick={() => setEditUser(u)}
+													className="p-1 text-muted-foreground hover:text-foreground"
+													title="Edit user"
+												>
+													<Pencil className="h-4 w-4" />
+												</button>
+												{u.isGuest ? (
+													<button
+														type="button"
+														onClick={() => setRemoveFromOrgId(u.id)}
+														className="p-1 text-muted-foreground hover:text-destructive"
+														title="Remove from this organization"
+													>
+														<UserMinus className="h-4 w-4" />
+													</button>
+												) : (
+													<button
+														type="button"
+														onClick={() => setDeleteId(u.id)}
+														className="p-1 text-muted-foreground hover:text-destructive"
+														title="Delete account"
+													>
+														<Trash2 className="h-4 w-4" />
+													</button>
+												)}
+											</div>
+										)}
+									</TableCell>
+								</TableRow>
+							);
+						})}
 					</TableBody>
 				</Table>
 			</div>
