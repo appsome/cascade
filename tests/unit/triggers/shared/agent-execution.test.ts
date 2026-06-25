@@ -26,6 +26,8 @@ const {
 	mockGetAgentProfile,
 	mockClaimReviewDispatch,
 	mockBuildReviewDispatchKey,
+	mockResolveWorkItemIdWithFallback,
+	mockResolveWorkItemDisplayData,
 } = vi.hoisted(() => ({
 	mockRunAgent: vi.fn(),
 	mockGetPMProvider: vi.fn(),
@@ -63,6 +65,8 @@ const {
 	mockGetAgentProfile: vi.fn().mockResolvedValue({ lifecycleHooks: {} }),
 	mockClaimReviewDispatch: vi.fn().mockReturnValue(true),
 	mockBuildReviewDispatchKey: vi.fn().mockReturnValue('acme/myapp:42:abc123'),
+	mockResolveWorkItemIdWithFallback: vi.fn().mockResolvedValue(undefined),
+	mockResolveWorkItemDisplayData: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../../../src/agents/registry.js', () => ({
@@ -143,6 +147,11 @@ vi.mock('../../../../src/agents/definitions/profiles.js', () => ({
 vi.mock('../../../../src/triggers/github/review-dispatch-dedup.js', () => ({
 	claimReviewDispatch: (...args: unknown[]) => mockClaimReviewDispatch(...args),
 	buildReviewDispatchKey: (...args: unknown[]) => mockBuildReviewDispatchKey(...args),
+}));
+
+vi.mock('../../../../src/triggers/github/utils.js', () => ({
+	resolveWorkItemIdWithFallback: mockResolveWorkItemIdWithFallback,
+	resolveWorkItemDisplayData: mockResolveWorkItemDisplayData,
 }));
 
 import {
@@ -1129,5 +1138,102 @@ describe('post-completion review dispatch (via runAgentExecutionPipeline)', () =
 				error: 'Error: review pipeline exploded',
 			}),
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fresh-PR work-item re-resolution for review (via runAgentExecutionPipeline)
+// ---------------------------------------------------------------------------
+
+describe('fresh-PR work-item re-resolution for review (via runAgentExecutionPipeline)', () => {
+	const JIRA_PROJECT = {
+		id: 'project-1',
+		repo: 'acme/myapp',
+		pm: { type: 'jira' },
+		jira: { projectKey: 'PROJ' },
+	} as unknown as Parameters<typeof runAgentExecutionPipeline>[0]['project'];
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockCreatePMProvider.mockReturnValue({});
+		mockResolveProjectPMConfig.mockReturnValue(PM_CONFIG);
+		mockValidateIntegrations.mockResolvedValue({ valid: true, errors: [] });
+		mockCheckBudgetExceeded.mockResolvedValue(null);
+		mockHandleAgentResultArtifacts.mockResolvedValue(undefined);
+		mockShouldTriggerDebug.mockResolvedValue(null);
+		mockRunAgent.mockResolvedValue({ success: true, output: '', runId: 'run-1' });
+		mockParseRepoFullName.mockReturnValue({ owner: 'acme', repo: 'myapp' });
+		mockLookupWorkItemForPR.mockResolvedValue(null);
+		mockGithubClient.getPR.mockResolvedValue({
+			headRef: 'chore/setup',
+			title: 'chore: setup',
+			body: 'Description.\n\nPROJ-7',
+		});
+		mockResolveWorkItemDisplayData.mockResolvedValue({});
+	});
+
+	it('links the freshly-derived key when dispatch left workItemId empty', async () => {
+		mockResolveWorkItemIdWithFallback.mockResolvedValueOnce('PROJ-7');
+		mockResolveWorkItemDisplayData.mockResolvedValueOnce({
+			workItemUrl: 'https://jira/PROJ-7',
+			workItemTitle: 'Do the thing',
+		});
+
+		await runAgentExecutionPipeline(
+			{
+				agentType: 'review',
+				agentInput: { prNumber: 42 },
+				prNumber: 42,
+				prUrl: 'https://github.com/acme/myapp/pull/42',
+			},
+			JIRA_PROJECT,
+			CONFIG,
+		);
+
+		// The agent receives the freshly-resolved work item.
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			'review',
+			expect.objectContaining({ workItemId: 'PROJ-7' }),
+		);
+		// The pre-run link row is written with the freshly-resolved id (not null).
+		expect(vi.mocked(linkPRToWorkItem)).toHaveBeenCalledWith(
+			'project-1',
+			'acme/myapp',
+			42,
+			'PROJ-7',
+			expect.objectContaining({ workItemUrl: 'https://jira/PROJ-7' }),
+		);
+	});
+
+	it('does not re-resolve when dispatch already supplied a workItemId', async () => {
+		await runAgentExecutionPipeline(
+			{
+				agentType: 'review',
+				agentInput: { prNumber: 42, workItemId: 'PROJ-1' },
+				prNumber: 42,
+				workItemId: 'PROJ-1',
+				prUrl: 'https://github.com/acme/myapp/pull/42',
+			},
+			JIRA_PROJECT,
+			CONFIG,
+		);
+
+		expect(mockResolveWorkItemIdWithFallback).not.toHaveBeenCalled();
+		expect(mockGithubClient.getPR).not.toHaveBeenCalled();
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			'review',
+			expect.objectContaining({ workItemId: 'PROJ-1' }),
+		);
+	});
+
+	it('does not re-resolve for a non-review agent on a JIRA project', async () => {
+		await runAgentExecutionPipeline(
+			{ agentType: 'implementation', agentInput: { prNumber: 42 }, prNumber: 42 },
+			JIRA_PROJECT,
+			CONFIG,
+		);
+
+		expect(mockResolveWorkItemIdWithFallback).not.toHaveBeenCalled();
+		expect(mockGithubClient.getPR).not.toHaveBeenCalled();
 	});
 });

@@ -11,6 +11,7 @@ import {
 	linkPRPostExecution,
 	persistPreRunWorkItems,
 	prepareAgentWorkItem,
+	reresolveReviewWorkItemFromFreshPR,
 } from './agent-work-items.js';
 
 async function loadLifecycleHooks(agentType: string): Promise<LifecycleHooks> {
@@ -40,7 +41,28 @@ export async function createAgentExecutionContext(
 	const pmConfig = resolveProjectPMConfig(project);
 	const lifecycle = new PMLifecycleManager(pmProvider, pmConfig);
 	const lifecycleHooks = await loadLifecycleHooks(result.agentType);
-	const { workItemId, agentInput } = await prepareAgentWorkItem(result, project.id);
+	let { workItemId, agentInput } = await prepareAgentWorkItem(result, project.id);
+
+	// Race fix: dispatch resolves the work item from the webhook PR snapshot. If a
+	// human adds the JIRA key to the PR description after requesting review, that
+	// snapshot misses it. Re-resolve from live PR state here — before budget /
+	// persistence / progress-comment / image pre-fetch consume the work item — so a
+	// late-added key still links end-to-end. Deliberately mutates the
+	// execution-local `result` so persistPreRunWorkItems records the resolved
+	// id + display data on the PR link.
+	const reresolved = await reresolveReviewWorkItemFromFreshPR(result, project, workItemId);
+	if (reresolved) {
+		workItemId = reresolved.workItemId;
+		result.workItemId = reresolved.workItemId;
+		result.workItemUrl = reresolved.workItemUrl ?? result.workItemUrl;
+		result.workItemTitle = reresolved.workItemTitle ?? result.workItemTitle;
+		agentInput = {
+			...agentInput,
+			workItemId: reresolved.workItemId,
+			workItemUrl: reresolved.workItemUrl ?? agentInput.workItemUrl,
+			workItemTitle: reresolved.workItemTitle ?? agentInput.workItemTitle,
+		};
+	}
 
 	return {
 		result,
