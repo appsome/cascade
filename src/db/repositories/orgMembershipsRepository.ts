@@ -79,6 +79,14 @@ export interface OrgMember {
 	role: string;
 	/** Global account role from `users.role` ('member' | 'admin' | 'superadmin'). */
 	globalRole: string;
+	/** The account's HOME org (`users.org_id`), which may differ from the listed org. */
+	homeOrgId: string;
+	/**
+	 * True when the account's home org is NOT the listed org — i.e. a "guest"
+	 * granted membership via `addExistingUserToOrg`. Drives the "remove from this
+	 * org" UX (remove the membership) vs. "delete account" for home-org members.
+	 */
+	isGuest: boolean;
 	createdAt: Date | null;
 	updatedAt: Date | null;
 }
@@ -102,7 +110,7 @@ export async function listOrgMembers(
 	if (opts?.excludeGlobalRole !== undefined) {
 		conditions.push(ne(users.role, opts.excludeGlobalRole));
 	}
-	return db
+	const rows = await db
 		.select({
 			id: users.id,
 			orgId: orgMemberships.orgId,
@@ -110,12 +118,35 @@ export async function listOrgMembers(
 			name: users.name,
 			role: orgMemberships.role,
 			globalRole: users.role,
+			homeOrgId: users.orgId,
 			createdAt: users.createdAt,
 			updatedAt: users.updatedAt,
 		})
 		.from(orgMemberships)
 		.innerJoin(users, eq(orgMemberships.userId, users.id))
 		.where(and(...conditions));
+
+	// A member whose HOME org differs from the listed org is a guest — surfaced
+	// so the UI offers "remove from this org" instead of whole-account deletion.
+	return rows.map((row) => ({ ...row, isGuest: row.homeOrgId !== orgId }));
+}
+
+/**
+ * Remove a user's membership in a single org WITHOUT touching the account
+ * (spec 021 plan 3). This is the "remove from this org" action — distinct from
+ * deleting the whole account (`deleteUser`), which cascades across every org.
+ * Returns `{ removed: false }` when there was no membership row to delete.
+ */
+export async function removeOrgMembership(
+	userId: string,
+	orgId: string,
+): Promise<{ removed: boolean }> {
+	const db = getDb();
+	const deleted = await db
+		.delete(orgMemberships)
+		.where(and(eq(orgMemberships.userId, userId), eq(orgMemberships.orgId, orgId)))
+		.returning({ userId: orgMemberships.userId });
+	return { removed: deleted.length > 0 };
 }
 
 /**

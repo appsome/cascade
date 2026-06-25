@@ -5,6 +5,7 @@ import {
 	addOrgMembership,
 	getOrgMembership,
 	listOrgMembers,
+	removeOrgMembership,
 } from '../../db/repositories/orgMembershipsRepository.js';
 import {
 	createUserWithMembership,
@@ -345,4 +346,63 @@ export const usersRouter = router({
 
 		await deleteUser(input.id);
 	}),
+
+	/**
+	 * Remove a user's membership in the effective org WITHOUT deleting the account
+	 * (spec 021 plan 3). This is the "remove from this org" action for guests —
+	 * accounts whose home org is elsewhere, surfaced in the list via `isGuest`.
+	 * Distinct from `delete`, which removes the whole account and cascades its
+	 * memberships across every org (PR #1441 review: that was a footgun when a
+	 * guest's Delete button was used).
+	 *
+	 *  - Org admins (and superadmins) may remove guests from THEIR org; unlike
+	 *    `delete`/`update`, this intentionally does NOT hide cross-home-org targets
+	 *    as NOT_FOUND, because managing your own org's guest list is the point.
+	 *  - Only superadmins can act on a superadmin account.
+	 *  - Refuses to remove a user from their HOME org (that would orphan the
+	 *    account — delete it instead).
+	 */
+	removeFromOrg: adminProcedure
+		.input(z.object({ userId: z.string() }))
+		.mutation(async ({ ctx, input }) => {
+			const actorRole = await resolveActorRole(ctx);
+			assertOrgAdmin(actorRole);
+
+			if (ctx.user.id === input.userId) {
+				throw new TRPCError({
+					code: 'FORBIDDEN',
+					message: 'Cannot remove yourself from the organization',
+				});
+			}
+
+			const targetUser = await getUserById(input.userId);
+			if (!targetUser) {
+				throw new TRPCError({ code: 'NOT_FOUND' });
+			}
+
+			if (targetUser.role === 'superadmin' && actorRole !== 'superadmin') {
+				throw new TRPCError({
+					code: 'FORBIDDEN',
+					message: 'Only superadmins can remove superadmin users',
+				});
+			}
+
+			if (targetUser.orgId === ctx.effectiveOrgId) {
+				throw new TRPCError({
+					code: 'BAD_REQUEST',
+					message:
+						'This is the user’s home organization. Delete the account instead of removing the membership.',
+				});
+			}
+
+			const { removed } = await removeOrgMembership(input.userId, ctx.effectiveOrgId);
+			if (!removed) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: 'This user is not a member of this organization.',
+				});
+			}
+
+			return { userId: input.userId, orgId: ctx.effectiveOrgId, removed: true };
+		}),
 });

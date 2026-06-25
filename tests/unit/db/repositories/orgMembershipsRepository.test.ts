@@ -78,7 +78,7 @@ describe('orgMembershipsRepository', () => {
 	});
 
 	describe('listOrgMembers', () => {
-		it('returns the org membership joined with each account, using the per-org role', async () => {
+		it('returns the org membership with per-org role + isGuest (home org != listed org)', async () => {
 			const rows = [
 				{
 					id: 'user-1',
@@ -86,6 +86,8 @@ describe('orgMembershipsRepository', () => {
 					email: 'alice@example.com',
 					name: 'Alice',
 					role: 'admin',
+					globalRole: 'admin',
+					homeOrgId: 'org-2', // home org == listed org
 					createdAt: null,
 					updatedAt: null,
 				},
@@ -95,6 +97,8 @@ describe('orgMembershipsRepository', () => {
 					email: 'bob@example.com',
 					name: 'Bob',
 					role: 'member',
+					globalRole: 'member',
+					homeOrgId: 'org-9', // home org elsewhere → guest
 					createdAt: null,
 					updatedAt: null,
 				},
@@ -102,7 +106,10 @@ describe('orgMembershipsRepository', () => {
 			mockDb.chain.where.mockResolvedValueOnce(rows);
 
 			const result = await listOrgMembers('org-2');
-			expect(result).toEqual(rows);
+			expect(result).toEqual([
+				{ ...rows[0], isGuest: false },
+				{ ...rows[1], isGuest: true },
+			]);
 			expect(mockDb.chain.innerJoin).toHaveBeenCalled();
 		});
 

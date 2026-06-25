@@ -14,6 +14,7 @@ import {
 	addOrgMembership,
 	getOrgMembership,
 	listOrgMembers,
+	removeOrgMembership,
 } from '../../../src/db/repositories/orgMembershipsRepository.js';
 import {
 	createUserWithMembership,
@@ -85,6 +86,9 @@ describe('multi-org membership management (integration)', () => {
 						email: 'local@example.com',
 						role: 'member',
 						globalRole: 'member',
+						// Home org == listed org → not a guest.
+						homeOrgId: 'other-org',
+						isGuest: false,
 					}),
 					// Per-org role (admin) wins over the guest's global role (member),
 					// but the GLOBAL role is also surfaced so the editor keeps targeting
@@ -94,6 +98,9 @@ describe('multi-org membership management (integration)', () => {
 						email: 'guest@example.com',
 						role: 'admin',
 						globalRole: 'member',
+						// Home org elsewhere → guest; drives "remove from this org" UX.
+						homeOrgId: 'home-org',
+						isGuest: true,
 					}),
 				]),
 			);
@@ -170,6 +177,41 @@ describe('multi-org membership management (integration)', () => {
 
 			// The transaction rolled back: other-org gained no member.
 			expect(await listOrgMembers('other-org')).toEqual([]);
+		});
+	});
+
+	describe('removeOrgMembership', () => {
+		it('removes only the membership in the given org, leaving the account and other memberships', async () => {
+			// A guest whose home org is home-org, also a member of other-org.
+			const guest = await seedUser({
+				orgId: 'home-org',
+				email: 'guest@example.com',
+				role: 'member',
+			});
+			await seedMembership({ userId: guest.id, orgId: 'home-org', role: 'member' });
+			await seedMembership({ userId: guest.id, orgId: 'other-org', role: 'admin' });
+
+			const result = await removeOrgMembership(guest.id, 'other-org');
+
+			expect(result).toEqual({ removed: true });
+			// Gone from other-org…
+			expect(await getOrgMembership(guest.id, 'other-org')).toBeNull();
+			// …but the account and its home-org membership survive.
+			expect((await getUserByEmail('guest@example.com'))?.id).toBe(guest.id);
+			expect(await getOrgMembership(guest.id, 'home-org')).toEqual({
+				orgId: 'home-org',
+				role: 'member',
+			});
+		});
+
+		it('reports removed:false when there was no membership to remove', async () => {
+			const user = await seedUser({
+				orgId: 'home-org',
+				email: 'nomember@example.com',
+				role: 'member',
+			});
+
+			expect(await removeOrgMembership(user.id, 'other-org')).toEqual({ removed: false });
 		});
 	});
 

@@ -13,6 +13,7 @@ const {
 	mockBcryptHash,
 	mockGetOrgMembership,
 	mockAddOrgMembership,
+	mockRemoveOrgMembership,
 } = vi.hoisted(() => ({
 	mockListOrgMembers: vi.fn(),
 	mockCreateUserWithMembership: vi.fn(),
@@ -24,6 +25,7 @@ const {
 	mockBcryptHash: vi.fn(),
 	mockGetOrgMembership: vi.fn(),
 	mockAddOrgMembership: vi.fn(),
+	mockRemoveOrgMembership: vi.fn(),
 }));
 
 vi.mock('../../../../src/db/repositories/usersRepository.js', () => ({
@@ -44,6 +46,7 @@ vi.mock('../../../../src/db/repositories/orgMembershipsRepository.js', () => ({
 	getOrgMembership: mockGetOrgMembership,
 	listOrgMembers: mockListOrgMembers,
 	addOrgMembership: mockAddOrgMembership,
+	removeOrgMembership: mockRemoveOrgMembership,
 }));
 
 vi.mock('bcrypt', () => ({
@@ -65,6 +68,7 @@ describe('usersRouter', () => {
 		mockBcryptHash.mockResolvedValue('hashed-password');
 		mockDeleteUserSessions.mockResolvedValue(undefined);
 		mockAddOrgMembership.mockResolvedValue(undefined);
+		mockRemoveOrgMembership.mockResolvedValue({ removed: true });
 		// Default: caller has no explicit membership row, so the per-org role
 		// resolver falls back to the global role for their home org.
 		mockGetOrgMembership.mockResolvedValue(null);
@@ -778,6 +782,79 @@ describe('usersRouter', () => {
 		it('throws FORBIDDEN when user is a member', async () => {
 			const caller = createCaller({ user: mockMember, effectiveOrgId: mockMember.orgId });
 			await expect(caller.delete({ id: 'user-2' })).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+		});
+	});
+
+	// "Remove from this org" — drop only the membership, never the account
+	// (PR #1441 review: whole-account delete of a guest was a footgun).
+	describe('removeFromOrg', () => {
+		it('removes a guest membership in the effective org without deleting the account', async () => {
+			mockGetUserById.mockResolvedValue({ id: 'guest-1', orgId: 'org-2', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			const result = await caller.removeFromOrg({ userId: 'guest-1' });
+
+			expect(mockRemoveOrgMembership).toHaveBeenCalledWith('guest-1', 'org-1');
+			expect(mockDeleteUser).not.toHaveBeenCalled();
+			expect(result).toEqual({ userId: 'guest-1', orgId: 'org-1', removed: true });
+		});
+
+		it('prevents removing yourself from the org', async () => {
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(caller.removeFromOrg({ userId: 'user-1' })).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+			expect(mockRemoveOrgMembership).not.toHaveBeenCalled();
+		});
+
+		it('throws NOT_FOUND when the target account does not exist', async () => {
+			mockGetUserById.mockResolvedValue(null);
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(caller.removeFromOrg({ userId: 'ghost' })).rejects.toMatchObject({
+				code: 'NOT_FOUND',
+			});
+			expect(mockRemoveOrgMembership).not.toHaveBeenCalled();
+		});
+
+		it('refuses to remove a user from their HOME org (delete the account instead)', async () => {
+			// Home org == effective org → not a guest.
+			mockGetUserById.mockResolvedValue({ id: 'home-1', orgId: 'org-1', role: 'member' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(caller.removeFromOrg({ userId: 'home-1' })).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+			});
+			expect(mockRemoveOrgMembership).not.toHaveBeenCalled();
+		});
+
+		it('throws NOT_FOUND when the target has no membership in this org', async () => {
+			mockGetUserById.mockResolvedValue({ id: 'guest-1', orgId: 'org-2', role: 'member' });
+			mockRemoveOrgMembership.mockResolvedValue({ removed: false });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(caller.removeFromOrg({ userId: 'guest-1' })).rejects.toMatchObject({
+				code: 'NOT_FOUND',
+			});
+		});
+
+		it('prevents a non-superadmin from removing a superadmin account', async () => {
+			mockGetUserById.mockResolvedValue({ id: 'super-guest', orgId: 'org-2', role: 'superadmin' });
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await expect(caller.removeFromOrg({ userId: 'super-guest' })).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+			expect(mockRemoveOrgMembership).not.toHaveBeenCalled();
+		});
+
+		it('rejects a member caller (adminProcedure)', async () => {
+			const caller = createCaller({ user: mockMember, effectiveOrgId: mockMember.orgId });
+
+			await expect(caller.removeFromOrg({ userId: 'guest-1' })).rejects.toMatchObject({
 				code: 'FORBIDDEN',
 			});
 		});
