@@ -18,6 +18,7 @@ import {
 import {
 	createUserWithMembership,
 	getUserByEmail,
+	updateUser,
 } from '../../../src/db/repositories/usersRepository.js';
 import { truncateAll } from '../helpers/db.js';
 import { seedMembership, seedOrg, seedUser } from '../helpers/seed.js';
@@ -169,6 +170,94 @@ describe('multi-org membership management (integration)', () => {
 
 			// The transaction rolled back: other-org gained no member.
 			expect(await listOrgMembers('other-org')).toEqual([]);
+		});
+	});
+
+	// PR #1441 review (SHOULD_FIX): home-org permissions are read from
+	// org_memberships.role (resolveActorRoleInOrg), so a global-role change must
+	// also sync the home-org membership or member↔admin edits are silent no-ops.
+	describe('updateUser home-org membership sync', () => {
+		it('syncs the home-org membership role when the global role changes', async () => {
+			const user = await seedUser({
+				orgId: 'home-org',
+				email: 'promote@example.com',
+				role: 'member',
+			});
+			await seedMembership({ userId: user.id, orgId: 'home-org', role: 'member' });
+
+			await updateUser(
+				user.id,
+				{ role: 'admin' },
+				{ syncHomeOrgMembership: { orgId: 'home-org' } },
+			);
+
+			// Global role updated AND the membership role tracked it.
+			expect((await getUserByEmail('promote@example.com'))?.role).toBe('admin');
+			expect(await getOrgMembership(user.id, 'home-org')).toEqual({
+				orgId: 'home-org',
+				role: 'admin',
+			});
+		});
+
+		it('maps a superadmin role change to an admin home-org membership', async () => {
+			const user = await seedUser({
+				orgId: 'home-org',
+				email: 'super@example.com',
+				role: 'member',
+			});
+			await seedMembership({ userId: user.id, orgId: 'home-org', role: 'member' });
+
+			await updateUser(
+				user.id,
+				{ role: 'superadmin' },
+				{ syncHomeOrgMembership: { orgId: 'home-org' } },
+			);
+
+			// Membership roles are per-org ('member' | 'admin'); superadmin → admin.
+			expect(await getOrgMembership(user.id, 'home-org')).toEqual({
+				orgId: 'home-org',
+				role: 'admin',
+			});
+		});
+
+		it('upserts the home-org membership when the legacy account has none', async () => {
+			const user = await seedUser({
+				orgId: 'home-org',
+				email: 'legacy@example.com',
+				role: 'member',
+			});
+			// No membership row seeded (pre-backfill account).
+
+			await updateUser(
+				user.id,
+				{ role: 'admin' },
+				{ syncHomeOrgMembership: { orgId: 'home-org' } },
+			);
+
+			expect(await getOrgMembership(user.id, 'home-org')).toEqual({
+				orgId: 'home-org',
+				role: 'admin',
+			});
+		});
+
+		it('leaves membership untouched when the update does not change the role', async () => {
+			const user = await seedUser({
+				orgId: 'home-org',
+				email: 'rename@example.com',
+				role: 'admin',
+			});
+			await seedMembership({ userId: user.id, orgId: 'home-org', role: 'admin' });
+
+			await updateUser(
+				user.id,
+				{ name: 'Renamed' },
+				{ syncHomeOrgMembership: { orgId: 'home-org' } },
+			);
+
+			expect(await getOrgMembership(user.id, 'home-org')).toEqual({
+				orgId: 'home-org',
+				role: 'admin',
+			});
 		});
 	});
 });

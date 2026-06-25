@@ -466,7 +466,13 @@ describe('usersRouter', () => {
 
 			await caller.update({ id: 'user-2', name: 'Updated Name' });
 
-			expect(mockUpdateUser).toHaveBeenCalledWith('user-2', { name: 'Updated Name' });
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-2',
+				{ name: 'Updated Name' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-1' },
+				},
+			);
 		});
 
 		it('allows sparse update for email', async () => {
@@ -476,7 +482,13 @@ describe('usersRouter', () => {
 
 			await caller.update({ id: 'user-2', email: 'updated@example.com' });
 
-			expect(mockUpdateUser).toHaveBeenCalledWith('user-2', { email: 'updated@example.com' });
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-2',
+				{ email: 'updated@example.com' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-1' },
+				},
+			);
 		});
 
 		it('hashes password when provided', async () => {
@@ -487,7 +499,13 @@ describe('usersRouter', () => {
 			await caller.update({ id: 'user-2', password: 'newpassword12' });
 
 			expect(mockBcryptHash).toHaveBeenCalledWith('newpassword12', 10);
-			expect(mockUpdateUser).toHaveBeenCalledWith('user-2', { passwordHash: 'hashed-password' });
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-2',
+				{ passwordHash: 'hashed-password' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-1' },
+				},
+			);
 		});
 
 		it('prevents self-demotion (cannot change own role)', async () => {
@@ -543,7 +561,13 @@ describe('usersRouter', () => {
 
 			await caller.update({ id: 'user-2', role: 'superadmin' });
 
-			expect(mockUpdateUser).toHaveBeenCalledWith('user-2', { role: 'superadmin' });
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-2',
+				{ role: 'superadmin' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-1' },
+				},
+			);
 		});
 
 		it('prevents non-superadmin from editing ANY field on a superadmin user (name)', async () => {
@@ -564,7 +588,13 @@ describe('usersRouter', () => {
 
 			await caller.update({ id: 'user-super2', name: 'New Super Name' });
 
-			expect(mockUpdateUser).toHaveBeenCalledWith('user-super2', { name: 'New Super Name' });
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-super2',
+				{ name: 'New Super Name' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-1' },
+				},
+			);
 		});
 
 		it('prevents non-superadmin from revoking superadmin role', async () => {
@@ -585,7 +615,31 @@ describe('usersRouter', () => {
 
 			await caller.update({ id: 'user-2', role: 'admin' });
 
-			expect(mockUpdateUser).toHaveBeenCalledWith('user-2', { role: 'admin' });
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-2',
+				{ role: 'admin' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-1' },
+				},
+			);
+		});
+
+		it('member→admin promotion syncs the target home-org membership (PR #1441 review)', async () => {
+			// The whole point of the fix: home-org permissions read org_memberships.role,
+			// so the promotion must reach the target's home org or it is a silent no-op.
+			mockGetUserById.mockResolvedValue({ id: 'user-2', orgId: 'org-1', role: 'member' });
+			mockUpdateUser.mockResolvedValue(undefined);
+			const caller = createCaller({ user: mockAdminUser, effectiveOrgId: mockAdminUser.orgId });
+
+			await caller.update({ id: 'user-2', role: 'admin' });
+
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-2',
+				{ role: 'admin' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-1' },
+				},
+			);
 		});
 
 		it('rejects update password shorter than 12 characters', async () => {
@@ -796,7 +850,13 @@ describe('usersRouter', () => {
 
 			await caller.update({ id: 'user-2', name: 'Renamed' });
 
-			expect(mockUpdateUser).toHaveBeenCalledWith('user-2', { name: 'Renamed' });
+			expect(mockUpdateUser).toHaveBeenCalledWith(
+				'user-2',
+				{ name: 'Renamed' },
+				{
+					syncHomeOrgMembership: { orgId: 'org-2' },
+				},
+			);
 			expect(mockGetOrgMembership).not.toHaveBeenCalled();
 		});
 	});

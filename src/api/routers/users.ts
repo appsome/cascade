@@ -306,7 +306,12 @@ export const usersRouter = router({
 				updates.passwordHash = await bcrypt.hash(input.password, 10);
 			}
 
-			await updateUser(input.id, updates);
+			// Sync the target's home-org membership role with a global-role change so
+			// the edit actually takes effect — home-org permissions are read from
+			// org_memberships.role, not users.role (PR #1441 review SHOULD_FIX).
+			await updateUser(input.id, updates, {
+				syncHomeOrgMembership: { orgId: targetUser.orgId },
+			});
 
 			// Invalidate all sessions for the target user when their password changes.
 			// This prevents stale sessions from remaining valid after a password reset.

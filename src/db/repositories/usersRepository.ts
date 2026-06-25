@@ -156,6 +156,15 @@ export async function createUserWithMembership(params: {
 
 /**
  * Sparse update for name, email, role, passwordHash. Sets updatedAt on every update.
+ *
+ * `opts.syncHomeOrgMembership` keeps the user's home-org membership role in lock
+ * step with a global-role change. Home-org permissions are read from
+ * `org_memberships.role` (`resolveActorRoleInOrg`), not `users.role`, so without
+ * this a member↔admin edit via Settings/CLI is a silent no-op for actual
+ * permissions (PR #1441 review). Only applied when `updates.role` is present;
+ * membership roles are per-org ('member' | 'admin'), so a global 'superadmin'
+ * maps to an 'admin' membership (mirrors `createUserWithMembership`). The user
+ * row and the membership upsert run in one transaction so they cannot drift.
  */
 export async function updateUser(
 	id: string,
@@ -165,6 +174,7 @@ export async function updateUser(
 		role?: string;
 		passwordHash?: string;
 	},
+	opts?: { syncHomeOrgMembership?: { orgId: string } },
 ): Promise<void> {
 	const db = getDb();
 	const setClause: Record<string, unknown> = { updatedAt: new Date() };
@@ -172,6 +182,22 @@ export async function updateUser(
 	if (updates.email !== undefined) setClause.email = updates.email;
 	if (updates.role !== undefined) setClause.role = updates.role;
 	if (updates.passwordHash !== undefined) setClause.passwordHash = updates.passwordHash;
+
+	const homeOrgId = opts?.syncHomeOrgMembership?.orgId;
+	if (homeOrgId !== undefined && updates.role !== undefined) {
+		const membershipRole = updates.role === 'superadmin' ? 'admin' : updates.role;
+		await db.transaction(async (tx) => {
+			await tx.update(users).set(setClause).where(eq(users.id, id));
+			await tx
+				.insert(orgMemberships)
+				.values({ userId: id, orgId: homeOrgId, role: membershipRole })
+				.onConflictDoUpdate({
+					target: [orgMemberships.userId, orgMemberships.orgId],
+					set: { role: membershipRole, updatedAt: new Date() },
+				});
+		});
+		return;
+	}
 
 	await db.update(users).set(setClause).where(eq(users.id, id));
 }
