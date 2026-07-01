@@ -65,10 +65,18 @@ describe('worker-snapshots', () => {
 		mockContainerCommit.mockResolvedValue(undefined);
 		mockContainerRemove.mockResolvedValue(undefined);
 		mockImageInspect.mockResolvedValue({ Size: 1_234_567_890 });
-		// Container inspect returns the live Config.Env that docker commit would
-		// otherwise bake verbatim — a mix of safe (PATH) + job + secret vars.
+		// Container inspect returns the live Config that docker commit would
+		// otherwise bake verbatim. Env is a mix of safe (PATH) + job + secret vars;
+		// the non-Env fields (Cmd/WorkingDir/User/Labels/ExposedPorts) are baked by
+		// Dockerfile.worker and MUST survive the scrubbed commit — a partial
+		// { Env } body would wipe them and break snapshot reuse.
 		mockContainerInspect.mockResolvedValue({
 			Config: {
+				Cmd: ['node', '--import', './dist/instrument.js', 'dist/worker-entry.js'],
+				WorkingDir: '/app',
+				User: 'node',
+				Labels: { 'cascade.worker': 'true' },
+				ExposedPorts: { '3000/tcp': {} },
 				Env: [
 					'PATH=/usr/local/bin',
 					'PLAYWRIGHT_BROWSERS_PATH=/ms-playwright',
@@ -117,16 +125,37 @@ describe('worker-snapshots', () => {
 		expect(mockContainerCommit).toHaveBeenCalledTimes(1);
 		const commitArg = mockContainerCommit.mock.calls[0][0] as {
 			_query: Record<string, string>;
-			_body: { Env: string[] };
+			_body: {
+				Env: string[];
+				Cmd?: string[];
+				WorkingDir?: string;
+				User?: string;
+				Labels?: Record<string, string>;
+				ExposedPorts?: Record<string, unknown>;
+			};
 		};
 		expect(commitArg._query).toEqual({
 			container: 'container-snap-abc123',
 			repo: 'cascade-snapshot-proj-snap-card-snap',
 			tag: 'latest',
 		});
-		// ImageCommit request body IS a ContainerConfig → Env is top-level, NOT
-		// nested under Config (that is the inspect-response shape). A nested Config
-		// would be silently dropped by Docker, baking the raw (unscrubbed) env.
+		// The commit body is the FULL inspected Config with only Env replaced. Docker
+		// uses a non-nil commit body as the image's COMPLETE runtime config (no merge
+		// over the container's config), so the non-Env fields baked by
+		// Dockerfile.worker MUST survive — otherwise a reused snapshot can't launch
+		// (missing Cmd → "No command specified"; User→root, WorkingDir→/).
+		expect(commitArg._body.Cmd).toEqual([
+			'node',
+			'--import',
+			'./dist/instrument.js',
+			'dist/worker-entry.js',
+		]);
+		expect(commitArg._body.WorkingDir).toBe('/app');
+		expect(commitArg._body.User).toBe('node');
+		expect(commitArg._body.Labels).toEqual({ 'cascade.worker': 'true' });
+		expect(commitArg._body.ExposedPorts).toEqual({ '3000/tcp': {} });
+		// Env is a top-level ContainerConfig field, NOT nested under Config (that is
+		// the inspect-response shape).
 		const bakedEnv = commitArg._body.Env;
 		// Safe vars preserved with real values…
 		expect(bakedEnv).toContain('PATH=/usr/local/bin');

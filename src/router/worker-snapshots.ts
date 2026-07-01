@@ -91,23 +91,34 @@ function extractCredentialKeys(env: string[]): string[] {
 /**
  * Commit `container` to `imageName` with its env scrubbed of job + secret vars.
  *
- * Inspects the container's live `Config.Env`, removes deny-listed + credential
- * keys, and commits the scrubbed env into the new image (docker-modem idiom:
- * `_query` → querystring `container/repo/tag`, `_body` → the raw POST body).
- * Docker's `POST /commit` (ImageCommit) request body IS ITSELF a
- * `ContainerConfig`, so `Env` is a TOP-LEVEL field (`_body: { Env }`) — NOT
- * nested under `Config`. The `{ Config: { Env } }` nesting is the shape of the
- * inspect RESPONSE (read above), not the commit REQUEST: docker-modem serializes
- * `_body` verbatim, so a nested `Config` would be an unknown field Docker
- * ignores, leaving `Env` nil and the container's original (unscrubbed) env baked
- * in. Sourcing from the container's own inspected env and only REMOVING entries
- * guarantees PATH / PLAYWRIGHT_BROWSERS_PATH / NODE_* survive with their real
- * values.
+ * Inspects the container's live `Config`, removes deny-listed + credential keys
+ * from `Config.Env`, and commits the scrubbed config into the new image
+ * (docker-modem idiom: `_query` → querystring `container/repo/tag`, `_body` → the
+ * raw POST body).
  *
- * If inspect fails or returns no env, falls back to a bare commit (preserving
- * the pre-existing behavior — an unscrubbed but working snapshot) and captures
- * Sentry under `snapshot_env_scrub_inspect_failed` so the regression to baking
- * secrets is loud rather than silent.
+ * Docker's `POST /commit` (ImageCommit) request body IS ITSELF a
+ * `ContainerConfig`, and the daemon uses a NON-NIL body config as the new image's
+ * COMPLETE runtime config — it does NOT merge it over the container's config
+ * (moby `daemon/commit.go` only falls back to `container.Config` when the body
+ * config is nil; `image.NewChildImage` assigns `Config: child.Config` with no
+ * parent merge). So the body MUST be the full inspected config with only `Env`
+ * replaced: `{ ...fullConfig, Env: scrubbed }` preserves `Cmd` (the worker
+ * entrypoint), `WorkingDir` (`/app`), `User` (`node`), `Labels`, `ExposedPorts`,
+ * etc. Passing only `{ Env: scrubbed }` would wipe all of them, and a REUSED
+ * snapshot — which sets no explicit Cmd/WorkingDir/User at `createContainer`
+ * (`worker-container-launcher.ts`) — would fail to launch ("No command
+ * specified", root user, wrong cwd).
+ *
+ * `Env` is a TOP-LEVEL `ContainerConfig` field, NOT nested under `Config` (the
+ * `{ Config: { Env } }` nesting is the inspect RESPONSE shape). Sourcing from the
+ * container's own inspected config and only REMOVING env entries guarantees PATH
+ * / PLAYWRIGHT_BROWSERS_PATH / NODE_* survive with their real values.
+ *
+ * If inspect fails or returns no env, falls back to a bare commit — the
+ * config-PRESERVING form (nil body → daemon keeps the container's full config),
+ * yielding an unscrubbed but working snapshot — and captures Sentry under
+ * `snapshot_env_scrub_inspect_failed` so the regression to baking secrets is loud
+ * rather than silent.
  */
 async function commitScrubbed(
 	container: Docker.Container,
@@ -115,10 +126,12 @@ async function commitScrubbed(
 	repo: string,
 	imageName: string,
 ): Promise<void> {
-	let env: string[] | undefined;
+	let fullConfig: (Record<string, unknown> & { Env?: string[] }) | undefined;
 	try {
-		const info = (await container.inspect()) as { Config?: { Env?: string[] } } | undefined;
-		env = info?.Config?.Env;
+		const info = (await container.inspect()) as
+			| { Config?: Record<string, unknown> & { Env?: string[] } }
+			| undefined;
+		fullConfig = info?.Config;
 	} catch (inspectErr) {
 		captureException(inspectErr, {
 			tags: { source: 'snapshot_env_scrub_inspect_failed' },
@@ -127,13 +140,17 @@ async function commitScrubbed(
 		});
 	}
 
-	if (Array.isArray(env) && env.length > 0) {
+	const env = fullConfig?.Env;
+	if (fullConfig && Array.isArray(env) && env.length > 0) {
 		const scrubbed = scrubSnapshotEnv(env, extractCredentialKeys(env));
-		// ImageCommit request body IS a ContainerConfig → Env is top-level, NOT
-		// nested under Config (that is the inspect-response shape). See fn doc.
+		// Spread the FULL inspected Config and replace only Env: the daemon uses a
+		// non-nil commit body as the image's complete config (no merge), so passing
+		// only { Env } would drop Cmd/WorkingDir/User/Labels and break snapshot
+		// reuse. Env is a top-level ContainerConfig field, NOT nested under Config
+		// (that is the inspect-response shape). See fn doc.
 		await container.commit({
 			_query: { container: containerId, repo, tag: 'latest' },
-			_body: { Env: scrubbed },
+			_body: { ...fullConfig, Env: scrubbed },
 		});
 		logger.info('[WorkerManager] Snapshot committed with scrubbed env', {
 			imageName,
