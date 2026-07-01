@@ -460,29 +460,41 @@ export async function dispatchJob(
  * with "argument list too long". Must run before scrubSensitiveEnv() strips
  * REDIS_URL. Exits the process with a clear, grep-able reason on any failure —
  * never the cryptic exec crash, never a payload-less worker.
+ *
+ * The Redis key is AUTHORITATIVE when present. The router sets EXACTLY ONE of
+ * JOB_DATA / JOB_DATA_REDIS_KEY per spawn (worker-env.ts is an if/else). But a
+ * snapshot IMAGE committed from a prior INLINE run bakes that prior run's
+ * `JOB_DATA=<json>` into the image ENV (docker commit preserves container ENV),
+ * and `docker run -e JOB_DATA_REDIS_KEY=...` does NOT clear a baked JOB_DATA. So
+ * when this job was offloaded and spawns from such a snapshot, the worker sees
+ * BOTH — a fresh Redis key for THIS job plus a stale inline value from a PRIOR
+ * run of the same work item. Reading inline first silently ran the wrong (prior)
+ * agent (prod incident ucho/MNG-1622 + MNG-1702: a 'splitting' run reused a
+ * 'planning' snapshot and re-ran planning, producing no story cards). Preferring
+ * the key eliminates the stale artifact.
  */
 async function resolveRawJobData(): Promise<string> {
+	const key = process.env.JOB_DATA_REDIS_KEY;
+	if (key) {
+		try {
+			return await readOffloadedJobData(key);
+		} catch (err) {
+			console.error('[Worker] Failed to read offloaded JOB_DATA from Redis:', err);
+			captureException(err, { tags: { source: 'worker_job_data_redis_read' } });
+			await flush();
+			process.exit(1);
+		}
+	}
+
 	const inline = process.env.JOB_DATA;
 	if (inline) return inline;
 
-	const key = process.env.JOB_DATA_REDIS_KEY;
-	if (!key) {
-		// Defensive: main() validates that JOB_DATA or JOB_DATA_REDIS_KEY is present.
-		const err = new Error('JOB_DATA could not be resolved from env or Redis');
-		console.error(`[Worker] ${err.message}`);
-		captureException(err, { tags: { source: 'worker_env' } });
-		await flush();
-		process.exit(1);
-	}
-
-	try {
-		return await readOffloadedJobData(key);
-	} catch (err) {
-		console.error('[Worker] Failed to read offloaded JOB_DATA from Redis:', err);
-		captureException(err, { tags: { source: 'worker_job_data_redis_read' } });
-		await flush();
-		process.exit(1);
-	}
+	// Defensive: main() validates that JOB_DATA or JOB_DATA_REDIS_KEY is present.
+	const err = new Error('JOB_DATA could not be resolved from env or Redis');
+	console.error(`[Worker] ${err.message}`);
+	captureException(err, { tags: { source: 'worker_env' } });
+	await flush();
+	process.exit(1);
 }
 
 export async function main(): Promise<void> {

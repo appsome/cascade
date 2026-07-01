@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
 	mockCaptureException,
 	mockContainerCommit,
+	mockContainerInspect,
 	mockContainerRemove,
 	mockDockerGetContainer,
 	mockDockerGetImage,
@@ -14,6 +15,7 @@ const {
 } = vi.hoisted(() => ({
 	mockCaptureException: vi.fn(),
 	mockContainerCommit: vi.fn(),
+	mockContainerInspect: vi.fn(),
 	mockContainerRemove: vi.fn(),
 	mockDockerGetContainer: vi.fn(),
 	mockDockerGetImage: vi.fn(),
@@ -54,6 +56,7 @@ import {
 	isImageNotFoundError,
 	pullImageOnce,
 	removeWorkerContainerBestEffort,
+	scrubSnapshotEnv,
 } from '../../../src/router/worker-snapshots.js';
 
 describe('worker-snapshots', () => {
@@ -62,8 +65,30 @@ describe('worker-snapshots', () => {
 		mockContainerCommit.mockResolvedValue(undefined);
 		mockContainerRemove.mockResolvedValue(undefined);
 		mockImageInspect.mockResolvedValue({ Size: 1_234_567_890 });
+		// Container inspect returns the live Config.Env that docker commit would
+		// otherwise bake verbatim — a mix of safe (PATH) + job + secret vars.
+		mockContainerInspect.mockResolvedValue({
+			Config: {
+				Env: [
+					'PATH=/usr/local/bin',
+					'PLAYWRIGHT_BROWSERS_PATH=/ms-playwright',
+					'JOB_DATA={"triggerResult":{"agentType":"planning"}}',
+					'JOB_DATA_REDIS_KEY=cascade:jobdata:x',
+					'JOB_ID=job-1',
+					'JOB_TYPE=linear',
+					'DATABASE_URL=postgres://secret',
+					'REDIS_URL=redis://secret',
+					'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x',
+					'CASCADE_CREDENTIAL_KEYS=GITHUB_TOKEN_IMPLEMENTER,LINEAR_API_KEY',
+					'GITHUB_TOKEN_IMPLEMENTER=ghp_x',
+					'LINEAR_API_KEY=lin_y',
+					'SENTRY_DSN=https://sentry',
+				],
+			},
+		});
 		mockDockerGetContainer.mockReturnValue({
 			commit: mockContainerCommit,
+			inspect: mockContainerInspect,
 			remove: mockContainerRemove,
 		});
 		mockDockerGetImage.mockReturnValue({
@@ -80,14 +105,46 @@ describe('worker-snapshots', () => {
 		);
 	});
 
-	it('commits the worker container, inspects image size, and registers metadata', async () => {
+	// Behavior intentionally changed (ucho/MNG-1622 + MNG-1702 + security): commit
+	// now inspects the container and bakes a SCRUBBED Config.Env (docker-modem
+	// _query/_body idiom) instead of the container's raw env, so no stale JOB_DATA
+	// or plaintext secret survives into the snapshot image.
+	it('commits with a scrubbed Config.Env, inspects image size, and registers metadata', async () => {
 		await commitWorkerSnapshot('container-snap-abc123', 'proj-snap', 'card-snap');
 
 		expect(mockDockerGetContainer).toHaveBeenCalledWith('container-snap-abc123');
-		expect(mockContainerCommit).toHaveBeenCalledWith({
+		expect(mockContainerInspect).toHaveBeenCalled();
+		expect(mockContainerCommit).toHaveBeenCalledTimes(1);
+		const commitArg = mockContainerCommit.mock.calls[0][0] as {
+			_query: Record<string, string>;
+			_body: { Config: { Env: string[] } };
+		};
+		expect(commitArg._query).toEqual({
+			container: 'container-snap-abc123',
 			repo: 'cascade-snapshot-proj-snap-card-snap',
 			tag: 'latest',
 		});
+		const bakedEnv = commitArg._body.Config.Env;
+		// Safe vars preserved with real values…
+		expect(bakedEnv).toContain('PATH=/usr/local/bin');
+		expect(bakedEnv).toContain('PLAYWRIGHT_BROWSERS_PATH=/ms-playwright');
+		expect(bakedEnv).toContain('SENTRY_DSN=https://sentry');
+		// …job + secret vars stripped.
+		const bakedKeys = bakedEnv.map((e) => e.split('=')[0]);
+		for (const forbidden of [
+			'JOB_DATA',
+			'JOB_DATA_REDIS_KEY',
+			'JOB_ID',
+			'JOB_TYPE',
+			'DATABASE_URL',
+			'REDIS_URL',
+			'CLAUDE_CODE_OAUTH_TOKEN',
+			'CASCADE_CREDENTIAL_KEYS',
+			'GITHUB_TOKEN_IMPLEMENTER',
+			'LINEAR_API_KEY',
+		]) {
+			expect(bakedKeys).not.toContain(forbidden);
+		}
 		expect(mockDockerGetImage).toHaveBeenCalledWith('cascade-snapshot-proj-snap-card-snap:latest');
 		expect(mockRegisterSnapshot).toHaveBeenCalledWith(
 			'proj-snap',
@@ -95,6 +152,24 @@ describe('worker-snapshots', () => {
 			'cascade-snapshot-proj-snap-card-snap:latest',
 			1_234_567_890,
 		);
+	});
+
+	it('falls back to a bare commit and captures Sentry when container inspect fails', async () => {
+		mockContainerInspect.mockRejectedValueOnce(new Error('inspect boom'));
+
+		await commitWorkerSnapshot('container-snap-abc123', 'proj-snap', 'card-snap');
+
+		// Bare commit preserves the prior behavior (working, if unscrubbed, snapshot)…
+		expect(mockContainerCommit).toHaveBeenCalledWith({
+			repo: 'cascade-snapshot-proj-snap-card-snap',
+			tag: 'latest',
+		});
+		// …but the scrub failure is loud, not silent.
+		expect(mockCaptureException).toHaveBeenCalledWith(
+			expect.any(Error),
+			expect.objectContaining({ tags: { source: 'snapshot_env_scrub_inspect_failed' } }),
+		);
+		expect(mockRegisterSnapshot).toHaveBeenCalled();
 	});
 
 	it('still registers snapshot metadata when image-size inspection fails', async () => {
@@ -163,6 +238,65 @@ describe('worker-snapshots', () => {
 		expect(isImageNotFoundError(Object.assign(new Error('not found'), { statusCode: 404 }))).toBe(
 			false,
 		);
+	});
+});
+
+describe('scrubSnapshotEnv', () => {
+	it('strips per-job env (JOB_DATA and friends) but preserves safe vars', () => {
+		const out = scrubSnapshotEnv([
+			'PATH=/usr/bin',
+			'JOB_DATA={"a":1}',
+			'JOB_DATA_REDIS_KEY=cascade:jobdata:x',
+			'JOB_ID=x',
+			'JOB_TYPE=linear',
+			'PLAYWRIGHT_BROWSERS_PATH=/ms-playwright',
+		]);
+		expect(out).toEqual(['PATH=/usr/bin', 'PLAYWRIGHT_BROWSERS_PATH=/ms-playwright']);
+	});
+
+	it('strips infra secrets but keeps observability/config vars', () => {
+		const out = scrubSnapshotEnv([
+			'DATABASE_URL=postgres://s',
+			'REDIS_URL=redis://s',
+			'CREDENTIAL_MASTER_KEY=deadbeef',
+			'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x',
+			'SENTRY_DSN=https://sentry',
+			'CASCADE_DASHBOARD_URL=https://dash',
+			'LOG_LEVEL=info',
+		]);
+		expect(out.map((e) => e.split('=')[0])).toEqual([
+			'SENTRY_DSN',
+			'CASCADE_DASHBOARD_URL',
+			'LOG_LEVEL',
+		]);
+	});
+
+	it('strips dynamic project credentials named in extraCredentialKeys (and CASCADE_CREDENTIAL_KEYS itself)', () => {
+		const out = scrubSnapshotEnv(
+			[
+				'CASCADE_CREDENTIAL_KEYS=GITHUB_TOKEN_IMPLEMENTER,LINEAR_API_KEY',
+				'GITHUB_TOKEN_IMPLEMENTER=ghp_x',
+				'LINEAR_API_KEY=lin_y',
+				'PATH=/bin',
+			],
+			['GITHUB_TOKEN_IMPLEMENTER', 'LINEAR_API_KEY'],
+		);
+		expect(out).toEqual(['PATH=/bin']);
+	});
+
+	it('splits on the FIRST = so credential values containing = are stripped by key', () => {
+		const out = scrubSnapshotEnv(
+			['CODEX_AUTH_JSON={"token":"a=b=c"}', 'PATH=/bin'],
+			['CODEX_AUTH_JSON'],
+		);
+		expect(out).toEqual(['PATH=/bin']);
+	});
+
+	it('handles env lines with no = (treats the whole string as the key)', () => {
+		expect(scrubSnapshotEnv(['JOB_DATA', 'BARE_FLAG', 'PATH=/bin'])).toEqual([
+			'BARE_FLAG',
+			'PATH=/bin',
+		]);
 	});
 });
 
