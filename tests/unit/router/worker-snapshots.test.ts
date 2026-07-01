@@ -117,14 +117,17 @@ describe('worker-snapshots', () => {
 		expect(mockContainerCommit).toHaveBeenCalledTimes(1);
 		const commitArg = mockContainerCommit.mock.calls[0][0] as {
 			_query: Record<string, string>;
-			_body: { Config: { Env: string[] } };
+			_body: { Env: string[] };
 		};
 		expect(commitArg._query).toEqual({
 			container: 'container-snap-abc123',
 			repo: 'cascade-snapshot-proj-snap-card-snap',
 			tag: 'latest',
 		});
-		const bakedEnv = commitArg._body.Config.Env;
+		// ImageCommit request body IS a ContainerConfig → Env is top-level, NOT
+		// nested under Config (that is the inspect-response shape). A nested Config
+		// would be silently dropped by Docker, baking the raw (unscrubbed) env.
+		const bakedEnv = commitArg._body.Env;
 		// Safe vars preserved with real values…
 		expect(bakedEnv).toContain('PATH=/usr/local/bin');
 		expect(bakedEnv).toContain('PLAYWRIGHT_BROWSERS_PATH=/ms-playwright');

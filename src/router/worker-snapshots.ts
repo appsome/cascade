@@ -92,11 +92,17 @@ function extractCredentialKeys(env: string[]): string[] {
  * Commit `container` to `imageName` with its env scrubbed of job + secret vars.
  *
  * Inspects the container's live `Config.Env`, removes deny-listed + credential
- * keys, and commits with the scrubbed env as the new image's `Config.Env`
- * (docker-modem idiom: `_query` → querystring `container/repo/tag`, `_body` →
- * the POST body `{Config:{Env}}`, which REPLACES the image env). Sourcing from
- * the container's own inspected env and only REMOVING entries guarantees PATH /
- * PLAYWRIGHT_BROWSERS_PATH / NODE_* survive with their real values.
+ * keys, and commits the scrubbed env into the new image (docker-modem idiom:
+ * `_query` → querystring `container/repo/tag`, `_body` → the raw POST body).
+ * Docker's `POST /commit` (ImageCommit) request body IS ITSELF a
+ * `ContainerConfig`, so `Env` is a TOP-LEVEL field (`_body: { Env }`) — NOT
+ * nested under `Config`. The `{ Config: { Env } }` nesting is the shape of the
+ * inspect RESPONSE (read above), not the commit REQUEST: docker-modem serializes
+ * `_body` verbatim, so a nested `Config` would be an unknown field Docker
+ * ignores, leaving `Env` nil and the container's original (unscrubbed) env baked
+ * in. Sourcing from the container's own inspected env and only REMOVING entries
+ * guarantees PATH / PLAYWRIGHT_BROWSERS_PATH / NODE_* survive with their real
+ * values.
  *
  * If inspect fails or returns no env, falls back to a bare commit (preserving
  * the pre-existing behavior — an unscrubbed but working snapshot) and captures
@@ -123,9 +129,11 @@ async function commitScrubbed(
 
 	if (Array.isArray(env) && env.length > 0) {
 		const scrubbed = scrubSnapshotEnv(env, extractCredentialKeys(env));
+		// ImageCommit request body IS a ContainerConfig → Env is top-level, NOT
+		// nested under Config (that is the inspect-response shape). See fn doc.
 		await container.commit({
 			_query: { container: containerId, repo, tag: 'latest' },
-			_body: { Config: { Env: scrubbed } },
+			_body: { Env: scrubbed },
 		});
 		logger.info('[WorkerManager] Snapshot committed with scrubbed env', {
 			imageName,
