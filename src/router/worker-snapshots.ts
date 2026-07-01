@@ -89,49 +89,56 @@ function extractCredentialKeys(env: string[]): string[] {
 }
 
 /**
- * Commit `container` to `imageName` with its env scrubbed of job + secret vars.
+ * Compute the `changes` (Dockerfile `ENV KEY=` instructions) that BLANK the
+ * value of every deny-listed / credential env var actually present in `env`.
  *
- * Inspects the container's live `Config`, removes deny-listed + credential keys
- * from `Config.Env`, and commits the scrubbed config into the new image
- * (docker-modem idiom: `_query` → querystring `container/repo/tag`, `_body` → the
- * raw POST body).
+ * WHY blank-via-changes and not a scrubbed `Env` body: `docker commit` cannot
+ * REMOVE an env var. The `POST /commit` body's `Env` list does not replace the
+ * container's env — moby re-appends every container env var whose key is absent
+ * from the body, so a "scrubbed Env body" is a **silent no-op** (verified
+ * against a live daemon: `JOB_DATA` / secrets survive unchanged, byte-identical
+ * to a bare commit). The supported mechanism is the `changes` param — Dockerfile
+ * instructions applied to the committed image — where `ENV KEY=` sets the value
+ * to empty. Empty `JOB_DATA` is falsy (the worker ignores it), and an emptied
+ * secret carries no value to leak. `Cmd` / `Entrypoint` / `WorkingDir` and every
+ * other env var are preserved by the daemon (a bare commit keeps the full
+ * container config; `changes` only overlays the named ENV keys). Only keys
+ * PRESENT in the env are blanked, so no spurious empty vars are introduced.
+ */
+export function buildSnapshotEnvScrubChanges(env: string[]): string[] {
+	const deny = new Set<string>(SNAPSHOT_ENV_DENYLIST);
+	for (const k of extractCredentialKeys(env)) deny.add(k);
+	const present = new Set<string>();
+	for (const line of env) {
+		const key = envKey(line);
+		if (deny.has(key)) present.add(key);
+	}
+	return [...present].map((key) => `ENV ${key}=`);
+}
+
+/**
+ * Commit `container` to `imageName` with its job + secret env vars blanked.
  *
- * Docker's `POST /commit` (ImageCommit) request body IS ITSELF a
- * `ContainerConfig`, and the daemon uses a NON-NIL body config as the new image's
- * COMPLETE runtime config — it does NOT merge it over the container's config
- * (moby `daemon/commit.go` only falls back to `container.Config` when the body
- * config is nil; `image.NewChildImage` assigns `Config: child.Config` with no
- * parent merge). So the body MUST be the full inspected config with only `Env`
- * replaced: `{ ...fullConfig, Env: scrubbed }` preserves `Cmd` (the worker
- * entrypoint), `WorkingDir` (`/app`), `User` (`node`), `Labels`, `ExposedPorts`,
- * etc. Passing only `{ Env: scrubbed }` would wipe all of them, and a REUSED
- * snapshot — which sets no explicit Cmd/WorkingDir/User at `createContainer`
- * (`worker-container-launcher.ts`) — would fail to launch ("No command
- * specified", root user, wrong cwd).
+ * Inspects the container's live `Config.Env`, then commits with `changes` that
+ * empty the value of every deny-listed / credential key present (see
+ * `buildSnapshotEnvScrubChanges` for why `changes` and not an `Env` body — the
+ * latter is a proven no-op). `Cmd`/`Entrypoint`/`WorkingDir`/all other env are
+ * preserved, so a reused snapshot still boots.
  *
- * `Env` is a TOP-LEVEL `ContainerConfig` field, NOT nested under `Config` (the
- * `{ Config: { Env } }` nesting is the inspect RESPONSE shape). Sourcing from the
- * container's own inspected config and only REMOVING env entries guarantees PATH
- * / PLAYWRIGHT_BROWSERS_PATH / NODE_* survive with their real values.
- *
- * If inspect fails or returns no env, falls back to a bare commit — the
- * config-PRESERVING form (nil body → daemon keeps the container's full config),
- * yielding an unscrubbed but working snapshot — and captures Sentry under
- * `snapshot_env_scrub_inspect_failed` so the regression to baking secrets is loud
- * rather than silent.
+ * If inspect fails or the env is empty, falls back to a bare commit (an
+ * unscrubbed but working snapshot) and captures Sentry under
+ * `snapshot_env_scrub_inspect_failed` so the regression to baking secrets is
+ * loud rather than silent.
  */
 async function commitScrubbed(
 	container: Docker.Container,
-	containerId: string,
 	repo: string,
 	imageName: string,
 ): Promise<void> {
-	let fullConfig: (Record<string, unknown> & { Env?: string[] }) | undefined;
+	let env: string[] | undefined;
 	try {
-		const info = (await container.inspect()) as
-			| { Config?: Record<string, unknown> & { Env?: string[] } }
-			| undefined;
-		fullConfig = info?.Config;
+		const info = (await container.inspect()) as { Config?: { Env?: string[] } } | undefined;
+		env = info?.Config?.Env;
 	} catch (inspectErr) {
 		captureException(inspectErr, {
 			tags: { source: 'snapshot_env_scrub_inspect_failed' },
@@ -140,26 +147,19 @@ async function commitScrubbed(
 		});
 	}
 
-	const env = fullConfig?.Env;
-	if (fullConfig && Array.isArray(env) && env.length > 0) {
-		const scrubbed = scrubSnapshotEnv(env, extractCredentialKeys(env));
-		// Spread the FULL inspected Config and replace only Env: the daemon uses a
-		// non-nil commit body as the image's complete config (no merge), so passing
-		// only { Env } would drop Cmd/WorkingDir/User/Labels and break snapshot
-		// reuse. Env is a top-level ContainerConfig field, NOT nested under Config
-		// (that is the inspect-response shape). See fn doc.
-		await container.commit({
-			_query: { container: containerId, repo, tag: 'latest' },
-			_body: { ...fullConfig, Env: scrubbed },
-		});
-		logger.info('[WorkerManager] Snapshot committed with scrubbed env', {
-			imageName,
-			strippedKeys: env.length - scrubbed.length,
-		});
-		return;
+	if (Array.isArray(env) && env.length > 0) {
+		const changes = buildSnapshotEnvScrubChanges(env);
+		if (changes.length > 0) {
+			await container.commit({ repo, tag: 'latest', changes });
+			logger.info('[WorkerManager] Snapshot committed with blanked job/secret env', {
+				imageName,
+				blankedKeys: changes.length,
+			});
+			return;
+		}
 	}
 
-	// inspect unavailable / empty env → degrade to the prior bare-commit behavior.
+	// inspect unavailable / empty env / nothing to blank → bare config-preserving commit.
 	await container.commit({ repo, tag: 'latest' });
 }
 
@@ -206,7 +206,7 @@ export async function commitWorkerSnapshot(
 	const imageName = buildWorkerSnapshotImageName(projectId, workItemId);
 	try {
 		const container = docker.getContainer(containerId);
-		await commitScrubbed(container, containerId, imageName.split(':')[0], imageName);
+		await commitScrubbed(container, imageName.split(':')[0], imageName);
 		const imageSize = await inspectImageSizeBestEffort(imageName);
 		registerSnapshot(projectId, workItemId, imageName, imageSize);
 		logger.info('[WorkerManager] Committed container to snapshot image:', {
