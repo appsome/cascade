@@ -300,6 +300,93 @@ describe('ProjectWorkerImage — Dockerfile source (spec 023)', () => {
 		expect(mockRebuild).toHaveBeenCalledWith({ projectId: 'p1' });
 	});
 
+	it('disables Rebuild (with a hint) while the textarea diverges from the saved Dockerfile', () => {
+		configure({
+			role: 'superadmin',
+			project: dockerfileProject({
+				workerImageStatus: 'verified',
+				workerImageDigest: 'local-img-1',
+			}),
+		});
+		render(createElement(ProjectWorkerImage, { projectId: 'p1' }));
+
+		// Unedited: Rebuild is enabled — it rebuilds the persisted Dockerfile.
+		expect((screen.getByRole('button', { name: 'Rebuild' }) as HTMLButtonElement).disabled).toBe(
+			false,
+		);
+
+		// Edit the textarea so the draft diverges from the saved content.
+		fireEvent.change(screen.getByLabelText('Dockerfile extra layers'), {
+			target: { value: `${DOCKERFILE}\nRUN echo more` },
+		});
+
+		// Rebuild is now disabled (it would ignore the unsaved edits) and a hint
+		// directs the operator to Set first.
+		expect((screen.getByRole('button', { name: 'Rebuild' }) as HTMLButtonElement).disabled).toBe(
+			true,
+		);
+		expect(screen.getByText(/click Set to save your edits first/i)).toBeTruthy();
+	});
+
+	it('re-enables Rebuild once the textarea matches the saved Dockerfile again', () => {
+		configure({
+			role: 'superadmin',
+			project: dockerfileProject({
+				workerImageStatus: 'verified',
+				workerImageDigest: 'local-img-1',
+			}),
+		});
+		render(createElement(ProjectWorkerImage, { projectId: 'p1' }));
+
+		const textarea = screen.getByLabelText('Dockerfile extra layers');
+		fireEvent.change(textarea, { target: { value: 'RUN echo diverged' } });
+		expect((screen.getByRole('button', { name: 'Rebuild' }) as HTMLButtonElement).disabled).toBe(
+			true,
+		);
+
+		// Typing the saved content back removes the divergence.
+		fireEvent.change(textarea, { target: { value: DOCKERFILE } });
+		expect((screen.getByRole('button', { name: 'Rebuild' }) as HTMLButtonElement).disabled).toBe(
+			false,
+		);
+		expect(screen.queryByText(/click Set to save your edits first/i)).toBeNull();
+	});
+
+	it('does not falsely claim the default is in use while a Dockerfile override is persisted', () => {
+		configure({
+			role: 'superadmin',
+			project: dockerfileProject({
+				workerImageStatus: 'verified',
+				workerImageDigest: 'local-img-1',
+			}),
+		});
+		render(createElement(ProjectWorkerImage, { projectId: 'p1' }));
+
+		// Manually pick "Global default" while the Dockerfile override is still saved.
+		fireEvent.change(screen.getByLabelText('Image source'), { target: { value: 'default' } });
+
+		// It must NOT claim the default is in use — the override still drives runs.
+		expect(screen.queryByText(/Using the global default worker image/i)).toBeNull();
+		expect(screen.getByText(/override is still configured/i)).toBeTruthy();
+
+		// The surfaced Clear action performs the real revert (clears the Dockerfile).
+		fireEvent.click(screen.getByRole('button', { name: 'Clear override' }));
+		expect(mockUpdate).toHaveBeenCalledWith({ id: 'p1', workerDockerfile: null });
+	});
+
+	it('clears a persisted reference override from the Global default view', () => {
+		configure({ role: 'superadmin', project: referenceProject() });
+		render(createElement(ProjectWorkerImage, { projectId: 'p1' }));
+
+		fireEvent.change(screen.getByLabelText('Image source'), { target: { value: 'default' } });
+
+		expect(screen.queryByText(/Using the global default worker image/i)).toBeNull();
+		expect(screen.getByText(/override is still configured/i)).toBeTruthy();
+
+		fireEvent.click(screen.getByRole('button', { name: 'Clear override' }));
+		expect(mockUpdate).toHaveBeenCalledWith({ id: 'p1', workerImage: null });
+	});
+
 	it('the control is hidden for a non-superadmin', () => {
 		configure({
 			role: 'admin',

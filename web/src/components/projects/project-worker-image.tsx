@@ -258,6 +258,12 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 	const buildStatus = project?.workerImageBuildStatus ?? null;
 	const globalDefault = defaultsQuery.data?.workerImage ?? '';
 	const dockerfileValue = dockerfileDraft ?? currentDockerfile ?? '';
+	// Rebuild rebuilds the *persisted* Dockerfile, so unedited-since-save is the
+	// precondition for it to do what the operator expects. When the textarea
+	// diverges from the saved content, disable Rebuild (and hint why) so unsaved
+	// edits aren't silently ignored — the operator must Set them first.
+	const hasUnsavedDockerfileEdits =
+		dockerfileDraft !== null && dockerfileDraft !== (currentDockerfile ?? '');
 
 	function handleSetReference() {
 		const trimmed = ref.trim();
@@ -349,13 +355,38 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 					</NativeSelect>
 				</div>
 
-				{/* Global default — no per-project override configured. */}
-				{selectedSource === 'default' && (
+				{/* Global default AND nothing persisted — the default is genuinely in use. */}
+				{selectedSource === 'default' && persistedSource === 'default' && (
 					<p data-source="default" className="text-xs text-muted-foreground">
 						Using the global default worker image{globalDefault ? `: ${globalDefault}` : ''}. Choose{' '}
 						<strong>Referenced image</strong> or <strong>Dockerfile</strong> to override it for this
 						project.
 					</p>
+				)}
+
+				{/* Global default selected but an override is STILL persisted: picking
+				    "Global default" in the selector clears nothing on its own, so the
+				    saved reference/Dockerfile keeps driving every run. Report the true
+				    state and surface the real revert (Clear) rather than falsely
+				    claiming the default is already in use. */}
+				{selectedSource === 'default' && persistedSource !== 'default' && (
+					<div data-source="default" className="space-y-2">
+						<p className="text-xs text-amber-600 dark:text-amber-500">
+							A {persistedSource === 'dockerfile' ? 'Dockerfile' : 'referenced image'} override is
+							still configured, so every run keeps using it. Clear it to revert to the global
+							default{globalDefault ? `: ${globalDefault}` : ''}.
+						</p>
+						<button
+							type="button"
+							onClick={
+								persistedSource === 'dockerfile' ? handleClearDockerfile : handleClearReference
+							}
+							disabled={updateMutation.isPending}
+							className="inline-flex h-9 items-center rounded-md border border-input px-4 text-sm hover:bg-accent disabled:opacity-50"
+						>
+							Clear override
+						</button>
+					</div>
 				)}
 
 				{/* Referenced image (spec 022 control, unchanged). */}
@@ -462,7 +493,12 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 									<button
 										type="button"
 										onClick={handleRebuild}
-										disabled={rebuildMutation.isPending}
+										disabled={rebuildMutation.isPending || hasUnsavedDockerfileEdits}
+										title={
+											hasUnsavedDockerfileEdits
+												? 'Rebuild uses the saved Dockerfile. Click Set to save your edits first.'
+												: undefined
+										}
 										className="inline-flex h-9 items-center rounded-md border border-input px-4 text-sm hover:bg-accent disabled:opacity-50"
 									>
 										{rebuildMutation.isPending ? 'Rebuilding…' : 'Rebuild'}
@@ -470,6 +506,14 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 								</>
 							)}
 						</div>
+
+						{/* Rebuild acts on the saved Dockerfile, so warn when unsaved edits
+						    in the textarea would be ignored until the operator clicks Set. */}
+						{currentDockerfile && hasUnsavedDockerfileEdits && (
+							<p className="text-xs text-amber-600 dark:text-amber-500">
+								Rebuild uses the saved Dockerfile — click Set to save your edits first.
+							</p>
+						)}
 					</div>
 				)}
 			</CardContent>
