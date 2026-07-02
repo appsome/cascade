@@ -157,6 +157,47 @@ function WorkerImageStatusBadge({
 }
 
 /**
+ * Amber notice shown when a persisted override from a *different* source than the
+ * one currently selected is still driving every run. It appears (a) on the
+ * **Global default** view whenever any override is persisted, and (b) on an
+ * override view (**Referenced image** / **Dockerfile**) when the *other* override
+ * source is the persisted one — because backend mutual exclusivity nulls the
+ * non-selected source's column, so the selected control looks empty even though
+ * the cross-source override is what actually launches. Without this, that empty
+ * control would falsely read "Unset — using the global default…". The button
+ * performs the genuine revert, routed to whichever source is persisted.
+ */
+function CrossSourceOverrideNotice({
+	persistedSource,
+	globalDefault,
+	onClear,
+	disabled,
+}: {
+	persistedSource: WorkerImageSource;
+	globalDefault: string;
+	onClear: () => void;
+	disabled: boolean;
+}) {
+	return (
+		<div data-source="cross-override" className="space-y-2">
+			<p className="text-xs text-amber-600 dark:text-amber-500">
+				A {persistedSource === 'dockerfile' ? 'Dockerfile' : 'referenced image'} override is still
+				configured, so every run keeps using it. Clear it to revert to the global default
+				{globalDefault ? `: ${globalDefault}` : ''}.
+			</p>
+			<button
+				type="button"
+				onClick={onClear}
+				disabled={disabled}
+				className="inline-flex h-9 items-center rounded-md border border-input px-4 text-sm hover:bg-accent disabled:opacity-50"
+			>
+				Clear override
+			</button>
+		</div>
+	);
+}
+
+/**
  * Worker Image settings card (spec 022 plan 4 + spec 023 plan 5). Lets a
  * superadmin choose the project's worker-image **source** and manage it:
  *
@@ -327,6 +368,12 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 		});
 	}
 
+	// The genuine revert for a persisted override, routed to whichever source is
+	// actually persisted. Shared by the Global-default view and by the two
+	// override views when a *cross-source* override is still active.
+	const clearOverride =
+		persistedSource === 'dockerfile' ? handleClearDockerfile : handleClearReference;
+
 	return (
 		<Card>
 			<CardHeader>
@@ -370,23 +417,12 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 				    state and surface the real revert (Clear) rather than falsely
 				    claiming the default is already in use. */}
 				{selectedSource === 'default' && persistedSource !== 'default' && (
-					<div data-source="default" className="space-y-2">
-						<p className="text-xs text-amber-600 dark:text-amber-500">
-							A {persistedSource === 'dockerfile' ? 'Dockerfile' : 'referenced image'} override is
-							still configured, so every run keeps using it. Clear it to revert to the global
-							default{globalDefault ? `: ${globalDefault}` : ''}.
-						</p>
-						<button
-							type="button"
-							onClick={
-								persistedSource === 'dockerfile' ? handleClearDockerfile : handleClearReference
-							}
-							disabled={updateMutation.isPending}
-							className="inline-flex h-9 items-center rounded-md border border-input px-4 text-sm hover:bg-accent disabled:opacity-50"
-						>
-							Clear override
-						</button>
-					</div>
+					<CrossSourceOverrideNotice
+						persistedSource={persistedSource}
+						globalDefault={globalDefault}
+						onClear={clearOverride}
+						disabled={updateMutation.isPending}
+					/>
 				)}
 
 				{/* Referenced image (spec 022 control, unchanged). */}
@@ -401,11 +437,28 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 							onChange={(e) => setRef(e.target.value)}
 							placeholder={globalDefault ? `${globalDefault} (default)` : 'registry/image:tag'}
 						/>
-						<p className="text-xs text-muted-foreground">
-							{currentImage
-								? `Configured: ${currentImage}`
-								: `Unset — using the global default${globalDefault ? `: ${globalDefault}` : ''}.`}
-						</p>
+						{currentImage && (
+							<p className="text-xs text-muted-foreground">Configured: {currentImage}</p>
+						)}
+						{/* Gate the "using the global default" copy on the persisted source
+						    actually being `default`. Selecting "Referenced image" while a
+						    Dockerfile override is persisted leaves this input empty
+						    (`currentImage` is null because backend mutual exclusivity nulls
+						    `workerImage`), so an unconditional "Unset — using the global
+						    default…" would misreport: the Dockerfile still drives every run. */}
+						{!currentImage && persistedSource === 'default' && (
+							<p className="text-xs text-muted-foreground">
+								Unset — using the global default{globalDefault ? `: ${globalDefault}` : ''}.
+							</p>
+						)}
+						{!currentImage && persistedSource === 'dockerfile' && (
+							<CrossSourceOverrideNotice
+								persistedSource={persistedSource}
+								globalDefault={globalDefault}
+								onClear={clearOverride}
+								disabled={updateMutation.isPending}
+							/>
+						)}
 
 						{currentImage && (
 							<WorkerImageStatusBadge
@@ -461,6 +514,20 @@ export function ProjectWorkerImage({ projectId }: { projectId: string }) {
 							the pinned <code>FROM</code> worker base, then builds and verifies the image on the
 							router. The built image stays local to the router that built it.
 						</p>
+
+						{/* Symmetric to the Referenced-image view: selecting "Dockerfile"
+						    while a referenced image is persisted leaves this textarea empty
+						    (`currentDockerfile` is null via backend mutual exclusivity), so
+						    surface the true state — the referenced image still drives runs —
+						    rather than silently implying nothing is configured. */}
+						{!currentDockerfile && persistedSource === 'reference' && (
+							<CrossSourceOverrideNotice
+								persistedSource={persistedSource}
+								globalDefault={globalDefault}
+								onClear={clearOverride}
+								disabled={updateMutation.isPending}
+							/>
+						)}
 
 						{currentDockerfile && (
 							<WorkerImageStatusBadge

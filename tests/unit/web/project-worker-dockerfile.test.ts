@@ -387,6 +387,47 @@ describe('ProjectWorkerImage — Dockerfile source (spec 023)', () => {
 		expect(mockUpdate).toHaveBeenCalledWith({ id: 'p1', workerImage: null });
 	});
 
+	it('does not falsely claim the default in the Referenced-image view while a Dockerfile override is persisted', () => {
+		configure({
+			role: 'superadmin',
+			project: dockerfileProject({
+				workerImageStatus: 'verified',
+				workerImageDigest: 'local-img-1',
+			}),
+		});
+		render(createElement(ProjectWorkerImage, { projectId: 'p1' }));
+
+		// Switch to "Referenced image" while the Dockerfile override is still saved.
+		// `workerImage` is null (backend mutual exclusivity), so the reference input
+		// is empty — but the persisted Dockerfile still drives every run.
+		fireEvent.change(screen.getByLabelText('Image source'), { target: { value: 'reference' } });
+
+		// The empty reference input must NOT report "Unset — using the global default".
+		expect(screen.queryByText(/Unset — using the global default/i)).toBeNull();
+		expect(screen.getByText(/override is still configured/i)).toBeTruthy();
+
+		// The surfaced Clear action performs the real revert (clears the Dockerfile).
+		fireEvent.click(screen.getByRole('button', { name: 'Clear override' }));
+		expect(mockUpdate).toHaveBeenCalledWith({ id: 'p1', workerDockerfile: null });
+	});
+
+	it('surfaces the active reference override in the Dockerfile view (no false empty state)', () => {
+		configure({ role: 'superadmin', project: referenceProject() });
+		render(createElement(ProjectWorkerImage, { projectId: 'p1' }));
+
+		// Switch to "Dockerfile" while a referenced image is still saved. The
+		// textarea is empty (backend mutual exclusivity nulls `workerDockerfile`),
+		// but the referenced image still drives every run.
+		fireEvent.change(screen.getByLabelText('Image source'), { target: { value: 'dockerfile' } });
+
+		expect(screen.getByLabelText('Dockerfile extra layers')).toBeTruthy();
+		expect(screen.getByText(/override is still configured/i)).toBeTruthy();
+
+		// The surfaced Clear action performs the real revert (clears the reference).
+		fireEvent.click(screen.getByRole('button', { name: 'Clear override' }));
+		expect(mockUpdate).toHaveBeenCalledWith({ id: 'p1', workerImage: null });
+	});
+
 	it('the control is hidden for a non-superadmin', () => {
 		configure({
 			role: 'admin',
