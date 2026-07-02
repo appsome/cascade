@@ -256,11 +256,15 @@ interface WorkerDockerfileColumns {
  *                                   enqueue a superseding build.
  *
  * `existing` is the project's current state (all-null for `create`, where there is
- * no prior project). `existing.workerImageStatus === 'verified'` is `priorVerified`
- * — when true the last-good launchable pin (`worker_image_digest`) is PRESERVED and
- * `worker_image_status` stays `verified` so the project keeps running on it while
- * the rebuild is in flight (the no-strand invariant `recordWorkerImageBuildResult`
- * relies on). When false there is nothing to preserve, so the digest is cleared.
+ * no prior project). `priorVerified` — an ALREADY dockerfile-sourced project
+ * (`existing.workerDockerfile != null`) whose `worker_image_status === 'verified'`
+ * — is the no-strand hinge: when true the last-good launchable pin
+ * (`worker_image_digest`) is PRESERVED and `worker_image_status` stays `verified`
+ * so the project keeps running on it while the rebuild is in flight (the invariant
+ * `recordWorkerImageBuildResult`'s `keepActive` path relies on). A verified
+ * *reference* project is deliberately EXCLUDED: its digest is a registry digest, so
+ * a reference/default → dockerfile switch is a first build (`workerImageStatus:
+ * 'building'`, digest cleared) rather than inheriting a foreign registry pin.
  */
 function processWorkerDockerfileChange(opts: {
 	touched: boolean;
@@ -314,10 +318,23 @@ function processWorkerDockerfileChange(opts: {
 
 	const content = opts.value;
 	const contentHash = computeContentHash(content);
-	const priorVerified = opts.existing.workerImageStatus === 'verified';
+	// `priorVerified` gates BOTH the idempotency no-op and the no-strand pin
+	// preservation below, so it must be true ONLY when the project was ALREADY
+	// dockerfile-sourced with a verified DOCKERFILE-BUILD pin. `worker_image_status`
+	// is also `verified` for a verified *reference* project, whose
+	// `worker_image_digest` is a REGISTRY digest — preserving it here would relabel
+	// that registry digest as a local-only Dockerfile image (`deriveWorkerImageSource`
+	// flips to `dockerfile`, `resolveEffectiveBaseImage` returns it with
+	// `localOnly: true`), silently running the old reference image or failing closed
+	// with a misleading local-only terminal error. A reference/default → dockerfile
+	// switch is therefore a FIRST build: the digest is cleared and the launchable
+	// status is `building`, exactly like default → dockerfile. Symmetric to the
+	// clear path's `wasDockerfileSourced` guard.
+	const priorVerified =
+		opts.existing.workerDockerfile != null && opts.existing.workerImageStatus === 'verified';
 
-	// Idempotency: a byte-identical re-save on an already-verified project keeps
-	// the verified image and does NOT enqueue a redundant build.
+	// Idempotency: a byte-identical re-save on an already-verified dockerfile-sourced
+	// project keeps the verified image and does NOT enqueue a redundant build.
 	if (contentHash === opts.existing.workerImageBuildHash && priorVerified) {
 		return null;
 	}

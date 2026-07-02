@@ -221,6 +221,38 @@ describe('projectsRouter — worker Dockerfile (spec 023)', () => {
 				buildHash: DOCKERFILE_HASH,
 			});
 		});
+
+		it('treats a verified reference project switching to a Dockerfile as a FIRST build (clears the registry pin, does not preserve it)', async () => {
+			// A verified *reference* project also has workerImageStatus === 'verified',
+			// but its workerImageDigest is a REGISTRY digest — it must NOT be relabeled
+			// as a local-only Dockerfile pin. Switching to a Dockerfile is a first build.
+			mockDbWhere.mockResolvedValue(
+				ownershipRow({
+					workerImage: 'ghcr.io/acme/cascade-worker:pinned',
+					workerImageStatus: 'verified',
+					workerDockerfile: null,
+					workerImageBuildHash: null,
+				}),
+			);
+
+			await superAdminCaller().update({ id: 'p1', workerDockerfile: DOCKERFILE });
+
+			// Identical shape to the default-sourced first-build path: launchable status
+			// is `building` and the (foreign registry) digest is explicitly cleared.
+			expect(mockUpdateProject).toHaveBeenCalledWith('p1', 'org-1', {
+				workerDockerfile: DOCKERFILE,
+				workerImageBuildHash: DOCKERFILE_HASH,
+				workerImageBuildStatus: 'building',
+				workerImage: null,
+				workerImageError: null,
+				workerImageStatus: 'building',
+				workerImageDigest: null,
+			});
+			expect(mockEnqueueBuild).toHaveBeenCalledWith({
+				projectId: 'p1',
+				buildHash: DOCKERFILE_HASH,
+			});
+		});
 	});
 
 	describe('update — mutual exclusivity (reference clears dockerfile)', () => {
