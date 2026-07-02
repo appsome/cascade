@@ -16,6 +16,8 @@ import {
 	getProjectFull,
 	listAllProjects,
 	listProjectsFull,
+	readWorkerImageBuildInputs,
+	recordWorkerImageBuildResult,
 	recordWorkerImageValidationResult,
 	updateProject,
 } from '../../../src/db/repositories/projectsRepository.js';
@@ -876,6 +878,129 @@ describe('projectsRepository (integration)', () => {
 			expect(row?.workerImage).toBe('ghcr.io/acme/cascade-worker:v2');
 			expect(row?.workerImageStatus).toBe('pending');
 			expect(row?.workerImageDigest).toBeNull();
+		});
+	});
+
+	// =========================================================================
+	// Per-project worker Dockerfile build engine (spec 023 plan 3/5)
+	// =========================================================================
+
+	describe('readWorkerImageBuildInputs', () => {
+		it('returns the dockerfile / build-hash / last-good pin snapshot', async () => {
+			await updateProject('test-project', 'test-org', {
+				workerDockerfile: 'RUN apt-get install -y jq',
+				workerImageBuildHash: 'content-hash-1',
+				workerImageStatus: 'verified',
+				workerImageDigest: 'sha256:last-good',
+			});
+
+			const inputs = await readWorkerImageBuildInputs('test-project');
+			expect(inputs).toEqual({
+				dockerfile: 'RUN apt-get install -y jq',
+				buildHash: 'content-hash-1',
+				workerImageStatus: 'verified',
+				workerImageDigest: 'sha256:last-good',
+			});
+		});
+
+		it('returns null for a non-existent project', async () => {
+			expect(await readWorkerImageBuildInputs('nope')).toBeNull();
+		});
+	});
+
+	describe('recordWorkerImageBuildResult', () => {
+		const BUILD_HASH = 'content-hash-1';
+
+		beforeEach(async () => {
+			// A first build in flight: worker_image_status='building', dockerfile set,
+			// content-hash pinned as the guard value.
+			await updateProject('test-project', 'test-org', {
+				workerImage: null,
+				workerDockerfile: 'RUN true',
+				workerImageBuildHash: BUILD_HASH,
+				workerImageStatus: 'building',
+				workerImageBuildStatus: 'building',
+				workerImageDigest: null,
+				workerImageError: null,
+			});
+		});
+
+		it('pins the local image ID and marks verified when the build hash still matches', async () => {
+			const wrote = await recordWorkerImageBuildResult('test-project', BUILD_HASH, {
+				status: 'verified',
+				digest: 'sha256:built-local-id',
+				error: null,
+			});
+
+			expect(wrote).toBe(true);
+			const row = await getProjectFull('test-project', 'test-org');
+			expect(row?.workerImageStatus).toBe('verified');
+			expect(row?.workerImageDigest).toBe('sha256:built-local-id');
+			expect(row?.workerImageError).toBeNull();
+			// The build ATTEMPT is complete → build status resets to idle (null).
+			expect(row?.workerImageBuildStatus).toBeNull();
+		});
+
+		it('drops a stale result via the build-hash guard when the desired content changed', async () => {
+			// Operator changed the Dockerfile while the build ran → new content-hash.
+			await updateProject('test-project', 'test-org', {
+				workerImageBuildHash: 'content-hash-2',
+			});
+
+			const wrote = await recordWorkerImageBuildResult('test-project', BUILD_HASH, {
+				status: 'verified',
+				digest: 'sha256:stale',
+				error: null,
+			});
+
+			expect(wrote).toBe(false);
+			const row = await getProjectFull('test-project', 'test-org');
+			// The newer content's building state is untouched by the stale result.
+			expect(row?.workerImageBuildHash).toBe('content-hash-2');
+			expect(row?.workerImageStatus).toBe('building');
+			expect(row?.workerImageDigest).toBeNull();
+		});
+
+		it('first-build failure (no prior verified image) sets worker_image_status=failed', async () => {
+			const wrote = await recordWorkerImageBuildResult('test-project', BUILD_HASH, {
+				status: 'failed',
+				error: 'build failed: layer 2 non-zero exit',
+				keepActive: false,
+			});
+
+			expect(wrote).toBe(true);
+			const row = await getProjectFull('test-project', 'test-org');
+			expect(row?.workerImageStatus).toBe('failed');
+			expect(row?.workerImageBuildStatus).toBe('failed');
+			expect(row?.workerImageError).toBe('build failed: layer 2 non-zero exit');
+			expect(row?.workerImageDigest).toBeNull();
+		});
+
+		it('keep-active: a failed rebuild preserves the last-good verified pin (no strand)', async () => {
+			// A rebuild is in flight while a prior verified image is still serving:
+			// worker_image_status stays 'verified' with its pin; only the build
+			// ATTEMPT status is 'building'.
+			await updateProject('test-project', 'test-org', {
+				workerImageStatus: 'verified',
+				workerImageDigest: 'sha256:last-good',
+				workerImageBuildStatus: 'building',
+				workerImageError: null,
+			});
+
+			const wrote = await recordWorkerImageBuildResult('test-project', BUILD_HASH, {
+				status: 'failed',
+				error: 'build failed: apt 404',
+				keepActive: true,
+			});
+
+			expect(wrote).toBe(true);
+			const row = await getProjectFull('test-project', 'test-org');
+			// The project keeps running on the last-good pin.
+			expect(row?.workerImageStatus).toBe('verified');
+			expect(row?.workerImageDigest).toBe('sha256:last-good');
+			// Only the failed rebuild attempt + reason are recorded.
+			expect(row?.workerImageBuildStatus).toBe('failed');
+			expect(row?.workerImageError).toBe('build failed: apt 404');
 		});
 	});
 });
