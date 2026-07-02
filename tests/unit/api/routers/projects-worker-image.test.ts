@@ -46,6 +46,7 @@ vi.mock('../../../../src/sentry.js', () => ({ captureException: vi.fn() }));
 
 vi.mock('../../../../src/queue/client.js', () => ({
 	enqueueWorkerImageValidationJob: mockEnqueue,
+	enqueueWorkerImageBuildJob: vi.fn(),
 }));
 
 vi.mock('../../../../src/router/config.js', () => ({
@@ -137,6 +138,11 @@ describe('projectsRouter — worker image (spec 022)', () => {
 				workerImageStatus: 'pending',
 				workerImageDigest: null,
 				workerImageError: null,
+				// Spec 023 mutual exclusivity (reference → dockerfile direction): setting
+				// a reference clears any Dockerfile source + its build columns.
+				workerDockerfile: null,
+				workerImageBuildHash: null,
+				workerImageBuildStatus: null,
 			});
 			expect(mockEnqueue).toHaveBeenCalledWith({ projectId: 'p1', ref: VALID_REF });
 		});

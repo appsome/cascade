@@ -7,6 +7,7 @@ import { OPENCODE_SETTING_DEFAULTS } from '../../backends/opencode/settings.js';
 import { EngineSettingsSchema } from '../../config/engineSettings.js';
 import { getOrgCredential } from '../../config/provider.js';
 import { PROJECT_DEFAULTS } from '../../config/schema.js';
+import { validateWorkerDockerfileContent } from '../../config/workerDockerfileContent.js';
 import { isValidImageReference } from '../../config/workerImageRef.js';
 import { getDb } from '../../db/client.js';
 import {
@@ -29,25 +30,52 @@ import {
 } from '../../db/repositories/settingsRepository.js';
 import { projects } from '../../db/schema/index.js';
 import { fetchOpenRouterModels } from '../../openrouter/client.js';
-import { enqueueWorkerImageValidationJob } from '../../queue/client.js';
+import { enqueueWorkerImageBuildJob, enqueueWorkerImageValidationJob } from '../../queue/client.js';
 import { routerConfig } from '../../router/config.js';
+import { computeContentHash } from '../../router/worker-dockerfile-compose.js';
 import { captureException } from '../../sentry.js';
 import { logger } from '../../utils/logging.js';
 import { protectedProcedure, publicProcedure, router, superAdminProcedure } from '../trpc.js';
 
+/**
+ * The current worker-image/dockerfile state read alongside the ownership check.
+ * `workerImage` drives the image audit "from"; the three dockerfile columns feed
+ * the set-Dockerfile mutual-exclusivity + idempotency logic (spec 023) and the
+ * `rebuildWorkerImage` source guard.
+ */
+interface OwnedProjectWorkerState {
+	orgId: string;
+	workerImage: string | null;
+	workerDockerfile: string | null;
+	workerImageBuildHash: string | null;
+	workerImageStatus: string | null;
+}
+
 async function verifyProjectOwnership(
 	projectId: string,
 	orgId: string,
-): Promise<{ orgId: string; workerImage: string | null }> {
+): Promise<OwnedProjectWorkerState> {
 	const db = getDb();
 	const [project] = await db
-		.select({ orgId: projects.orgId, workerImage: projects.workerImage })
+		.select({
+			orgId: projects.orgId,
+			workerImage: projects.workerImage,
+			workerDockerfile: projects.workerDockerfile,
+			workerImageBuildHash: projects.workerImageBuildHash,
+			workerImageStatus: projects.workerImageStatus,
+		})
 		.from(projects)
 		.where(eq(projects.id, projectId));
 	if (!project || project.orgId !== orgId) {
 		throw new TRPCError({ code: 'NOT_FOUND' });
 	}
-	return { orgId: project.orgId, workerImage: project.workerImage ?? null };
+	return {
+		orgId: project.orgId,
+		workerImage: project.workerImage ?? null,
+		workerDockerfile: project.workerDockerfile ?? null,
+		workerImageBuildHash: project.workerImageBuildHash ?? null,
+		workerImageStatus: project.workerImageStatus ?? null,
+	};
 }
 
 /**
@@ -61,6 +89,13 @@ interface WorkerImageColumns {
 	workerImageStatus: 'pending' | null;
 	workerImageDigest: null;
 	workerImageError: null;
+	// Spec 023 mutual exclusivity (the reference → dockerfile direction): setting a
+	// non-null referenced image clears any Dockerfile source + its build columns so
+	// a project always has exactly one effective image source. Omitted (undefined)
+	// on the clear path, which only reverts the referenced-image columns.
+	workerDockerfile?: null;
+	workerImageBuildHash?: null;
+	workerImageBuildStatus?: null;
 }
 
 /**
@@ -115,6 +150,12 @@ function processWorkerImageChange(opts: {
 			workerImageStatus: 'pending',
 			workerImageDigest: null,
 			workerImageError: null,
+			// Mutual exclusivity (spec 023): a referenced image supersedes any
+			// Dockerfile source. Clear the content + its build columns so the derived
+			// source flips to `reference` and no stale build state lingers.
+			workerDockerfile: null,
+			workerImageBuildHash: null,
+			workerImageBuildStatus: null,
 		},
 		enqueueRef: ref,
 	};
@@ -147,6 +188,159 @@ async function finalizeWorkerImageChange(opts: {
 		await enqueueWorkerImageValidationJob({
 			projectId: opts.projectId,
 			ref: opts.change.enqueueRef,
+		});
+	}
+}
+
+/**
+ * Worker-Dockerfile column writes computed from a set/clear request (spec 023).
+ * A superset of {@link WorkerImageColumns}: setting a Dockerfile is mutually
+ * exclusive with a referenced image, so the set path also clears `workerImage` +
+ * its digest, and manages both the build-attempt status (`workerImageBuildStatus`)
+ * and the launchable-image status (`workerImageStatus`) independently.
+ */
+interface WorkerDockerfileColumns {
+	workerDockerfile: string | null;
+	workerImageBuildHash: string | null;
+	workerImageBuildStatus: 'building' | null;
+	// Mutual exclusivity + launchable-pin management (set/clear path only).
+	workerImage?: null;
+	workerImageDigest?: null;
+	workerImageStatus?: 'building' | 'verified' | null;
+	workerImageError?: null;
+}
+
+/**
+ * Validate and translate a worker-Dockerfile set/clear request into DB column
+ * writes (spec 023 plan 4). Mirrors {@link processWorkerImageChange}; the set
+ * surface has NO Docker access so it computes only the Docker-free content-hash
+ * (`computeContentHash`) — the router (plan 3) resolves the base digest and does
+ * the real build. Superadmin-gated; invalid content is rejected synchronously so
+ * nothing is persisted. Returns `null` when nothing should change (field not
+ * touched, or a byte-identical re-save on an already-verified project).
+ *
+ *   - not touched                 → `null`
+ *   - non-superadmin actor        → throws `FORBIDDEN`
+ *   - clear (`null`)              → drop the content + build columns (reverting a
+ *                                   dockerfile-sourced project's launchable pin);
+ *                                   no enqueue
+ *   - set (`string`)              → content-checked; `BAD_REQUEST` on invalid.
+ *                                   Idempotent no-op (`null`) when byte-identical
+ *                                   on a verified project; otherwise `building` +
+ *                                   enqueue a superseding build.
+ *
+ * `existing` is the project's current state (all-null for `create`, where there is
+ * no prior project). `existing.workerImageStatus === 'verified'` is `priorVerified`
+ * — when true the last-good launchable pin (`worker_image_digest`) is PRESERVED and
+ * `worker_image_status` stays `verified` so the project keeps running on it while
+ * the rebuild is in flight (the no-strand invariant `recordWorkerImageBuildResult`
+ * relies on). When false there is nothing to preserve, so the digest is cleared.
+ */
+function processWorkerDockerfileChange(opts: {
+	touched: boolean;
+	value: string | null;
+	actorRole: 'member' | 'admin' | 'superadmin';
+	existing: {
+		workerDockerfile: string | null;
+		workerImageBuildHash: string | null;
+		workerImageStatus: string | null;
+	};
+}): {
+	columns: WorkerDockerfileColumns;
+	enqueueBuildHash: string | null;
+	auditTo: string | null;
+} | null {
+	if (!opts.touched) return null;
+
+	if (opts.actorRole !== 'superadmin') {
+		throw new TRPCError({
+			code: 'FORBIDDEN',
+			message: 'Superadmin access required to change the worker Dockerfile',
+		});
+	}
+
+	if (opts.value === null) {
+		const wasDockerfileSourced = opts.existing.workerDockerfile != null;
+		return {
+			columns: {
+				workerDockerfile: null,
+				workerImageBuildHash: null,
+				workerImageBuildStatus: null,
+				// Only a dockerfile-sourced project's launchable pin lives in these
+				// columns; reset them to revert to the global default. A
+				// reference-sourced project keeps its own `worker_image_*` state.
+				...(wasDockerfileSourced
+					? { workerImageStatus: null, workerImageDigest: null, workerImageError: null }
+					: {}),
+			},
+			enqueueBuildHash: null,
+			auditTo: null,
+		};
+	}
+
+	const validation = validateWorkerDockerfileContent(opts.value);
+	if (!validation.valid) {
+		throw new TRPCError({
+			code: 'BAD_REQUEST',
+			message: `Invalid worker Dockerfile content: ${validation.error}`,
+		});
+	}
+
+	const content = opts.value;
+	const contentHash = computeContentHash(content);
+	const priorVerified = opts.existing.workerImageStatus === 'verified';
+
+	// Idempotency: a byte-identical re-save on an already-verified project keeps
+	// the verified image and does NOT enqueue a redundant build.
+	if (contentHash === opts.existing.workerImageBuildHash && priorVerified) {
+		return null;
+	}
+
+	return {
+		columns: {
+			workerDockerfile: content,
+			workerImageBuildHash: contentHash,
+			workerImageBuildStatus: 'building',
+			// Mutual exclusivity: clear the referenced image so the derived source
+			// flips to `dockerfile`.
+			workerImage: null,
+			workerImageError: null,
+			// Keep the project runnable on its last-good verified pin during the
+			// rebuild when one exists (no-strand); otherwise there is no pin, so mark
+			// the launchable status `building` and clear the (stale) digest.
+			workerImageStatus: priorVerified ? 'verified' : 'building',
+			...(priorVerified ? {} : { workerImageDigest: null }),
+		},
+		enqueueBuildHash: contentHash,
+		auditTo: contentHash,
+	};
+}
+
+/**
+ * Side-effects after a worker-Dockerfile change is persisted: emit the
+ * grep-stable audit line then enqueue the eager router-side BUILD job (set only).
+ * Mirrors {@link finalizeWorkerImageChange}; the audit precedes the enqueue for
+ * the same reason (a persisted change must be audited even if Redis is down).
+ * The audited `from`/`to` are content-hashes, not the (potentially large)
+ * Dockerfile bodies.
+ */
+async function finalizeWorkerDockerfileChange(opts: {
+	change: { enqueueBuildHash: string | null; auditTo: string | null };
+	actorId: string;
+	projectId: string;
+	from: string | null;
+}): Promise<void> {
+	logger.info('[audit] project worker dockerfile changed', {
+		event: 'project_worker_dockerfile_changed',
+		actorId: opts.actorId,
+		projectId: opts.projectId,
+		from: opts.from,
+		to: opts.change.auditTo,
+	});
+	if (opts.change.enqueueBuildHash) {
+		await enqueueWorkerImageBuildJob({
+			projectId: opts.projectId,
+			buildHash: opts.change.enqueueBuildHash,
 		});
 	}
 }
@@ -276,6 +470,10 @@ export const projectsRouter = router({
 				// ref is rejected synchronously. `null` is accepted as an explicit
 				// "use the global default".
 				workerImage: z.string().nullish(),
+				// Per-project worker Dockerfile content (spec 023). Superadmin-only;
+				// invalid content → `BAD_REQUEST` (nothing persisted). Setting it clears
+				// any referenced image (mutual exclusivity) and enqueues a build.
+				workerDockerfile: z.string().nullish(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
@@ -284,18 +482,36 @@ export const projectsRouter = router({
 				value: input.workerImage ?? null,
 				actorRole: ctx.user.role,
 			});
-			const { workerImage: _workerImage, ...rest } = input;
+			// A create has no prior project, so the existing worker state is empty:
+			// never idempotent, never `priorVerified`, never dockerfile-sourced.
+			const workerDockerfileChange = processWorkerDockerfileChange({
+				touched: input.workerDockerfile !== undefined,
+				value: input.workerDockerfile ?? null,
+				actorRole: ctx.user.role,
+				existing: { workerDockerfile: null, workerImageBuildHash: null, workerImageStatus: null },
+			});
+			const { workerImage: _workerImage, workerDockerfile: _workerDockerfile, ...rest } = input;
 
 			const created = await createProject(ctx.effectiveOrgId, {
 				...rest,
 				...(input.agentEngine !== undefined ? { agentEngine: input.agentEngine } : {}),
 				...(input.engineSettings !== undefined ? { engineSettings: input.engineSettings } : {}),
 				...(workerImageChange ? workerImageChange.columns : {}),
+				...(workerDockerfileChange ? workerDockerfileChange.columns : {}),
 			});
 
 			if (workerImageChange) {
 				await finalizeWorkerImageChange({
 					change: workerImageChange,
+					actorId: ctx.user.id,
+					projectId: input.id,
+					from: null,
+				});
+			}
+
+			if (workerDockerfileChange) {
+				await finalizeWorkerDockerfileChange({
+					change: workerDockerfileChange,
 					actorId: ctx.user.id,
 					projectId: input.id,
 					from: null,
@@ -332,25 +548,46 @@ export const projectsRouter = router({
 				// ref → `BAD_REQUEST` (nothing persisted). `null` clears it back to
 				// the global default. Set → stored `pending` + validation enqueued.
 				workerImage: z.string().nullish(),
+				// Per-project worker Dockerfile content (spec 023). Superadmin-only;
+				// invalid content → `BAD_REQUEST` (nothing persisted). `null` clears it
+				// (reverting a dockerfile-sourced project to the default). Set → stored
+				// `building` + content-hash + build enqueued; clears any referenced image.
+				workerDockerfile: z.string().nullish(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
 			const owned = await verifyProjectOwnership(input.id, ctx.effectiveOrgId);
 
-			// Validate + authorize the worker-image change BEFORE persisting so a
+			// Validate + authorize both worker-source changes BEFORE persisting so a
 			// FORBIDDEN/BAD_REQUEST leaves the project untouched.
 			const workerImageChange = processWorkerImageChange({
 				touched: input.workerImage !== undefined,
 				value: input.workerImage ?? null,
 				actorRole: ctx.user.role,
 			});
+			const workerDockerfileChange = processWorkerDockerfileChange({
+				touched: input.workerDockerfile !== undefined,
+				value: input.workerDockerfile ?? null,
+				actorRole: ctx.user.role,
+				existing: {
+					workerDockerfile: owned.workerDockerfile,
+					workerImageBuildHash: owned.workerImageBuildHash,
+					workerImageStatus: owned.workerImageStatus,
+				},
+			});
 
-			const { id, workerImage: _workerImage, ...updates } = input;
+			const {
+				id,
+				workerImage: _workerImage,
+				workerDockerfile: _workerDockerfile,
+				...updates
+			} = input;
 			await updateProject(id, ctx.effectiveOrgId, {
 				...updates,
 				...(input.agentEngine !== undefined ? { agentEngine: input.agentEngine } : {}),
 				...(input.engineSettings !== undefined ? { engineSettings: input.engineSettings } : {}),
 				...(workerImageChange ? workerImageChange.columns : {}),
+				...(workerDockerfileChange ? workerDockerfileChange.columns : {}),
 			});
 
 			if (workerImageChange) {
@@ -361,6 +598,60 @@ export const projectsRouter = router({
 					from: owned.workerImage,
 				});
 			}
+
+			if (workerDockerfileChange) {
+				await finalizeWorkerDockerfileChange({
+					change: workerDockerfileChange,
+					actorId: ctx.user.id,
+					projectId: id,
+					// Audit the transition between content-hashes (prior → new).
+					from: owned.workerImageBuildHash,
+				});
+			}
+		}),
+
+	/**
+	 * Explicit worker-image rebuild for a Dockerfile-sourced project (spec 023
+	 * plan 4). Superadmin-only. Re-enqueues a build even when the content is
+	 * unchanged — the engine recomputes the full hash against the CURRENT base, so
+	 * a refreshed base image actually rebuilds. `worker_image_build_status` flips
+	 * to `building` while the launchable pin (`worker_image_status`/digest) is left
+	 * untouched, so the project keeps running on its last-good image during the
+	 * rebuild (no-strand).
+	 */
+	rebuildWorkerImage: superAdminProcedure
+		.input(z.object({ projectId: z.string() }))
+		.mutation(async ({ ctx, input }) => {
+			const owned = await verifyProjectOwnership(input.projectId, ctx.effectiveOrgId);
+
+			// Derived source must be `dockerfile` (worker_dockerfile set) — there is
+			// nothing to rebuild for a `reference`/`default` project.
+			if (owned.workerDockerfile == null) {
+				throw new TRPCError({
+					code: 'BAD_REQUEST',
+					message: 'Rebuild is only available for a Dockerfile-sourced project',
+				});
+			}
+
+			// A dockerfile-sourced project always carries its content-hash; fall back
+			// to recomputing it from the stored content defensively so the enqueued
+			// build's supersede guard always has a non-null identity to match.
+			const buildHash = owned.workerImageBuildHash ?? computeContentHash(owned.workerDockerfile);
+
+			await updateProject(input.projectId, ctx.effectiveOrgId, {
+				workerImageBuildStatus: 'building',
+			});
+
+			logger.info('[audit] project worker dockerfile changed', {
+				event: 'project_worker_dockerfile_changed',
+				actorId: ctx.user.id,
+				projectId: input.projectId,
+				from: owned.workerImageBuildHash,
+				to: buildHash,
+				rebuild: true,
+			});
+
+			await enqueueWorkerImageBuildJob({ projectId: input.projectId, buildHash });
 		}),
 
 	delete: protectedProcedure
