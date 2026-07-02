@@ -51,6 +51,9 @@ export async function createProject(
 		workerImageDigest?: string | null;
 		workerImageStatus?: string | null;
 		workerImageError?: string | null;
+		workerDockerfile?: string | null;
+		workerImageBuildHash?: string | null;
+		workerImageBuildStatus?: string | null;
 	},
 ) {
 	const db = getDb();
@@ -80,6 +83,9 @@ export async function createProject(
 			workerImageDigest: rest.workerImageDigest,
 			workerImageStatus: rest.workerImageStatus,
 			workerImageError: rest.workerImageError,
+			workerDockerfile: rest.workerDockerfile,
+			workerImageBuildHash: rest.workerImageBuildHash,
+			workerImageBuildStatus: rest.workerImageBuildStatus,
 			...(engineSettings !== undefined
 				? { agentEngineSettings: normalizeEngineSettings(engineSettings) }
 				: {}),
@@ -113,6 +119,9 @@ export async function updateProject(
 		workerImageDigest?: string | null;
 		workerImageStatus?: string | null;
 		workerImageError?: string | null;
+		workerDockerfile?: string | null;
+		workerImageBuildHash?: string | null;
+		workerImageBuildStatus?: string | null;
 	},
 ) {
 	const db = getDb();

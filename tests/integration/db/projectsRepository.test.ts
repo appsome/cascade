@@ -691,6 +691,82 @@ describe('projectsRepository (integration)', () => {
 	});
 
 	// =========================================================================
+	// Per-project worker Dockerfile (spec 023 plan 1/5) — dormant columns
+	// =========================================================================
+
+	describe('worker-dockerfile columns', () => {
+		it('accepts NULL worker-dockerfile columns, reads back null', async () => {
+			const project = await createProject('test-org', {
+				id: 'no-worker-dockerfile',
+				name: 'No Worker Dockerfile',
+			});
+
+			expect(project.workerDockerfile).toBeNull();
+			expect(project.workerImageBuildHash).toBeNull();
+			expect(project.workerImageBuildStatus).toBeNull();
+
+			const retrieved = await getProjectFull('no-worker-dockerfile', 'test-org');
+			expect(retrieved?.workerDockerfile).toBeNull();
+			expect(retrieved?.workerImageBuildHash).toBeNull();
+			expect(retrieved?.workerImageBuildStatus).toBeNull();
+		});
+
+		it('round-trips all three worker-dockerfile fields on create', async () => {
+			await createProject('test-org', {
+				id: 'worker-dockerfile-project',
+				name: 'Worker Dockerfile Project',
+				workerDockerfile: 'RUN apt-get install -y jq\nENV FOO=bar',
+				workerImageBuildHash: 'sha256-desired-content',
+				workerImageBuildStatus: 'building',
+			});
+
+			const retrieved = await getProjectFull('worker-dockerfile-project', 'test-org');
+			expect(retrieved?.workerDockerfile).toBe('RUN apt-get install -y jq\nENV FOO=bar');
+			expect(retrieved?.workerImageBuildHash).toBe('sha256-desired-content');
+			expect(retrieved?.workerImageBuildStatus).toBe('building');
+		});
+
+		it('updateProject persists then can clear the fields back to null', async () => {
+			await updateProject('test-project', 'test-org', {
+				workerDockerfile: 'COPY ./extra /opt/extra',
+				workerImageBuildHash: 'hash-v1',
+				workerImageBuildStatus: 'failed',
+			});
+
+			let updated = await getProjectFull('test-project', 'test-org');
+			expect(updated?.workerDockerfile).toBe('COPY ./extra /opt/extra');
+			expect(updated?.workerImageBuildHash).toBe('hash-v1');
+			expect(updated?.workerImageBuildStatus).toBe('failed');
+
+			await updateProject('test-project', 'test-org', {
+				workerDockerfile: null,
+				workerImageBuildHash: null,
+				workerImageBuildStatus: null,
+			});
+
+			updated = await getProjectFull('test-project', 'test-org');
+			expect(updated?.workerDockerfile).toBeNull();
+			expect(updated?.workerImageBuildHash).toBeNull();
+			expect(updated?.workerImageBuildStatus).toBeNull();
+		});
+
+		it('worker_image_status accepts building alongside a dockerfile source', async () => {
+			// The spec-022 status column widens to admit `building` (spec 023). A
+			// dockerfile-sourced project leaves worker_image null while a build runs.
+			await updateProject('test-project', 'test-org', {
+				workerImage: null,
+				workerDockerfile: 'RUN true',
+				workerImageStatus: 'building',
+			});
+
+			const updated = await getProjectFull('test-project', 'test-org');
+			expect(updated?.workerImage).toBeNull();
+			expect(updated?.workerDockerfile).toBe('RUN true');
+			expect(updated?.workerImageStatus).toBe('building');
+		});
+	});
+
+	// =========================================================================
 	// Per-project setup.sh wall timeout (MNG-1701)
 	// =========================================================================
 
