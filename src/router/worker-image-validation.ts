@@ -90,7 +90,19 @@ async function defaultInspectImageDigest(ref: string): Promise<string | null> {
 	return resolveDigestFromRepoDigests(ref, info.RepoDigests ?? []);
 }
 
-async function defaultRunImageCheck(ref: string): Promise<{ exitCode: number; output: string }> {
+/**
+ * Run the cascade-compatible-worker-image runtime smoke-test inside a one-shot
+ * `docker run --rm` against `ref` and return its exit code + combined output.
+ *
+ * Exported so the router-side build engine (spec 023,
+ * `worker-image-build.ts`) runs the EXACT same smoke-test against a freshly
+ * built image — a single source of truth for "does this image satisfy the
+ * runtime contract" across the reference-image (spec 022) and dockerfile-build
+ * (spec 023) paths.
+ */
+export async function runWorkerImageSmokeTest(
+	ref: string,
+): Promise<{ exitCode: number; output: string }> {
 	const script = buildWorkerImageCheckScript();
 	const chunks: Buffer[] = [];
 	const sink = new Writable({
@@ -131,7 +143,7 @@ async function defaultRunImageCheck(ref: string): Promise<{ exitCode: number; ou
 const defaultDeps: WorkerImageValidationDeps = {
 	pullImage: (ref) => pullImageOnce(ref),
 	inspectImageDigest: defaultInspectImageDigest,
-	runImageCheck: defaultRunImageCheck,
+	runImageCheck: runWorkerImageSmokeTest,
 	recordResult: recordWorkerImageValidationResult,
 	captureException: captureExceptionDefault,
 };
