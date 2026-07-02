@@ -86,9 +86,16 @@ async function verifyProjectOwnership(
  */
 interface WorkerImageColumns {
 	workerImage: string | null;
-	workerImageStatus: 'pending' | null;
-	workerImageDigest: null;
-	workerImageError: null;
+	// The shared launchable-pin columns. Always written on SET (`pending` +
+	// cleared digest/error). On CLEAR they are nulled — reverting to the global
+	// default — ONLY when the project was reference-sourced; on a
+	// dockerfile-sourced project they are OMITTED (undefined) so
+	// `--clear-worker-image` cannot wipe the Dockerfile build's verified pin and
+	// strand the project. Symmetric to `processWorkerDockerfileChange`'s
+	// `wasDockerfileSourced` guard on these same columns.
+	workerImageStatus?: 'pending' | null;
+	workerImageDigest?: null;
+	workerImageError?: null;
 	// Spec 023 mutual exclusivity (the reference → dockerfile direction): setting a
 	// non-null referenced image clears any Dockerfile source + its build columns so
 	// a project always has exactly one effective image source. Omitted (undefined)
@@ -107,13 +114,28 @@ interface WorkerImageColumns {
  *
  *   - not touched            → `null`
  *   - non-superadmin actor   → throws `FORBIDDEN`
- *   - clear (`null`)         → all four columns null, no enqueue
+ *   - clear (`null`)         → `workerImage` null; the launchable-pin columns are
+ *                              nulled only when the project was reference-sourced
+ *                              (see below); no enqueue
  *   - set (`string`)         → grammar-checked; `pending` + enqueue, or `BAD_REQUEST`
+ *
+ * `existing.workerDockerfile` guards the clear path against stranding a
+ * dockerfile-sourced project (spec 023). The launchable-pin columns
+ * (`worker_image_status`/`digest`/`error`) are SHARED between the reference and
+ * dockerfile sources. A dockerfile-sourced project already has `workerImage`
+ * null (mutual exclusivity), so clearing the (already-null) reference must NOT
+ * touch those columns — they hold the Dockerfile build's verified pin. Wiping
+ * them would leave `deriveWorkerImageSource` at `dockerfile` with an unverified
+ * pin, so `resolveEffectiveBaseImage` throws `WorkerImageResolutionError` on
+ * every spawn with no rebuild enqueued (unlaunchable until a manual re-set /
+ * rebuild). This is the mirror of `processWorkerDockerfileChange`'s
+ * `wasDockerfileSourced` guard.
  */
 function processWorkerImageChange(opts: {
 	touched: boolean;
 	value: string | null;
 	actorRole: 'member' | 'admin' | 'superadmin';
+	existing: { workerDockerfile: string | null };
 }): { columns: WorkerImageColumns; enqueueRef: string | null } | null {
 	if (!opts.touched) return null;
 
@@ -125,12 +147,16 @@ function processWorkerImageChange(opts: {
 	}
 
 	if (opts.value === null) {
+		const wasDockerfileSourced = opts.existing.workerDockerfile != null;
 		return {
 			columns: {
 				workerImage: null,
-				workerImageStatus: null,
-				workerImageDigest: null,
-				workerImageError: null,
+				// No-strand guard: only a reference-sourced project's launchable pin
+				// lives in these columns, so revert them to the global default. A
+				// dockerfile-sourced project keeps its Dockerfile build's pin intact.
+				...(wasDockerfileSourced
+					? {}
+					: { workerImageStatus: null, workerImageDigest: null, workerImageError: null }),
 			},
 			enqueueRef: null,
 		};
@@ -345,6 +371,31 @@ async function finalizeWorkerDockerfileChange(opts: {
 	}
 }
 
+/**
+ * Reject a create/update that SETS both a referenced image and a Dockerfile in a
+ * single call (spec 023 mutual exclusivity, at the tRPC boundary). A project has
+ * exactly one effective image source, so accepting both is contradictory:
+ * column-spread lets the Dockerfile silently win while the referenced image
+ * still triggers a spurious validation enqueue + a misleading `to: <ref>` audit
+ * line for a value that was never persisted. The CLI already marks the flags
+ * mutually exclusive; this makes the direct tRPC contract match. Only a both-SET
+ * request collides — a `null` (explicit clear) on either side alongside setting
+ * the other source stays coherent and is allowed.
+ */
+function assertWorkerSourceExclusive(input: {
+	workerImage?: string | null;
+	workerDockerfile?: string | null;
+}): void {
+	if (input.workerImage != null && input.workerDockerfile != null) {
+		throw new TRPCError({
+			code: 'BAD_REQUEST',
+			message:
+				'workerImage and workerDockerfile are mutually exclusive; set only one ' +
+				'(a project has a single worker image source)',
+		});
+	}
+}
+
 function normalizeIntegrationConfig(input: {
 	category: 'pm' | 'scm' | 'alerting';
 	provider: string;
@@ -477,13 +528,16 @@ export const projectsRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// A project has a single image source: reject setting both at once.
+			assertWorkerSourceExclusive(input);
+			// A create has no prior project, so the existing worker state is empty:
+			// never dockerfile-sourced, never idempotent, never `priorVerified`.
 			const workerImageChange = processWorkerImageChange({
 				touched: input.workerImage !== undefined,
 				value: input.workerImage ?? null,
 				actorRole: ctx.user.role,
+				existing: { workerDockerfile: null },
 			});
-			// A create has no prior project, so the existing worker state is empty:
-			// never idempotent, never `priorVerified`, never dockerfile-sourced.
 			const workerDockerfileChange = processWorkerDockerfileChange({
 				touched: input.workerDockerfile !== undefined,
 				value: input.workerDockerfile ?? null,
@@ -558,12 +612,18 @@ export const projectsRouter = router({
 		.mutation(async ({ ctx, input }) => {
 			const owned = await verifyProjectOwnership(input.id, ctx.effectiveOrgId);
 
+			// A project has a single image source: reject setting both at once.
+			assertWorkerSourceExclusive(input);
+
 			// Validate + authorize both worker-source changes BEFORE persisting so a
 			// FORBIDDEN/BAD_REQUEST leaves the project untouched.
 			const workerImageChange = processWorkerImageChange({
 				touched: input.workerImage !== undefined,
 				value: input.workerImage ?? null,
 				actorRole: ctx.user.role,
+				// Guards the clear path from stranding a dockerfile-sourced project by
+				// wiping the shared launchable-pin columns (spec 023 no-strand).
+				existing: { workerDockerfile: owned.workerDockerfile },
 			});
 			const workerDockerfileChange = processWorkerDockerfileChange({
 				touched: input.workerDockerfile !== undefined,

@@ -64,7 +64,14 @@ vi.mock('../../../../src/db/client.js', () => ({
 }));
 
 vi.mock('../../../../src/db/schema/index.js', () => ({
-	projects: { id: 'id', orgId: 'org_id', workerImage: 'worker_image' },
+	projects: {
+		id: 'id',
+		orgId: 'org_id',
+		workerImage: 'worker_image',
+		workerDockerfile: 'worker_dockerfile',
+		workerImageBuildHash: 'worker_image_build_hash',
+		workerImageStatus: 'worker_image_status',
+	},
 }));
 
 import { projectsRouter } from '../../../../src/api/routers/projects.js';
@@ -173,6 +180,35 @@ describe('projectsRouter — worker image (spec 022)', () => {
 				workerImageDigest: null,
 				workerImageError: null,
 			});
+			expect(mockEnqueue).not.toHaveBeenCalled();
+		});
+
+		it('does NOT wipe the launchable pin when clearing worker-image on a dockerfile-sourced project (spec 023 no-strand)', async () => {
+			// A dockerfile-sourced *verified* project: `workerImage` is already null
+			// (mutual exclusivity) and the launchable pin (status/digest) belongs to
+			// the Dockerfile build. `--clear-worker-image` must leave those shared
+			// columns intact — otherwise `deriveWorkerImageSource` stays `dockerfile`
+			// with an unverified pin and `resolveEffectiveBaseImage` throws on every
+			// spawn with no rebuild enqueued (stranded).
+			mockDbWhere.mockResolvedValue([
+				{
+					orgId: 'org-1',
+					workerImage: null,
+					workerDockerfile: 'RUN echo hi',
+					workerImageBuildHash: 'abc123',
+					workerImageStatus: 'verified',
+				},
+			]);
+
+			await superAdminCaller().update({ id: 'p1', workerImage: null });
+
+			// Only `workerImage` is written; the launchable-pin columns are omitted so
+			// the Dockerfile build's verified pin survives.
+			expect(mockUpdateProject).toHaveBeenCalledWith('p1', 'org-1', { workerImage: null });
+			const columns = mockUpdateProject.mock.calls[0][2];
+			expect(columns).not.toHaveProperty('workerImageStatus');
+			expect(columns).not.toHaveProperty('workerImageDigest');
+			expect(columns).not.toHaveProperty('workerImageError');
 			expect(mockEnqueue).not.toHaveBeenCalled();
 		});
 	});

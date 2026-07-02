@@ -1,16 +1,6 @@
-import { readFileSync } from 'node:fs';
 import { Flags } from '@oclif/core';
 import { DashboardCommand } from '../_shared/base.js';
-
-/**
- * Read operator Dockerfile content from a file path, or from stdin when the path
- * is `-`. Follows the `readFileInput` precedent in
- * `src/gadgets/shared/cli/params.ts` so a multi-line block never has to be
- * shell-escaped.
- */
-function readDockerfileInput(pathOrDash: string): string {
-	return pathOrDash === '-' ? readFileSync(0, 'utf-8') : readFileSync(pathOrDash, 'utf-8');
-}
+import { readDockerfileInput } from '../_shared/file-input.js';
 
 export default class ProjectsCreate extends DashboardCommand {
 	static override description = 'Create a new project.';

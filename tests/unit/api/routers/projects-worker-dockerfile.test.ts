@@ -251,6 +251,24 @@ describe('projectsRouter — worker Dockerfile (spec 023)', () => {
 		});
 	});
 
+	describe('update — both sources set (mutual exclusivity at the tRPC boundary)', () => {
+		it('rejects setting workerImage + workerDockerfile in one update with BAD_REQUEST (nothing persisted)', async () => {
+			mockDbWhere.mockResolvedValue(ownershipRow());
+
+			await expectTRPCError(
+				superAdminCaller().update({
+					id: 'p1',
+					workerImage: VALID_REF,
+					workerDockerfile: DOCKERFILE,
+				}),
+				'BAD_REQUEST',
+			);
+			expect(mockUpdateProject).not.toHaveBeenCalled();
+			expect(mockEnqueueBuild).not.toHaveBeenCalled();
+			expect(mockEnqueueValidation).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('update — idempotency', () => {
 		it('does NOT enqueue or persist Dockerfile columns on a byte-identical re-save of a verified project', async () => {
 			mockDbWhere.mockResolvedValue(
@@ -418,6 +436,22 @@ describe('projectsRouter — worker Dockerfile (spec 023)', () => {
 				projectId: 'p2',
 				buildHash: DOCKERFILE_HASH,
 			});
+		});
+
+		it('rejects setting workerImage + workerDockerfile in one create with BAD_REQUEST (nothing persisted)', async () => {
+			await expectTRPCError(
+				superAdminCaller().create({
+					id: 'p2',
+					name: 'P2',
+					repo: 'owner/repo',
+					workerImage: VALID_REF,
+					workerDockerfile: DOCKERFILE,
+				}),
+				'BAD_REQUEST',
+			);
+			expect(mockCreateProject).not.toHaveBeenCalled();
+			expect(mockEnqueueBuild).not.toHaveBeenCalled();
+			expect(mockEnqueueValidation).not.toHaveBeenCalled();
 		});
 	});
 
