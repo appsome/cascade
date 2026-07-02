@@ -84,6 +84,16 @@ function repositoryOf(reference: string): string {
 	return lastColon > lastSlash ? noDigest.slice(0, lastColon) : noDigest;
 }
 
+// ── Un-mockable Docker-daemon glue (excluded from coverage) ─────────────────
+// `defaultInspectImageDigest` and `runWorkerImageSmokeTest` only execute against
+// a live Docker daemon (image inspect / docker.run), so unit tests drive the
+// handler through injected fakes and the runtime contract is covered by the
+// shared worker-image smoke-test (tests/docker/worker-runtime-tools). These
+// default-impl blocks carry line-level v8-ignore markers so they cannot
+// recurrently fail codecov/patch on future image/build PRs — see the
+// "Un-mockable Docker-daemon glue policy" note in codecov.yml. Deliberately
+// narrow: resolveDigestFromRepoDigests + the handler logic stay counted.
+/* v8 ignore start */
 async function defaultInspectImageDigest(ref: string): Promise<string | null> {
 	const image = docker.getImage(ref);
 	const info = (await image.inspect()) as { RepoDigests?: string[] };
@@ -139,6 +149,7 @@ export async function runWorkerImageSmokeTest(
 		if (timer) clearTimeout(timer);
 	}
 }
+/* v8 ignore stop */
 
 const defaultDeps: WorkerImageValidationDeps = {
 	pullImage: (ref) => pullImageOnce(ref),

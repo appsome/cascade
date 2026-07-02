@@ -165,6 +165,16 @@ export function createSingleFileTar(name: string, content: string): Buffer {
 	return Buffer.concat([header, paddedBody, trailer]);
 }
 
+// ── Un-mockable Docker-daemon glue (excluded from coverage) ─────────────────
+// The `defaultDeps` implementations below only execute against a live Docker
+// daemon (docker.buildImage / image inspect / pull), so unit tests drive the
+// handler through injected fakes instead. The runtime contract is covered by the
+// shared worker-image smoke-test (tests/docker/worker-runtime-tools). These
+// default-impl blocks carry line-level v8-ignore markers so they cannot
+// recurrently fail codecov/patch on future image/build PRs — see the
+// "Un-mockable Docker-daemon glue policy" note in codecov.yml. This is
+// deliberately narrow: handler logic + createSingleFileTar stay counted.
+/* v8 ignore start */
 /**
  * Default `resolveBaseDigest`: ensure the global worker image is present on the
  * host, then resolve its immutable registry digest. The composed FROM pins to
@@ -246,6 +256,7 @@ async function defaultInspectBuiltImage(tag: string): Promise<BuiltImageInfo | n
 		throw err;
 	}
 }
+/* v8 ignore stop */
 
 const defaultDeps: WorkerImageBuildDeps = {
 	readInputs: readWorkerImageBuildInputs,
