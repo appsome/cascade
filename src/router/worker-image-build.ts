@@ -165,6 +165,96 @@ export function createSingleFileTar(name: string, content: string): Buffer {
 	return Buffer.concat([header, paddedBody, trailer]);
 }
 
+/** The minimal `docker image inspect` shape needed to pin an immutable base ref. */
+export interface LocalImageInspect {
+	/** The immutable LOCAL image ID (`sha256:...`). */
+	Id?: string;
+	/** Registry digests (`repo@sha256:...`) — present only for registry-provenance images. */
+	RepoDigests?: string[];
+}
+
+/** Injectable Docker glue for {@link resolveBaseImageRef} (keeps the decision logic unit-testable). */
+export interface ResolveBaseImageRefDeps {
+	/** Best-effort registry pull for the freshest digest. May throw (401/auth, network, ENOTFOUND). */
+	pull: () => Promise<void>;
+	/** Inspect the local image; throws (image-not-found) when the base is genuinely absent. */
+	inspectLocal: () => Promise<LocalImageInspect>;
+}
+
+/**
+ * Resolve the immutable base reference to pin the composed `FROM` on — tolerating a
+ * registry-pull failure when the base image is already present on the host
+ * (dev-incident 2026-07-03, MNG-1731).
+ *
+ * The router's Docker daemon does not always carry STANDING registry credentials
+ * for on-demand pulls, yet the global base image is already present locally (the
+ * router runs every worker from it; it was pulled at deploy time and carries local
+ * `RepoDigests`). The immutable digest is obtainable from the local inspect without
+ * any registry call, so an unconditional pull must not be what blocks a build. This
+ * also unblocks self-hosted deployments whose base is present locally but not
+ * freshly pullable.
+ *
+ * Order:
+ *   1. Best-effort `pull()` for the freshest digest. A pull failure (401/auth,
+ *      network, ENOTFOUND) is tolerated when the base image is already local.
+ *   2. `inspectLocal()`. If the image is genuinely absent AND the pull failed,
+ *      throw a clear, greppable "cannot obtain base image" error (fail-closed — no
+ *      silent fallback to a wrong/moving image).
+ *   3. Primary path (unchanged): the immutable registry digest from `RepoDigests`.
+ *   4. Self-hosted / locally-built base with no `RepoDigests`: pin by the local
+ *      image ID (`inspect().Id`). The composed build uses `pull: false`, so a local
+ *      reference resolves without a registry call. Never fall back to the moving
+ *      tag — the pin must stay immutable.
+ */
+export async function resolveBaseImageRef(
+	ref: string,
+	deps: ResolveBaseImageRefDeps,
+): Promise<string> {
+	// 1. Best-effort registry pull for the freshest digest.
+	let pullError: unknown;
+	try {
+		await deps.pull();
+	} catch (err) {
+		pullError = err;
+	}
+
+	// 2. Inspect the (just-pulled or pre-existing) local image.
+	let info: LocalImageInspect;
+	try {
+		info = await deps.inspectLocal();
+	} catch (inspectErr) {
+		if (pullError !== undefined) {
+			// Neither pullable nor present locally → cannot obtain the base image.
+			throw new Error(
+				`cannot obtain base image ${ref}: registry pull failed (${errMessage(pullError)}) ` +
+					`and it is not present locally (${errMessage(inspectErr)})`,
+			);
+		}
+		// Pull reported success but the image is not inspectable — surface it as-is.
+		throw inspectErr;
+	}
+
+	if (pullError !== undefined) {
+		logger.warn(
+			'[worker-image-build] base-image registry pull failed; resolving from the local base image',
+			{ ref, error: errMessage(pullError) },
+		);
+	}
+
+	// 3. Primary path: the immutable registry digest (registry provenance). Byte-for-byte
+	//    identical to the previous behavior when the pull succeeds and RepoDigests exist.
+	const digest = resolveDigestFromRepoDigests(ref, info.RepoDigests ?? []);
+	if (digest) return digest;
+
+	// 4. Self-hosted / locally-built base (no RepoDigests): pin by the immutable
+	//    local image ID rather than failing.
+	if (info.Id) return info.Id;
+
+	throw new Error(
+		`cannot obtain base image ${ref}: the local image has neither RepoDigests nor an image ID to pin`,
+	);
+}
+
 // ── Un-mockable Docker-daemon glue (excluded from coverage) ─────────────────
 // The `defaultDeps` implementations below only execute against a live Docker
 // daemon (docker.buildImage / image inspect / pull), so unit tests drive the
@@ -176,22 +266,19 @@ export function createSingleFileTar(name: string, content: string): Buffer {
 // deliberately narrow: handler logic + createSingleFileTar stay counted.
 /* v8 ignore start */
 /**
- * Default `resolveBaseDigest`: ensure the global worker image is present on the
- * host, then resolve its immutable registry digest. The composed FROM pins to
- * this, and it is folded into the full-hash so a base bump forces a rebuild.
+ * Default `resolveBaseDigest`: wire the real Docker `pull`/`inspect` into the
+ * injectable {@link resolveBaseImageRef} decision helper. The pull is best-effort —
+ * when the router daemon has no standing registry auth (dev/self-hosted) but the
+ * base image is already present locally, the immutable ref is resolved from the
+ * local inspect without a registry call. The composed FROM pins to the returned
+ * ref, and it is folded into the full-hash so a base bump forces a rebuild.
  */
 async function defaultResolveBaseDigest(): Promise<string> {
 	const ref = routerConfig.workerImage;
-	await pullImageOnce(ref);
-	const image = docker.getImage(ref);
-	const info = (await image.inspect()) as { RepoDigests?: string[] };
-	const digest = resolveDigestFromRepoDigests(ref, info.RepoDigests ?? []);
-	if (!digest) {
-		throw new Error(
-			`could not resolve an immutable digest for the base image ${ref} (no RepoDigests after pull)`,
-		);
-	}
-	return digest;
+	return resolveBaseImageRef(ref, {
+		pull: () => pullImageOnce(ref),
+		inspectLocal: async () => (await docker.getImage(ref).inspect()) as LocalImageInspect,
+	});
 }
 
 /**
