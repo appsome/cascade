@@ -24,6 +24,8 @@ export interface TrelloIntegrationConfig {
 export interface JiraIntegrationConfig {
 	projectKey: string;
 	baseUrl: string;
+	/** Optional JIRA auth mode (non-secret config, mirrors `baseUrl`). See jiraConfigSchema. */
+	authType?: 'basic' | 'scoped';
 	statuses: Record<string, string>;
 	issueTypes?: Record<string, string>;
 	customFields?: { cost?: string };
@@ -139,6 +141,7 @@ export interface ProjectConfigRaw {
 	jira?: {
 		projectKey: string;
 		baseUrl: string;
+		authType?: 'basic' | 'scoped';
 		statuses: Record<string, string>;
 		issueTypes?: Record<string, string>;
 		customFields?: { cost?: string };
@@ -264,6 +267,11 @@ function buildJiraConfig(config: JiraIntegrationConfig): ProjectConfigRaw['jira'
 	return {
 		projectKey: config.projectKey,
 		baseUrl: config.baseUrl,
+		// Thread the optional auth mode through the DB-load path so
+		// ProjectConfig.jira.authType survives validateConfig (MNG-1736). Without
+		// this hand-pick, the field is dropped before jiraConfigSchema re-parses,
+		// so a persisted authType would always load back as `undefined`.
+		authType: config.authType,
 		statuses: config.statuses,
 		issueTypes: config.issueTypes,
 		customFields: config.customFields,
