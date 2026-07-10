@@ -1,6 +1,7 @@
 import type { EngineSettings } from '../../config/engineSettings.js';
 import { REVIEW_EVENT_POLICIES, type ReviewEventPolicy } from '../../config/reviewEventPolicy.js';
 import { UPDATE_CHANNELS, type UpdateChannel } from '../../config/updateChannel.js';
+import type { JiraAuthType } from '../../integrations/pm/jira/config-schema.js';
 
 /**
  * Config mapper — pure transformation functions for converting DB rows into
@@ -25,7 +26,7 @@ export interface JiraIntegrationConfig {
 	projectKey: string;
 	baseUrl: string;
 	/** Optional JIRA auth mode (non-secret config, mirrors `baseUrl`). See jiraConfigSchema. */
-	authType?: 'basic' | 'scoped';
+	authType?: JiraAuthType;
 	statuses: Record<string, string>;
 	issueTypes?: Record<string, string>;
 	customFields?: { cost?: string };
@@ -141,7 +142,7 @@ export interface ProjectConfigRaw {
 	jira?: {
 		projectKey: string;
 		baseUrl: string;
-		authType?: 'basic' | 'scoped';
+		authType?: JiraAuthType;
 		statuses: Record<string, string>;
 		issueTypes?: Record<string, string>;
 		customFields?: { cost?: string };

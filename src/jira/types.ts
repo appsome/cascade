@@ -1,3 +1,7 @@
+import type { JiraAuthType } from '../integrations/pm/jira/config-schema.js';
+
+export type { JiraAuthType };
+
 export interface JiraCredentials {
 	email: string;
 	apiToken: string;
@@ -11,5 +15,5 @@ export interface JiraCredentials {
 	 * a later story populates it — no call site sets it yet (`JiraIntegration.withCredentials`
 	 * still builds `{ email, apiToken, baseUrl }` only). Later stories consume this field.
 	 */
-	authType?: 'basic' | 'scoped';
+	authType?: JiraAuthType;
 }
