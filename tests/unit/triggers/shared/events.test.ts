@@ -27,6 +27,7 @@ describe('TRIGGER_EVENTS', () => {
 			'alerting:metric-alert',
 			'alerting:issue-lifecycle',
 			'internal:auto-chain',
+			'internal:external-webhook',
 		]);
 	});
 

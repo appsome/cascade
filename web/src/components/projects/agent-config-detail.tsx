@@ -21,8 +21,10 @@ import {
 } from '@/components/ui/select.js';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs.js';
 import { AGENT_LABELS, CATEGORY_LABELS } from '@/lib/trigger-agent-mapping.js';
+import { EXTERNAL_WEBHOOK_EVENT } from '../../../../src/triggers/shared/external-webhook.js';
 import type { AgentDetailViewProps, DefinitionAgentSectionProps } from './agent-config-types.js';
 import { AgentPromptOverrides } from './agent-prompt-overrides.js';
+import { ExternalWebhookTriggerConfig } from './external-webhook-trigger-config.js';
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: tabbed detail panel managing Engine/Prompts/Triggers tabs with per-tab state, mutations, and trigger category grouping
 function DefinitionAgentSection({
@@ -350,6 +352,15 @@ function DefinitionAgentSection({
 										onTriggerParamChange(agentType, event, params, currentTrigger?.enabled ?? true);
 									}}
 									idPrefix={`${agentType}-${category}`}
+									renderTriggerExtra={(trigger) =>
+										trigger.event === EXTERNAL_WEBHOOK_EVENT ? (
+											<ExternalWebhookTriggerConfig
+												projectId={projectId}
+												agentType={agentType}
+												enabled={trigger.enabled}
+											/>
+										) : null
+									}
 								/>
 							</div>
 						);

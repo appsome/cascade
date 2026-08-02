@@ -54,6 +54,13 @@ triggers:
     description: When splitting completes on a card with the auto label, immediately chain to backlog manager
     defaultEnabled: false
     contextPipeline: [pipelineSnapshot]
+  - event: internal:external-webhook
+    label: External Webhook
+    description: >-
+      Dispatch this agent from an external system via an authenticated POST to
+      the project's per-agent webhook URL. The request body reaches the agent
+      as trigger context.
+    defaultEnabled: false
 
 # Required context — runs for EVERY invocation regardless of trigger source.
 # Manual `cascade runs trigger --agent-type backlog-manager` would otherwise

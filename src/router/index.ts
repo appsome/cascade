@@ -31,6 +31,7 @@ import { LinearRouterAdapter } from './adapters/linear.js';
 import { SentryRouterAdapter } from './adapters/sentry.js';
 import { TrelloRouterAdapter } from './adapters/trello.js';
 import { startCancelListener, stopCancelListener } from './cancel-listener.js';
+import { createExternalWebhookHandler } from './external-webhook.js';
 import { ROUTER_INSTANCE_ID } from './instance-id.js';
 import { getQueueStats } from './queue.js';
 import { processRouterWebhook } from './webhook-processor.js';
@@ -202,6 +203,11 @@ app.post(
 		},
 	}),
 );
+
+// External webhook — dispatch an agent from any third-party system.
+// Bearer-authenticated against the EXTERNAL_WEBHOOK_PASSWORD_<AGENT> project
+// credential; fails closed when no password is configured. See src/router/external-webhook.ts.
+app.post('/external/webhook/:projectId/:agentType', createExternalWebhookHandler());
 
 // Linear webhook verification
 app.get('/linear/webhook', (c) => {

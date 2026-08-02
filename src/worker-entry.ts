@@ -170,6 +170,10 @@ export interface ManualRunJobData {
 	triggerCommentUrl?: string;
 	triggerCommentPath?: string;
 	triggerCommentAuthor?: string;
+	/** Trigger provenance (router external webhook endpoint). Defaults to 'manual'. */
+	triggerType?: 'manual' | 'external-webhook';
+	/** Canonical trigger event (e.g. 'internal:external-webhook'). */
+	triggerEvent?: string;
 	/** MNG-1695: id of the pre-created `queued` run row to activate on boot. */
 	runId?: string;
 }
@@ -228,6 +232,8 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
 				triggerCommentUrl: jobData.triggerCommentUrl,
 				triggerCommentPath: jobData.triggerCommentPath,
 				triggerCommentAuthor: jobData.triggerCommentAuthor,
+				triggerType: jobData.triggerType,
+				triggerEvent: jobData.triggerEvent,
 				// MNG-1695: activate the pre-created queued row instead of inserting a new one.
 				preCreatedRunId: jobData.runId,
 			},

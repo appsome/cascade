@@ -28,6 +28,13 @@ export interface ManualRunJob {
 	triggerCommentPath?: string;
 	triggerCommentAuthor?: string;
 	/**
+	 * Trigger provenance for non-dashboard callers of the manual-run path
+	 * (e.g. the router's external webhook endpoint). Defaults to 'manual'.
+	 */
+	triggerType?: 'manual' | 'external-webhook';
+	/** Canonical trigger event (e.g. 'internal:external-webhook') for observability. */
+	triggerEvent?: string;
+	/**
 	 * MNG-1695: id of the `status='queued'` run row pre-created at tRPC trigger
 	 * time. The worker activates it (queued → running) instead of inserting a new
 	 * row, and the dispatch compensator fails it (instead of inserting a stub) on

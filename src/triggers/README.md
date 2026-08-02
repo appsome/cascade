@@ -109,7 +109,7 @@ Use `TRIGGER_EVENTS` from `src/triggers/shared/events.ts` for every new trigger 
 | `PM` | `pm:status-changed`, `pm:label-added`, `pm:comment-mention` |
 | `SCM` | `scm:check-suite-success`, `scm:check-suite-failure`, `scm:pr-review-submitted`, `scm:review-requested`, `scm:pr-opened`, `scm:pr-comment-mention`, `scm:pr-merged`, `scm:pr-ready-to-merge`, `scm:pr-conflict-detected` |
 | `ALERTING` | `alerting:issue-alert`, `alerting:metric-alert` |
-| `INTERNAL` | `internal:auto-chain` |
+| `INTERNAL` | `internal:auto-chain`, `internal:external-webhook` |
 
 Do not introduce raw event-string literals in new handlers. If a handler checks `checkTriggerEnabled(..., event, ...)`, the same event must be emitted as `agentInput.triggerEvent`; `tests/unit/triggers/trigger-event-consistency.test.ts` enforces that invariant because mismatches make enabled triggers silently fall back to YAML defaults.
 

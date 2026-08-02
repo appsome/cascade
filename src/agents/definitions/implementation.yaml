@@ -58,6 +58,13 @@ triggers:
         options: [todo]
         defaultValue: todo
     contextPipeline: [directoryListing, contextFiles, workItem, prepopulateTodos]
+  - event: internal:external-webhook
+    label: External Webhook
+    description: >-
+      Dispatch this agent from an external system via an authenticated POST to
+      the project's per-agent webhook URL. The request body reaches the agent
+      as trigger context.
+    defaultEnabled: false
 
 strategies: {}
 

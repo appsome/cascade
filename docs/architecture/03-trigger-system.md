@@ -149,7 +149,7 @@ Triggers use category-prefixed events from `src/triggers/shared/events.ts`. `TRI
 - PM: `pm:status-changed`, `pm:label-added`, `pm:comment-mention`
 - SCM: `scm:check-suite-success`, `scm:check-suite-failure`, `scm:pr-review-submitted`, `scm:review-requested`, `scm:pr-opened`, `scm:pr-comment-mention`, `scm:pr-merged`, `scm:pr-ready-to-merge`, `scm:pr-conflict-detected`
 - Alerting: `alerting:issue-alert`, `alerting:metric-alert`, `alerting:issue-lifecycle`
-- Internal: `internal:auto-chain`
+- Internal: `internal:auto-chain`, `internal:external-webhook`
 
 New handlers should import `TRIGGER_EVENTS` instead of adding raw string literals. The static guard in `tests/unit/triggers/trigger-event-consistency.test.ts` fails when a handler gates on one event string and emits a different `agentInput.triggerEvent`.
 

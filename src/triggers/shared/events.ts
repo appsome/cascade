@@ -22,6 +22,7 @@ export const TRIGGER_EVENTS = {
 	},
 	INTERNAL: {
 		AUTO_CHAIN: 'internal:auto-chain',
+		EXTERNAL_WEBHOOK: 'internal:external-webhook',
 	},
 } as const;
 

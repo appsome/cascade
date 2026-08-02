@@ -77,6 +77,10 @@ export interface ManualTriggerInput {
 	triggerCommentUrl?: string;
 	triggerCommentPath?: string;
 	triggerCommentAuthor?: string;
+	/** Trigger provenance override (router external webhook endpoint). Defaults to 'manual'. */
+	triggerType?: 'manual' | 'external-webhook';
+	/** Canonical trigger event (see TRIGGER_EVENTS in shared/events.ts). */
+	triggerEvent?: string;
 	/**
 	 * MNG-1695: id of a pre-created `status='queued'` run row. Rides the
 	 * agentInput to `executeWithEngine` → `tryCreateRun`, which activates it
@@ -146,7 +150,8 @@ export async function triggerManualRun(
 		repoFullName: input.repoFullName,
 		headSha: input.headSha,
 		modelOverride: input.modelOverride,
-		triggerType: 'manual',
+		triggerType: input.triggerType ?? 'manual',
+		triggerEvent: input.triggerEvent,
 		triggerCommentBody: input.triggerCommentBody,
 		triggerCommentId: input.triggerCommentId,
 		triggerCommentUrl: input.triggerCommentUrl,

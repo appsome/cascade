@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Badge } from '@/components/ui/badge.js';
 import { TriggerParameterInput } from './trigger-parameter-input.js';
 
@@ -15,6 +16,8 @@ interface Props {
 	onParamChange: (event: string, parameters: Record<string, TriggerParameterValue>) => void;
 	idPrefix?: string;
 	disabled?: boolean;
+	/** Optional extra UI rendered below a trigger's params block (e.g. webhook URL + password). */
+	renderTriggerExtra?: (trigger: ResolvedTrigger) => ReactNode;
 }
 
 /**
@@ -27,6 +30,7 @@ export function DefinitionTriggerToggles({
 	onParamChange,
 	idPrefix,
 	disabled,
+	renderTriggerExtra,
 }: Props) {
 	if (triggers.length === 0) return null;
 
@@ -86,6 +90,8 @@ export function DefinitionTriggerToggles({
 								))}
 							</div>
 						)}
+
+						{renderTriggerExtra?.(trigger)}
 					</div>
 				);
 			})}

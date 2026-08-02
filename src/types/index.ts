@@ -27,7 +27,8 @@ export interface AgentInput {
 		| 'review-requested'
 		| 'pr-opened'
 		| 'conflict-resolution'
-		| 'manual';
+		| 'manual'
+		| 'external-webhook';
 
 	/** YAML-format trigger event name for context pipeline resolution (e.g. 'scm:check-suite-success') */
 	triggerEvent?: CanonicalTriggerEvent | (string & {});

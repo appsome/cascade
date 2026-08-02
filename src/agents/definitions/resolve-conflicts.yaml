@@ -32,6 +32,13 @@ triggers:
     defaultEnabled: false
     providers: [github, gitlab]
     contextPipeline: [prContext, directoryListing, contextFiles, workItem]
+  - event: internal:external-webhook
+    label: External Webhook
+    description: >-
+      Dispatch this agent from an external system via an authenticated POST to
+      the project's per-agent webhook URL. The request body reaches the agent
+      as trigger context.
+    defaultEnabled: false
 
 strategies: {}
 
