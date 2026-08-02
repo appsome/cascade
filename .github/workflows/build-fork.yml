@@ -1,0 +1,67 @@
+# Fork-only workflow (appsome/cascade) — intentionally not upstreamed.
+# Builds the three service images on push to main and pushes them to the
+# fork's own GHCR namespace. Upstream's deploy.yml is inert here (self-hosted
+# runner + mongrel-intelligence GHCR namespace + upstream infra deploy).
+name: Build Fork Images
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  ROUTER_IMAGE: ghcr.io/appsome/cascade-router
+  WORKER_IMAGE: ghcr.io/appsome/cascade-worker
+  DASHBOARD_IMAGE: ghcr.io/appsome/cascade-dashboard
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push router image
+        run: |
+          docker build \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -f Dockerfile.router \
+            -t ${{ env.ROUTER_IMAGE }}:main \
+            -t ${{ env.ROUTER_IMAGE }}:main-${{ github.sha }} .
+          docker push ${{ env.ROUTER_IMAGE }}:main
+          docker push ${{ env.ROUTER_IMAGE }}:main-${{ github.sha }}
+
+      - name: Build worker image
+        run: |
+          docker build \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -f Dockerfile.worker \
+            -t ${{ env.WORKER_IMAGE }}:main \
+            -t ${{ env.WORKER_IMAGE }}:main-${{ github.sha }} .
+
+      - name: Verify worker runtime tools
+        run: WORKER_IMAGE=${{ env.WORKER_IMAGE }}:main-${{ github.sha }} tests/docker/worker-runtime-tools/run-test.sh
+
+      - name: Push worker image
+        run: |
+          docker push ${{ env.WORKER_IMAGE }}:main
+          docker push ${{ env.WORKER_IMAGE }}:main-${{ github.sha }}
+
+      - name: Build and push dashboard image
+        run: |
+          docker build \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -f Dockerfile.dashboard \
+            -t ${{ env.DASHBOARD_IMAGE }}:main \
+            -t ${{ env.DASHBOARD_IMAGE }}:main-${{ github.sha }} .
+          docker push ${{ env.DASHBOARD_IMAGE }}:main
+          docker push ${{ env.DASHBOARD_IMAGE }}:main-${{ github.sha }}
