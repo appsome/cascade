@@ -17,8 +17,9 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import type { ReactElement } from 'react';
-import { useState } from 'react';
+import { createElement, Fragment, type ReactElement, useState } from 'react';
+import { Input } from '@/components/ui/input.js';
+import { Label } from '@/components/ui/label.js';
 import { API_URL } from '@/lib/api.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { WizardState } from '../../pm-wizard-state.js';
@@ -206,7 +207,7 @@ function TrelloLabelMappingAdapter({
 	providerHooks,
 }: ProviderWizardStepProps): ReactElement {
 	const h = asTrelloHooks(providerHooks);
-	return LabelMappingStep({
+	const labelStep = LabelMappingStep({
 		step: { kind: 'label-mapping', id: 'trello-labels' },
 		providerId: 'trello',
 		labelSlots: TRELLO_LABEL_SLOTS,
@@ -219,6 +220,52 @@ function TrelloLabelMappingAdapter({
 		labelDefaults: TRELLO_LABEL_DEFAULTS,
 		loading: h.boardDetailsLoading,
 	});
+
+	// Required-label filter (optional): when set, only cards carrying this label
+	// trigger CASCADE. Renders a native picker from the board's labels when
+	// available, with a manual label-ID input fallback.
+	const hasBoardLabels = h.providerLabels.length > 0;
+	const requiredLabelControl = createElement(
+		'div',
+		{ className: 'space-y-2 border-t pt-4', key: 'trello-required-label' },
+		createElement(Label, { key: 'label' }, 'Required Label (optional)'),
+		createElement(
+			'p',
+			{ key: 'hint', className: 'text-xs text-muted-foreground' },
+			'When set, only cards carrying this label will trigger CASCADE. Leave blank to process all cards.',
+		),
+		hasBoardLabels
+			? createElement(
+					'select',
+					{
+						key: 'select',
+						className:
+							'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm',
+						value: state.trelloRequiredLabelId,
+						onChange: (e: { target: { value: string } }) =>
+							dispatch({ type: 'SET_TRELLO_REQUIRED_LABEL', id: e.target.value }),
+					},
+					createElement('option', { key: '', value: '' }, '— none —'),
+					...h.providerLabels
+						.filter((l) => l.name)
+						.map((l) =>
+							createElement(
+								'option',
+								{ key: l.id, value: l.id },
+								l.color ? `${l.name} (${l.color})` : l.name,
+							),
+						),
+				)
+			: createElement(Input, {
+					key: 'input',
+					value: state.trelloRequiredLabelId,
+					onChange: (e: { target: { value: string } }) =>
+						dispatch({ type: 'SET_TRELLO_REQUIRED_LABEL', id: e.target.value }),
+					placeholder: 'Label ID to filter by (optional)',
+				}),
+	);
+
+	return createElement(Fragment, null, labelStep, requiredLabelControl);
 }
 
 function TrelloCustomFieldMappingAdapter({
@@ -299,6 +346,7 @@ export const trelloProviderWizard: ProviderWizardDefinition = {
 		lists: state.trelloListMappings,
 		labels: state.trelloLabelMappings,
 		...(state.trelloCostFieldId ? { customFields: { cost: state.trelloCostFieldId } } : {}),
+		...(state.trelloRequiredLabelId ? { requiredLabelId: state.trelloRequiredLabelId } : {}),
 	}),
 
 	buildSaveTriggerConfigs: ({ state, workflowStatuses, existingConfigs }) =>
@@ -314,6 +362,7 @@ export const trelloProviderWizard: ProviderWizardDefinition = {
 			trelloBoardId: (initialConfig.boardId as string) ?? '',
 			trelloCostFieldId:
 				(initialConfig.customFields as Record<string, string> | undefined)?.cost ?? '',
+			trelloRequiredLabelId: (initialConfig.requiredLabelId as string) ?? '',
 			hasStoredCredentials:
 				configuredKeys.has('TRELLO_API_KEY') && configuredKeys.has('TRELLO_TOKEN'),
 		} satisfies Partial<WizardState>;

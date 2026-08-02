@@ -46,6 +46,12 @@ export const trelloConfigSchema = z
 				cost: z.string().optional(),
 			})
 			.optional(),
+
+		/**
+		 * Optional Trello label ID. When set, only cards carrying this label are
+		 * processed by webhook triggers; cards without it are skipped.
+		 */
+		requiredLabelId: z.string().optional(),
 	})
 	.describe('Trello project integration config');
 

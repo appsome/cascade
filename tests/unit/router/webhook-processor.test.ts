@@ -1110,4 +1110,128 @@ describe('processRouterWebhook', () => {
 			expect(result.decisionReason).toBe('Trigger completed without agent (PM operation)');
 		});
 	});
+
+	describe('multi-project routing via resolveAllProjects', () => {
+		const project1: RouterProjectConfig = { id: 'cascade', repo: 'org/cascade', pmType: 'trello' };
+		const project2: RouterProjectConfig = { id: 'bdgt', repo: 'org/bdgt', pmType: 'trello' };
+
+		it('tries all projects until one dispatches successfully', async () => {
+			const triggerResult = { agentType: 'implementation', agentInput: {} };
+			vi.mocked(addJob).mockResolvedValue('job-1');
+			// project1 fails label check (null), project2 succeeds
+			const dispatchWithCredentials = vi
+				.fn()
+				.mockResolvedValueOnce(null) // project1 — label mismatch
+				.mockResolvedValueOnce(triggerResult); // project2 — label matches
+
+			const adapter = makeMockAdapter({
+				resolveAllProjects: vi.fn().mockResolvedValue([project1, project2]),
+				dispatchWithCredentials,
+				buildJob: vi.fn().mockReturnValue({
+					type: 'trello',
+					source: 'trello',
+					payload: {},
+					projectId: 'bdgt',
+					cardId: 'card1',
+					actionType: 'updateCard',
+					receivedAt: new Date().toISOString(),
+				} as CascadeJob),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+			expect(result.shouldProcess).toBe(true);
+			expect(result.projectId).toBe('bdgt'); // matched project2
+			expect(dispatchWithCredentials).toHaveBeenCalledTimes(2);
+			expect(dispatchWithCredentials).toHaveBeenNthCalledWith(
+				1,
+				expect.anything(),
+				expect.anything(),
+				project1,
+				mockTriggerRegistry,
+			);
+			expect(dispatchWithCredentials).toHaveBeenNthCalledWith(
+				2,
+				expect.anything(),
+				expect.anything(),
+				project2,
+				mockTriggerRegistry,
+			);
+			expect(addJob).toHaveBeenCalled();
+		});
+
+		it('passes matched project to postAck and buildJob', async () => {
+			const triggerResult = { agentType: 'implementation', agentInput: {} };
+			vi.mocked(addJob).mockResolvedValue('job-1');
+
+			const adapter = makeMockAdapter({
+				resolveAllProjects: vi.fn().mockResolvedValue([project1, project2]),
+				dispatchWithCredentials: vi
+					.fn()
+					.mockResolvedValueOnce(null) // project1 skipped
+					.mockResolvedValueOnce(triggerResult), // project2 matched
+				postAck: vi.fn().mockResolvedValue({ commentId: 'c1', message: 'ack' }),
+			});
+
+			await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+			// postAck and buildJob must receive project2 (the matched project), not project1
+			expect(adapter.postAck).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.anything(),
+				project2,
+				'implementation',
+				triggerResult,
+			);
+			expect(adapter.buildJob).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.anything(),
+				project2,
+				triggerResult,
+				expect.anything(),
+			);
+		});
+
+		it('returns No trigger matched when all projects dispatch null', async () => {
+			const adapter = makeMockAdapter({
+				resolveAllProjects: vi.fn().mockResolvedValue([project1, project2]),
+				dispatchWithCredentials: vi.fn().mockResolvedValue(null),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+			expect(result.shouldProcess).toBe(true);
+			expect(result.decisionReason).toBe('No trigger matched for event');
+			expect(addJob).not.toHaveBeenCalled();
+		});
+
+		it('short-circuits as "no project config found" when resolveAllProjects returns []', async () => {
+			// resolveAllProjects returning [] means the event was definitively filtered
+			// (e.g. card lacks required label). Should NOT fall through to resolveProject.
+			const adapter = makeMockAdapter({
+				resolveAllProjects: vi.fn().mockResolvedValue([]),
+				resolveProject: vi.fn().mockResolvedValue(project1), // must NOT be called
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+			expect(result.shouldProcess).toBe(true);
+			expect(result.decisionReason).toMatch(/No project config for identifier/);
+			expect(adapter.resolveProject).not.toHaveBeenCalled();
+			expect(adapter.dispatchWithCredentials).not.toHaveBeenCalled();
+			expect(addJob).not.toHaveBeenCalled();
+		});
+
+		it('falls back to resolveProject when resolveAllProjects not implemented', async () => {
+			const triggerResult = { agentType: 'implementation', agentInput: {} };
+			vi.mocked(addJob).mockResolvedValue('job-1');
+
+			const adapter = makeMockAdapter({
+				// no resolveAllProjects — falls back to resolveProject
+				resolveProject: vi.fn().mockResolvedValue(project1),
+				dispatchWithCredentials: vi.fn().mockResolvedValue(triggerResult),
+			});
+
+			const result = await processRouterWebhook(adapter, {}, mockTriggerRegistry);
+			expect(result.shouldProcess).toBe(true);
+			expect(result.projectId).toBe('cascade');
+			expect(addJob).toHaveBeenCalled();
+		});
+	});
 });

@@ -90,6 +90,18 @@ export interface RouterPlatformAdapter {
 	resolveProject(event: ParsedWebhookEvent): Promise<RouterProjectConfig | null>;
 
 	/**
+	 * Resolve ALL project configs matching the event's project identifier.
+	 * Used when multiple projects share the same platform identifier (e.g., same Trello board).
+	 *
+	 * When implemented, `processRouterWebhook` calls this instead of `resolveProject`
+	 * and iterates over the returned projects, dispatching to the first one that matches
+	 * (e.g., whose `requiredLabelId` matches the card's labels).
+	 *
+	 * Falls back to `resolveProject` (single project) when not implemented.
+	 */
+	resolveAllProjects?(event: ParsedWebhookEvent): Promise<RouterProjectConfig[]>;
+
+	/**
 	 * Run the authoritative trigger dispatch inside platform credential scope.
 	 * The adapter wraps `triggerRegistry.dispatch(ctx)` with appropriate
 	 * `withXxxCredentials()` / `withGitHubToken()` calls.

@@ -139,7 +139,7 @@ import {
 // ── dispatchJob routing tests ─────────────────────────────────────────────────
 
 describe('dispatchJob routing', () => {
-	it('routes trello job to processTrelloWebhook with payload, registry, ackCommentId, triggerResult', async () => {
+	it('routes trello job to processTrelloWebhook with payload, registry, ackCommentId, triggerResult, projectId', async () => {
 		const mockRegistry = {};
 		const jobPayload = { action: { type: 'updateCard' } };
 		const triggerResult = { matched: true, agentType: 'implementation' } as never;
@@ -226,7 +226,7 @@ describe('dispatchJob routing', () => {
 		);
 	});
 
-	it('routes jira job to processJiraWebhook with payload, registry, ackCommentId, triggerResult', async () => {
+	it('routes jira job to processJiraWebhook with payload, registry, ackCommentId, triggerResult, projectId', async () => {
 		const mockRegistry = {};
 		const jobPayload = { issue: { key: 'PROJ-1' } };
 		const triggerResult = { matched: true, agentType: 'implementation' } as never;
