@@ -1,4 +1,3 @@
-import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import {
 	deleteOrgCredential,
@@ -13,37 +12,9 @@ import {
 	updateOrganization,
 } from '../../db/repositories/settingsRepository.js';
 import { captureException } from '../../sentry.js';
-import { resolveActorRoleInOrg } from '../context.js';
 import { adminProcedure, protectedProcedure, router, superAdminProcedure } from '../trpc.js';
 import { maskCredentialValue } from './_shared/maskCredential.js';
-
-type Role = 'member' | 'admin' | 'superadmin';
-
-/**
- * Resolve the caller's role *in the effective org*. The `adminProcedure`
- * middleware is a coarse global-role gate; this refines it with the per-org
- * membership role (same pattern as users.ts) so an admin who has switched
- * into an org where they are only a member cannot manage that org's
- * credentials.
- */
-function resolveActorRole(ctx: {
-	user: { id: string; role: Role; orgId: string };
-	effectiveOrgId: string;
-}): Promise<Role> {
-	return resolveActorRoleInOrg({
-		userId: ctx.user.id,
-		globalRole: ctx.user.role,
-		homeOrgId: ctx.user.orgId,
-		orgId: ctx.effectiveOrgId,
-	});
-}
-
-/** Require the caller to be an admin (or superadmin) in the effective org. */
-function assertOrgAdmin(actorRole: Role): void {
-	if (actorRole !== 'admin' && actorRole !== 'superadmin') {
-		throw new TRPCError({ code: 'FORBIDDEN', message: 'Admin access required' });
-	}
-}
+import { assertOrgAdmin, resolveActorRole } from './_shared/orgRole.js';
 
 export const organizationRouter = router({
 	get: protectedProcedure.query(async ({ ctx }) => {

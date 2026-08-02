@@ -1,40 +1,109 @@
+import { z } from 'zod';
 import { fetchClaudeSubscriptionLimits } from '../../anthropic/client.js';
-import { listAllClaudeCodeCredentials } from '../../db/repositories/credentialsRepository.js';
-import { router, superAdminProcedure } from '../trpc.js';
+import {
+	listAllClaudeCodeCredentials,
+	listProjectCredentials,
+} from '../../db/repositories/credentialsRepository.js';
+import { resolveOrgCredential } from '../../db/repositories/orgCredentialsRepository.js';
+import { adminProcedure, protectedProcedure, router } from '../trpc.js';
+import { assertOrgAdmin, resolveActorRole } from './_shared/orgRole.js';
+import { verifyProjectOrgAccess } from './_shared/projectAccess.js';
+
+const CLAUDE_CODE_TOKEN_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
+
+export type ClaudeCodeLimitsScope = 'org' | 'project' | 'env';
+
+export interface LimitsSource {
+	scope: ClaudeCodeLimitsScope;
+	projectId?: string;
+	projectName?: string;
+	token: string;
+}
+
+/**
+ * Fetch usage limits for each source, preserving source attribution.
+ * Sources whose token yields no limits data (API error, revoked token) come
+ * back with `limits: null` so the UI can distinguish "no data" from "not
+ * configured". The Anthropic client caches per token for 5 minutes, so
+ * duplicate tokens across sources cost one HTTP call. Raw tokens never leave
+ * the server — only the masked preview inside `limits`.
+ */
+async function fetchLimitsForSources<T extends LimitsSource>(sources: T[]) {
+	return Promise.all(
+		sources.map(async ({ token, ...source }) => ({
+			...source,
+			limits: await fetchClaudeSubscriptionLimits(token),
+		})),
+	);
+}
 
 export const claudeCodeLimitsRouter = router({
 	/**
-	 * Fetch Claude Code subscription limits for all unique OAuth tokens configured
-	 * across org projects, plus the global env var if set.
-	 *
-	 * Superadmin only. Returns masked token + limits data — never raw tokens.
+	 * Claude Code subscription usage for every credential source in the
+	 * effective org: the org-level shared token, each project-level override,
+	 * and the server's global env token. Org-admin gated — same audience as
+	 * the organization credentials settings page.
 	 */
-	query: superAdminProcedure.query(async ({ ctx }) => {
-		// Gather tokens from project credentials
+	forOrg: adminProcedure.query(async ({ ctx }) => {
+		assertOrgAdmin(await resolveActorRole(ctx));
+
+		const sources: LimitsSource[] = [];
+
+		const orgToken = await resolveOrgCredential(ctx.effectiveOrgId, CLAUDE_CODE_TOKEN_KEY);
+		if (orgToken) sources.push({ scope: 'org', token: orgToken });
+
 		const projectCredentials = await listAllClaudeCodeCredentials(ctx.effectiveOrgId);
-
-		// Build a deduplicated set of tokens (value → first seen)
-		const tokenMap = new Map<string, boolean>();
-		const tokens: string[] = [];
-
 		for (const cred of projectCredentials) {
-			if (!tokenMap.has(cred.value)) {
-				tokenMap.set(cred.value, true);
-				tokens.push(cred.value);
-			}
+			sources.push({
+				scope: 'project',
+				projectId: cred.projectId,
+				projectName: cred.projectName,
+				token: cred.value,
+			});
 		}
 
-		// Also include the global env var if set
-		const globalToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-		if (globalToken && !tokenMap.has(globalToken)) {
-			tokenMap.set(globalToken, true);
-			tokens.push(globalToken);
-		}
+		const envToken = process.env[CLAUDE_CODE_TOKEN_KEY];
+		if (envToken) sources.push({ scope: 'env', token: envToken });
 
-		// Fetch limits for each unique token in parallel
-		const results = await Promise.all(tokens.map((token) => fetchClaudeSubscriptionLimits(token)));
-
-		// Filter nulls (API errors / unavailable)
-		return results.filter((r) => r !== null);
+		return fetchLimitsForSources(sources);
 	}),
+
+	/**
+	 * Claude Code subscription usage for the credential candidates visible to
+	 * one project: its own override (if set), the inherited org token (if set),
+	 * and the server's global env token. `active` marks the credential-system
+	 * winner (project override beats org; env is informational). Used by the
+	 * project settings engine tab as a picker preview.
+	 */
+	forProject: protectedProcedure
+		.input(z.object({ projectId: z.string() }))
+		.query(async ({ ctx, input }) => {
+			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
+
+			// Project override — project rows only, deliberately NOT the inheriting
+			// resolver: the point is contrasting the override with the org value.
+			const projectRows = await listProjectCredentials(input.projectId);
+			const projectToken = projectRows.find((r) => r.envVarKey === CLAUDE_CODE_TOKEN_KEY)?.value;
+
+			const orgToken = await resolveOrgCredential(ctx.effectiveOrgId, CLAUDE_CODE_TOKEN_KEY);
+			const envToken = process.env[CLAUDE_CODE_TOKEN_KEY];
+
+			const sources: (LimitsSource & { active: boolean })[] = [];
+			if (projectToken) {
+				sources.push({
+					scope: 'project',
+					projectId: input.projectId,
+					token: projectToken,
+					active: true,
+				});
+			}
+			if (orgToken) {
+				sources.push({ scope: 'org', token: orgToken, active: !projectToken });
+			}
+			if (envToken) {
+				sources.push({ scope: 'env', token: envToken, active: false });
+			}
+
+			return fetchLimitsForSources(sources);
+		}),
 });

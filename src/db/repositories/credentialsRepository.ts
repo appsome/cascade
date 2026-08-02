@@ -190,18 +190,20 @@ export async function listProjectCredentialsMeta(
 // ============================================================================
 
 /**
- * List all CLAUDE_CODE_OAUTH_TOKEN credentials across all projects in an org.
+ * List all project-level CLAUDE_CODE_OAUTH_TOKEN credentials across an org,
+ * with the owning project's name for display attribution.
  * Returns decrypted values for use in server-side API calls only.
  * Never expose raw tokens to the client.
  */
 export async function listAllClaudeCodeCredentials(
 	orgId: string,
-): Promise<{ projectId: string; value: string }[]> {
+): Promise<{ projectId: string; projectName: string; value: string }[]> {
 	const db = getDb();
 
 	const rows = await db
 		.select({
 			projectId: projectCredentials.projectId,
+			projectName: projects.name,
 			value: projectCredentials.value,
 		})
 		.from(projectCredentials)
@@ -212,6 +214,7 @@ export async function listAllClaudeCodeCredentials(
 
 	return rows.map((row) => ({
 		projectId: row.projectId,
+		projectName: row.projectName,
 		value: decryptCredential(row.value, row.projectId),
 	}));
 }

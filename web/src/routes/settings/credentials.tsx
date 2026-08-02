@@ -9,9 +9,45 @@ import { createRoute } from '@tanstack/react-router';
 import { useMemo, useState } from 'react';
 import { buildOrgCredentialCatalog } from '@/components/settings/org-credential-catalog.js';
 import { OrgSecretField } from '@/components/settings/org-secret-field.js';
+import { ClaudeUsageCard } from '@/components/shared/claude-usage-card.js';
 import { Input } from '@/components/ui/input.js';
 import { trpc } from '@/lib/trpc.js';
 import { rootRoute } from '../__root.js';
+
+/**
+ * Claude Code subscription usage for every token source in the org: the
+ * shared org credential, per-project overrides, and the server env token.
+ * Hidden entirely when no source is configured.
+ */
+function ClaudeCodeUsageSection() {
+	const limitsQuery = useQuery({
+		...trpc.claudeCodeLimits.forOrg.queryOptions(),
+		staleTime: 5 * 60 * 1000,
+		retry: false,
+	});
+
+	const sources = limitsQuery.data ?? [];
+	if (limitsQuery.isError || sources.length === 0) return null;
+
+	return (
+		<section className="space-y-4">
+			<div>
+				<h2 className="text-lg font-semibold">Claude Code Usage</h2>
+				<p className="text-sm text-muted-foreground">
+					Subscription limits for each configured Claude Code OAuth token.
+				</p>
+			</div>
+			<div className="space-y-3">
+				{sources.map((source) => (
+					<ClaudeUsageCard
+						key={`${source.scope}-${source.projectId ?? 'shared'}`}
+						source={source}
+					/>
+				))}
+			</div>
+		</section>
+	);
+}
 
 const ENV_VAR_KEY_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -128,6 +164,8 @@ function OrgCredentialsPage() {
 			{!credentialsQuery.isError && (
 				<CustomCredentialSection credentials={credentials} knownKeys={knownKeys} />
 			)}
+
+			{!credentialsQuery.isError && <ClaudeCodeUsageSection />}
 		</div>
 	);
 }
