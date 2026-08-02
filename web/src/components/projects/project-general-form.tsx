@@ -4,6 +4,7 @@ import { HelpCircle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { CloneProjectDialog } from '@/components/projects/clone-project-dialog.js';
+import { ProjectCredentialSelector } from '@/components/projects/project-credential-selector.js';
 import { ProjectSecretField } from '@/components/projects/project-secret-field.js';
 import { ProjectWorkerImage } from '@/components/projects/project-worker-image.js';
 import { useProjectUpdate } from '@/components/projects/use-project-update.js';
@@ -444,12 +445,17 @@ export function ProjectGeneralForm({ project }: { project: Project }) {
 							</Tooltip>
 						</div>
 					</CardHeader>
-					<CardContent>
+					<CardContent className="space-y-4">
+						<ProjectCredentialSelector
+							projectId={project.id}
+							provider="openrouter"
+							label="OpenRouter credentials"
+						/>
 						<ProjectSecretField
 							projectId={project.id}
 							envVarKey="OPENROUTER_API_KEY"
 							label="OpenRouter API Key"
-							description="API key for OpenRouter LLM routing (progress model). Also used as the engine API key when the OpenCode engine is selected — configure it here or on the Engine tab."
+							description="API key for OpenRouter LLM routing (progress model). Also used as the engine API key when the OpenCode engine is selected — configure it here or on the Engine tab. Overrides any organization entry."
 							placeholder="sk-or-..."
 							credential={openrouterCred}
 						/>

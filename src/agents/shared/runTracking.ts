@@ -56,12 +56,21 @@ export async function tryCreateRun(
 	maxIterations?: number,
 ): Promise<string | undefined> {
 	try {
+		// Engine-credential rotation attribution — injected by the router's
+		// worker-env builder when a pool token was selected (same read pattern
+		// as JOB_ID below).
+		const engineCredentialId = process.env.CASCADE_ENGINE_CREDENTIAL_ID || undefined;
+		const engineCredentialName = process.env.CASCADE_ENGINE_CREDENTIAL_NAME || undefined;
+
 		let runId: string;
 		if (input.preCreatedRunId) {
 			// Flip the pre-created queued row to running. The boolean is ignored —
 			// `false` means the row was already running (retry / second attempt), in
 			// which case reusing the same id is exactly right.
-			await activateQueuedRun(input.preCreatedRunId);
+			await activateQueuedRun(input.preCreatedRunId, {
+				engineCredentialId,
+				engineCredentialName,
+			});
 			runId = input.preCreatedRunId;
 		} else {
 			runId = await createRun({
@@ -73,6 +82,8 @@ export async function tryCreateRun(
 				triggerType: input.triggerType,
 				model,
 				maxIterations,
+				engineCredentialId,
+				engineCredentialName,
 			});
 		}
 

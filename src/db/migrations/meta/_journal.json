@@ -442,6 +442,20 @@
 			"when": 1797000000000,
 			"tag": "0062_org_credentials",
 			"breakpoints": false
+		},
+		{
+			"idx": 63,
+			"version": "7",
+			"when": 1797100000000,
+			"tag": "0063_named_org_credentials",
+			"breakpoints": false
+		},
+		{
+			"idx": 64,
+			"version": "7",
+			"when": 1797200000000,
+			"tag": "0064_run_suspension_and_credential_attribution",
+			"breakpoints": false
 		}
 	]
 }

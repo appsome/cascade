@@ -52,16 +52,19 @@ describe('fetchClaudeSubscriptionLimits', () => {
 		expect(result).not.toBeNull();
 		expect(result?.buckets).toHaveLength(3);
 		expect(result?.buckets[0]).toEqual({
+			key: 'five_hour',
 			label: '5-Hour Window',
 			utilization: 33,
 			resetsAt: '2026-04-10T19:00:00.772723+00:00',
 		});
 		expect(result?.buckets[1]).toEqual({
+			key: 'seven_day',
 			label: '7-Day Overall',
 			utilization: 3,
 			resetsAt: '2026-04-17T09:59:59.772747+00:00',
 		});
 		expect(result?.buckets[2]).toEqual({
+			key: 'seven_day_sonnet',
 			label: '7-Day Sonnet',
 			utilization: 44,
 			resetsAt: '2026-04-10T16:59:59.772755+00:00',

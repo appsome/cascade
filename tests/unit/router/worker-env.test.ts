@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks
@@ -452,5 +452,71 @@ describe('buildWorkerEnvWithProjectId — JOB_DATA offload', () => {
 		await expect(
 			buildWorkerEnvWithProjectId(jobWithPayload({ description }) as never, 'p'),
 		).rejects.toThrow('Redis down');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// buildWorkerEnvWithProjectId — CLAUDE_CODE_OAUTH_TOKEN precedence + rotation
+// ---------------------------------------------------------------------------
+
+describe('buildWorkerEnvWithProjectId — engine token precedence', () => {
+	const originalHostToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockGetAllProjectCredentials.mockResolvedValue({});
+		delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+	});
+
+	afterEach(() => {
+		if (originalHostToken === undefined) {
+			delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+		} else {
+			process.env.CLAUDE_CODE_OAUTH_TOKEN = originalHostToken;
+		}
+	});
+
+	function tokenEntries(env: string[]): string[] {
+		return env.filter((e) => e.startsWith('CLAUDE_CODE_OAUTH_TOKEN='));
+	}
+
+	it('uses the DB credential alone when no host token is set', async () => {
+		mockGetAllProjectCredentials.mockResolvedValue({ CLAUDE_CODE_OAUTH_TOKEN: 'db-token' });
+		const env = await buildWorkerEnvWithProjectId(makeJob() as never, 'proj-1');
+		expect(tokenEntries(env)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN=db-token']);
+	});
+
+	it('falls back to the host env token when the DB has none', async () => {
+		process.env.CLAUDE_CODE_OAUTH_TOKEN = 'host-token';
+		const env = await buildWorkerEnvWithProjectId(makeJob() as never, 'proj-1');
+		expect(tokenEntries(env)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN=host-token']);
+	});
+
+	it('DB credential wins over the host env token (regression: host used to be pushed last)', async () => {
+		// Docker Env uses last-wins semantics — before the fix the host token was
+		// appended AFTER the DB loop and silently overrode project/org credentials.
+		process.env.CLAUDE_CODE_OAUTH_TOKEN = 'host-token';
+		mockGetAllProjectCredentials.mockResolvedValue({ CLAUDE_CODE_OAUTH_TOKEN: 'db-token' });
+		const env = await buildWorkerEnvWithProjectId(makeJob() as never, 'proj-1');
+		expect(tokenEntries(env)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN=db-token']);
+	});
+
+	it('rotation pick replaces every other token source and injects attribution vars', async () => {
+		process.env.CLAUDE_CODE_OAUTH_TOKEN = 'host-token';
+		mockGetAllProjectCredentials.mockResolvedValue({ CLAUDE_CODE_OAUTH_TOKEN: 'db-token' });
+		const env = await buildWorkerEnvWithProjectId(makeJob() as never, 'proj-1', false, false, {
+			credentialId: '7',
+			credentialName: 'work',
+			token: 'rotated-token',
+		});
+		expect(tokenEntries(env)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN=rotated-token']);
+		expect(env).toContain('CASCADE_ENGINE_CREDENTIAL_ID=7');
+		expect(env).toContain('CASCADE_ENGINE_CREDENTIAL_NAME=work');
+	});
+
+	it('does not inject attribution vars without a rotation pick', async () => {
+		mockGetAllProjectCredentials.mockResolvedValue({ CLAUDE_CODE_OAUTH_TOKEN: 'db-token' });
+		const env = await buildWorkerEnvWithProjectId(makeJob() as never, 'proj-1');
+		expect(env.some((e) => e.startsWith('CASCADE_ENGINE_CREDENTIAL_'))).toBe(false);
 	});
 });

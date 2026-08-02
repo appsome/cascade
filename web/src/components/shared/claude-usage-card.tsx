@@ -7,6 +7,8 @@
 import { Badge } from '@/components/ui/badge.js';
 
 export interface ClaudeUsageBucket {
+	/** Machine-readable wire key (e.g. "seven_day_opus"); present since rotation. */
+	key?: string;
 	label: string;
 	utilization: number;
 	resetsAt: string;
@@ -27,6 +29,11 @@ export interface ClaudeUsageSource {
 	scope: 'org' | 'project';
 	projectId?: string;
 	projectName?: string;
+	/** Named credential set attribution for org-scoped tokens. */
+	setId?: number;
+	setName?: string;
+	/** True when this set is part of the project's selected rotation pool. */
+	inPool?: boolean;
 	active?: boolean;
 	limits: ClaudeUsageLimits | null;
 }
@@ -53,7 +60,9 @@ function utilizationColor(pct: number): string {
 }
 
 export function sourceLabel(source: ClaudeUsageSource): string {
-	if (source.scope === 'org') return 'Organization';
+	if (source.scope === 'org') {
+		return source.setName ? `Org — ${source.setName}` : 'Organization';
+	}
 	return source.projectName ? `Project: ${source.projectName}` : 'This project';
 }
 
@@ -72,6 +81,11 @@ export function ClaudeUsageCard({ source }: { source: ClaudeUsageSource }) {
 						active
 					</Badge>
 				)}
+				{source.inPool && (
+					<Badge variant="outline" className="text-[10px] text-blue-600 dark:text-blue-400">
+						in pool
+					</Badge>
+				)}
 			</div>
 			{!source.limits && (
 				<p className="text-muted-foreground">
@@ -82,7 +96,7 @@ export function ClaudeUsageCard({ source }: { source: ClaudeUsageSource }) {
 				<p className="text-muted-foreground">No usage data</p>
 			)}
 			{source.limits?.buckets.map((bucket) => (
-				<div key={bucket.label}>
+				<div key={bucket.key ?? bucket.label}>
 					<div className="flex items-center justify-between text-muted-foreground mb-0.5">
 						<span>{bucket.label}</span>
 						<span>{bucket.utilization}%</span>

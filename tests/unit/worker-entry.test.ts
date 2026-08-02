@@ -322,7 +322,13 @@ describe('dispatchJob routing', () => {
 
 		await dispatchJob('job-5', jobData, {} as never);
 
-		expect(triggerRetryRun).toHaveBeenCalledWith('run-abc', mockProject, mockConfig, undefined);
+		expect(triggerRetryRun).toHaveBeenCalledWith(
+			'run-abc',
+			mockProject,
+			mockConfig,
+			undefined,
+			undefined,
+		);
 	});
 
 	it('routes debug-analysis job to processDashboardJob (calls triggerDebugAnalysis)', async () => {
@@ -347,6 +353,7 @@ describe('dispatchJob routing', () => {
 			mockProject,
 			mockConfig,
 			'card-debug',
+			undefined,
 		);
 	});
 
@@ -768,7 +775,13 @@ describe('processDashboardJob - retry-run', () => {
 
 		expect(getRunById).toHaveBeenCalledWith('run-abc');
 		expect(loadProjectConfigById).toHaveBeenCalledWith('proj-1');
-		expect(triggerRetryRun).toHaveBeenCalledWith('run-abc', mockProject, mockConfig, undefined);
+		expect(triggerRetryRun).toHaveBeenCalledWith(
+			'run-abc',
+			mockProject,
+			mockConfig,
+			undefined,
+			undefined,
+		);
 	});
 
 	it('passes modelOverride to triggerRetryRun when provided', async () => {
@@ -796,6 +809,7 @@ describe('processDashboardJob - retry-run', () => {
 			mockProject,
 			mockConfig,
 			'claude-3-5-sonnet-20241022',
+			undefined,
 		);
 	});
 
@@ -841,6 +855,7 @@ describe('processDashboardJob - debug-analysis', () => {
 			mockProject,
 			mockConfig,
 			'card-debug',
+			undefined,
 		);
 	});
 
@@ -865,6 +880,7 @@ describe('processDashboardJob - debug-analysis', () => {
 			'run-no-card',
 			mockProject,
 			mockConfig,
+			undefined,
 			undefined,
 		);
 	});

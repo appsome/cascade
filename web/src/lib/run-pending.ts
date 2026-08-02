@@ -49,6 +49,19 @@ export function isRunActive(status: string): boolean {
 }
 
 /**
+ * True when a run is parked in the rate-limit `suspended` state (engine
+ * credential rotation) awaiting its automatic resume. Deliberately NOT part of
+ * `isRunActive` — a suspended run consumes no worker and changes state only at
+ * its scheduled resume, so pages poll it on a slow cadence instead.
+ */
+export function isRunAwaitingResume(status: string): boolean {
+	return status === 'suspended';
+}
+
+/** Slow poll interval (ms) for suspended runs (state changes at resume time). */
+export const RUN_SUSPENDED_POLL_MS = 30_000;
+
+/**
  * True only when `error` is a tRPC client error whose `data.code` is
  * `NOT_FOUND`. Returns `false` for every other tRPC code (`BAD_REQUEST`,
  * `FORBIDDEN`, `UNAUTHORIZED`, …), a plain `Error`, `null`/`undefined`, or any

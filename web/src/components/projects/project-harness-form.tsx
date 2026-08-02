@@ -3,6 +3,7 @@ import { HelpCircle } from 'lucide-react';
 import { useState } from 'react';
 import { ClaudeCodeLimitsPreview } from '@/components/projects/claude-code-limits-preview.js';
 import { ENGINE_SECRETS } from '@/components/projects/engine-secrets.js';
+import { ProjectCredentialSelector } from '@/components/projects/project-credential-selector.js';
 import { ProjectSecretField } from '@/components/projects/project-secret-field.js';
 import { useProjectUpdate } from '@/components/projects/use-project-update.js';
 import { EngineSettingsFields } from '@/components/settings/engine-settings-fields.js';
@@ -49,6 +50,18 @@ function numericFieldDefault(value: number | null | undefined): string {
 function capitalize(s: string): string {
 	return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/** Named-set credential providers relevant to each engine's tab. */
+const ENGINE_CREDENTIAL_PROVIDERS: Record<string, { provider: string; label: string }[]> = {
+	'claude-code': [{ provider: 'anthropic', label: 'Anthropic credentials' }],
+	codex: [{ provider: 'openai', label: 'OpenAI / Codex credentials' }],
+	opencode: [
+		{ provider: 'anthropic', label: 'Anthropic credentials' },
+		{ provider: 'openai', label: 'OpenAI credentials' },
+		{ provider: 'openrouter', label: 'OpenRouter credentials' },
+	],
+	llmist: [{ provider: 'openrouter', label: 'OpenRouter credentials' }],
+};
 
 export function ProjectHarnessForm({ project }: { project: Project }) {
 	const updateMutation = useProjectUpdate(project.id);
@@ -276,14 +289,25 @@ export function ProjectHarnessForm({ project }: { project: Project }) {
 													</div>
 												)}
 
+												{/* Org credential set selection (named entries) */}
+												{(ENGINE_CREDENTIAL_PROVIDERS[engine.id] ?? []).map((entry) => (
+													<ProjectCredentialSelector
+														key={entry.provider}
+														projectId={project.id}
+														provider={entry.provider}
+														label={entry.label}
+													/>
+												))}
+
 												{/* Credentials */}
 												{engineSecrets.length > 0 ? (
 													<div className="space-y-4">
 														<div>
-															<p className="text-sm font-medium">Credentials</p>
+															<p className="text-sm font-medium">Project overrides</p>
 															<p className="text-xs text-muted-foreground mt-0.5">
-																API keys and tokens for {engine.label}. Values are stored encrypted
-																and never returned to the browser.
+																Project-local API keys and tokens for {engine.label} — they win over
+																any organization entry. Values are stored encrypted and never
+																returned to the browser.
 															</p>
 														</div>
 														{engineSecrets.map((secret) => {

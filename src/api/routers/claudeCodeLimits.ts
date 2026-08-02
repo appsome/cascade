@@ -3,9 +3,9 @@ import { fetchClaudeSubscriptionLimits } from '../../anthropic/client.js';
 import {
 	getProjectOwnCredential,
 	listAllClaudeCodeCredentials,
+	listAllNamedClaudeCodeTokens,
+	listProjectCredentialSelections,
 } from '../../db/repositories/credentialsRepository.js';
-import { resolveOrgCredential } from '../../db/repositories/orgCredentialsRepository.js';
-import { logger } from '../../utils/logging.js';
 import { adminProcedure, protectedProcedure, router } from '../trpc.js';
 import { assertOrgAdmin, resolveActorRole } from './_shared/orgRole.js';
 import { verifyProjectOrgAccess } from './_shared/projectAccess.js';
@@ -26,20 +26,12 @@ export interface LimitsSource {
 	scope: ClaudeCodeLimitsScope;
 	projectId?: string;
 	projectName?: string;
+	/** org_credential_sets attribution for org-scoped named tokens. */
+	setId?: number;
+	setName?: string;
+	/** True when this set is part of the project's selected rotation pool. */
+	inPool?: boolean;
 	token: string;
-}
-
-/** Resolve the org token, treating decrypt failures as absent (never 500). */
-async function safeResolveOrgToken(orgId: string): Promise<string | null> {
-	try {
-		return await resolveOrgCredential(orgId, CLAUDE_CODE_TOKEN_KEY);
-	} catch (err) {
-		logger.warn('Failed to resolve org CLAUDE_CODE_OAUTH_TOKEN', {
-			orgId,
-			error: String(err),
-		});
-		return null;
-	}
 }
 
 /**
@@ -62,17 +54,24 @@ async function fetchLimitsForSources<T extends LimitsSource>(sources: T[]) {
 export const claudeCodeLimitsRouter = router({
 	/**
 	 * Claude Code subscription usage for every credential source in the
-	 * effective org: the org-level shared token and each project-level
-	 * override. Org-admin gated — same audience as the organization
-	 * credentials settings page.
+	 * effective org: each named Anthropic credential set with a configured
+	 * token and each project-level override. Org-admin gated — same audience
+	 * as the organization credentials settings page.
 	 */
 	forOrg: adminProcedure.query(async ({ ctx }) => {
 		assertOrgAdmin(await resolveActorRole(ctx));
 
 		const sources: LimitsSource[] = [];
 
-		const orgToken = await safeResolveOrgToken(ctx.effectiveOrgId);
-		if (orgToken) sources.push({ scope: 'org', token: orgToken });
+		const namedTokens = await listAllNamedClaudeCodeTokens(ctx.effectiveOrgId);
+		for (const named of namedTokens) {
+			sources.push({
+				scope: 'org',
+				setId: named.setId,
+				setName: named.setName,
+				token: named.value,
+			});
+		}
 
 		const projectCredentials = await listAllClaudeCodeCredentials(ctx.effectiveOrgId);
 		for (const cred of projectCredentials) {
@@ -89,9 +88,11 @@ export const claudeCodeLimitsRouter = router({
 
 	/**
 	 * Claude Code subscription usage for the credential candidates visible to
-	 * one project: its own override (if set) and the inherited org token (if
-	 * set). `active` marks the credential-system winner (project override
-	 * beats org). Used by the project settings engine tab as a picker preview.
+	 * one project: its own override (if set), plus the named org sets it can
+	 * draw from — the selected rotation pool when one exists, else the org
+	 * default set. `active` marks the credential-system winner (project
+	 * override beats org; pool position 0 is the org-side primary). Used by
+	 * the project settings engine tab as a picker preview.
 	 */
 	forProject: protectedProcedure
 		.input(z.object({ projectId: z.string() }))
@@ -99,9 +100,8 @@ export const claudeCodeLimitsRouter = router({
 			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
 
 			// Project tier only, deliberately NOT the inheriting resolver: the
-			// point is contrasting the override with the org value.
+			// point is contrasting the override with the org candidates.
 			const projectToken = await getProjectOwnCredential(input.projectId, CLAUDE_CODE_TOKEN_KEY);
-			const orgToken = await safeResolveOrgToken(ctx.effectiveOrgId);
 
 			const sources: (LimitsSource & { active: boolean })[] = [];
 			if (projectToken) {
@@ -112,8 +112,37 @@ export const claudeCodeLimitsRouter = router({
 					active: true,
 				});
 			}
-			if (orgToken) {
-				sources.push({ scope: 'org', token: orgToken, active: !projectToken });
+
+			const namedTokens = await listAllNamedClaudeCodeTokens(ctx.effectiveOrgId);
+			const anthropicSelections = (await listProjectCredentialSelections(input.projectId)).filter(
+				(s) => s.provider === 'anthropic',
+			);
+
+			if (anthropicSelections.length > 0) {
+				for (const selection of anthropicSelections) {
+					const named = namedTokens.find((n) => n.setId === selection.setId);
+					if (!named) continue;
+					sources.push({
+						scope: 'org',
+						setId: named.setId,
+						setName: named.setName,
+						inPool: true,
+						token: named.value,
+						active: sources.length === 0,
+					});
+				}
+			} else {
+				const defaultToken = namedTokens.find((n) => n.isDefault);
+				if (defaultToken) {
+					sources.push({
+						scope: 'org',
+						setId: defaultToken.setId,
+						setName: defaultToken.setName,
+						inPool: false,
+						token: defaultToken.value,
+						active: sources.length === 0,
+					});
+				}
 			}
 
 			return fetchLimitsForSources(sources);

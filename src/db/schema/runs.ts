@@ -34,6 +34,12 @@ export const agentRuns = pgTable(
 		prUrl: text('pr_url'),
 		outputSummary: text('output_summary'),
 		jobId: text('job_id'),
+		/** Populated only while status='suspended' (rate-limit suspension). */
+		resumeAt: timestamp('resume_at'),
+		// Engine-credential rotation attribution. Snapshot semantics — plain
+		// text, no FK, so history survives credential-set deletion.
+		engineCredentialId: text('engine_credential_id'),
+		engineCredentialName: text('engine_credential_name'),
 	},
 	(table) => [
 		index('idx_agent_runs_project_id').on(table.projectId),

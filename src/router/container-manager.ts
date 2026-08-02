@@ -19,8 +19,10 @@ import { logger } from '../utils/logging.js';
 import { activeWorkers } from './active-workers.js';
 import { clearAllAgentTypeLocks } from './agent-type-lock.js';
 import { routerConfig } from './config.js';
+import { resolveClaudeCredentialForJob } from './engine-credential-rotation.js';
 import { stopOrphanCleanup } from './orphan-cleanup.js';
 import type { CascadeJob } from './queue.js';
+import { suspendJobForRateLimit } from './run-suspension.js';
 import { invalidateSnapshot } from './snapshot-manager.js';
 import { clearAllWorkItemLocks } from './work-item-lock.js';
 import {
@@ -296,6 +298,24 @@ export async function spawnWorker(job: Job<CascadeJob>): Promise<void> {
 
 	const workItemId = extractWorkItemId(job.data);
 
+	// Engine-credential rotation: pick the least-utilized Anthropic token from
+	// the project's pool (claude-code runs only), or suspend the run when every
+	// pool credential is at/over the utilization threshold. Suspension returns
+	// WITHOUT spawning — the BullMQ job completes, locks are released inside
+	// suspendJobForRateLimit, and a delayed resume job re-submits later.
+	const rotation = await resolveClaudeCredentialForJob(job.data, projectId, agentType);
+	if (rotation.kind === 'suspend') {
+		if (!projectId || !agentType) {
+			// resolveClaudeCredentialForJob never suspends without an agentType,
+			// and a null projectId returns 'none' — this is unreachable, but the
+			// narrowing keeps the SuspendContext honest.
+			throw new Error('Rotation suspend decision without projectId/agentType');
+		}
+		await suspendJobForRateLimit(job, rotation, { projectId, agentType, workItemId });
+		return;
+	}
+	const rotationToken = rotation.kind === 'token' ? rotation : undefined;
+
 	const {
 		snapshotEnabled,
 		workerImage,
@@ -317,6 +337,7 @@ export async function spawnWorker(job: Job<CascadeJob>): Promise<void> {
 		projectId,
 		snapshotReuse,
 		snapshotEnabled,
+		rotationToken,
 	);
 	const hasCredentials = workerEnv.some((e) => e.startsWith('CASCADE_CREDENTIAL_KEYS='));
 
@@ -359,7 +380,15 @@ export async function spawnWorker(job: Job<CascadeJob>): Promise<void> {
 				{ jobId, staleImage: workerImage, effectiveBaseImage, effectiveBaseImageLocalOnly },
 			);
 			invalidateSnapshot(projectId, workItemId);
-			const fallbackEnv = await buildWorkerEnvWithProjectId(job, projectId, false, snapshotEnabled);
+			// Reuse the SAME rotation decision — the fallback rebuild must not
+			// re-select (utilization may have shifted between the two builds).
+			const fallbackEnv = await buildWorkerEnvWithProjectId(
+				job,
+				projectId,
+				false,
+				snapshotEnabled,
+				rotationToken,
+			);
 			const fallbackConfig: WorkerContainerLaunchConfig = {
 				workerImage: effectiveBaseImage,
 				snapshotEnabled,

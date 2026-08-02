@@ -567,7 +567,7 @@ export const runsRouter = router({
 				await verifyProjectOrgAccess(run.projectId, ctx.effectiveOrgId);
 			}
 
-			if (run.status !== 'running') {
+			if (run.status !== 'running' && run.status !== 'suspended') {
 				throw new TRPCError({
 					code: 'BAD_REQUEST',
 					message: `Run is not running (status: ${run.status})`,
@@ -583,14 +583,18 @@ export const runsRouter = router({
 				});
 			}
 
-			// Publish cancel command to Router (fire-and-forget)
-			publishCancelCommand(input.runId, reason).catch((err) => {
-				logger.error('[runs.cancel] Failed to publish cancel command:', {
-					runId: input.runId,
-					reason,
-					error: String(err),
+			// Publish cancel command to Router (fire-and-forget). Suspended runs
+			// have no container — the pending resume job self-neutralizes on its
+			// status guard, so there is nothing to signal.
+			if (run.status === 'running') {
+				publishCancelCommand(input.runId, reason).catch((err) => {
+					logger.error('[runs.cancel] Failed to publish cancel command:', {
+						runId: input.runId,
+						reason,
+						error: String(err),
+					});
 				});
-			});
+			}
 
 			return { cancelled: true };
 		}),

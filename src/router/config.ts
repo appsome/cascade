@@ -70,6 +70,12 @@ export interface RouterConfig {
 	snapshotDefaultTtlMs: number;
 	snapshotMaxCount: number;
 	snapshotMaxSizeBytes: number;
+
+	/**
+	 * Engine-credential rotation: a pool credential whose max gating-bucket
+	 * utilization is at/over this percentage is considered exhausted.
+	 */
+	rotationUtilizationThreshold: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,4 +174,6 @@ export const routerConfig: RouterConfig = {
 	snapshotDefaultTtlMs: Number(process.env.SNAPSHOT_DEFAULT_TTL_MS) || 24 * 60 * 60 * 1000, // 24 hours
 	snapshotMaxCount: Number(process.env.SNAPSHOT_MAX_COUNT) || 5,
 	snapshotMaxSizeBytes: Number(process.env.SNAPSHOT_MAX_SIZE_BYTES) || 10 * 1024 * 1024 * 1024, // 10 GB
+
+	rotationUtilizationThreshold: Number(process.env.ROTATION_UTILIZATION_THRESHOLD) || 95,
 };

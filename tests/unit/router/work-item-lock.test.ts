@@ -38,6 +38,7 @@ describe('work-item-lock', () => {
 			workItemId: 'card1',
 			agentType: 'implementation',
 			maxAgeMs,
+			includeSuspended: true,
 		});
 	});
 
@@ -208,6 +209,7 @@ describe('work-item-lock', () => {
 				projectId: 'proj1',
 				agentType: 'backlog-manager',
 				maxAgeMs,
+				includeSuspended: true,
 			});
 		});
 
@@ -220,6 +222,7 @@ describe('work-item-lock', () => {
 				workItemId: 'card1',
 				agentType: 'implementation',
 				maxAgeMs,
+				includeSuspended: true,
 			});
 		});
 	});

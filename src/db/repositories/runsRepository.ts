@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNull, ne, type SQL } from 'drizzle-orm';
 import { getDb } from '../client.js';
 import { agentRuns, prWorkItems } from '../schema/index.js';
 import { buildAgentRunWorkItemJoin } from './joinHelpers.js';
@@ -16,6 +16,9 @@ export interface CreateRunInput {
 	triggerType?: string;
 	model?: string;
 	maxIterations?: number;
+	/** Engine-credential rotation attribution (snapshot, no FK). */
+	engineCredentialId?: string;
+	engineCredentialName?: string;
 }
 
 export interface CompleteRunInput {
@@ -61,6 +64,9 @@ export const enrichedRunSelect = {
 	prUrl: agentRuns.prUrl,
 	outputSummary: agentRuns.outputSummary,
 	jobId: agentRuns.jobId,
+	resumeAt: agentRuns.resumeAt,
+	engineCredentialId: agentRuns.engineCredentialId,
+	engineCredentialName: agentRuns.engineCredentialName,
 	workItemUrl: prWorkItems.workItemUrl,
 	workItemTitle: prWorkItems.workItemTitle,
 	prTitle: prWorkItems.prTitle,
@@ -80,6 +86,13 @@ export const enrichedRunSelect = {
  * `implementation-freshness-gate`) deliberately stays `running`-only — see
  * `countActiveRuns`'s `includeQueued` opt-in. The CONFLICT guard, orphan
  * cleanup, and the frontend treat `queued` as active.
+ *
+ * `suspended` (rate-limit suspension, spec: engine-credential rotation) is
+ * deliberately NOT in this list: a suspended run consumes no worker, so
+ * capacity math, orphan cleanup, and worker-exit reconciliation must all
+ * ignore it. Only the duplicate-dispatch guards opt in via
+ * `includeSuspended` — a suspended run still holds the same-type-per-work-item
+ * invariant so a webhook arriving mid-suspension can't double-dispatch.
  */
 export const ACTIVE_RUN_STATUSES = ['running', 'queued'] as const;
 
@@ -108,6 +121,8 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			triggerType: input.triggerType,
 			model: input.model,
 			maxIterations: input.maxIterations,
+			engineCredentialId: input.engineCredentialId,
+			engineCredentialName: input.engineCredentialName,
 			status: 'running',
 		})
 		.returning({ id: agentRuns.id });
@@ -137,6 +152,8 @@ export async function createQueuedRun(input: CreateRunInput): Promise<string> {
 			triggerType: input.triggerType,
 			model: input.model,
 			maxIterations: input.maxIterations,
+			engineCredentialId: input.engineCredentialId,
+			engineCredentialName: input.engineCredentialName,
 			status: 'queued',
 		})
 		.returning({ id: agentRuns.id });
@@ -156,23 +173,38 @@ export async function createQueuedRun(input: CreateRunInput): Promise<string> {
  * @returns `true` when a `queued` row was flipped to `running`; `false` when no
  *   `queued` row matched (already activated, terminal, or never existed).
  */
-export async function activateQueuedRun(runId: string): Promise<boolean> {
+export async function activateQueuedRun(
+	runId: string,
+	credential?: { engineCredentialId?: string; engineCredentialName?: string },
+): Promise<boolean> {
 	const db = getDb();
 	const [updated] = await db
 		.update(agentRuns)
-		.set({ status: 'running', startedAt: new Date() })
+		.set({
+			status: 'running',
+			startedAt: new Date(),
+			...(credential?.engineCredentialId
+				? {
+						engineCredentialId: credential.engineCredentialId,
+						engineCredentialName: credential.engineCredentialName,
+					}
+				: {}),
+		})
 		.where(and(eq(agentRuns.id, runId), eq(agentRuns.status, 'queued')))
 		.returning({ id: agentRuns.id });
 	return !!updated;
 }
 
 /**
- * Mark a still-active (`queued` or `running`) run as terminal (MNG-1695).
+ * Mark a still-active (`queued`, `running`, or `suspended`) run as terminal
+ * (MNG-1695).
  *
  * Used for enqueue-failure rollback (tRPC trigger) and the dispatch compensator
  * fast-path so a pre-created row never leaks as a stuck `queued`/`running` row
- * when the worker never starts. Guarded on `status IN (queued, running)` so it
- * is safe to call even if the run already completed.
+ * when the worker never starts. `suspended` rows are included so a suspension
+ * whose resume bookkeeping dies terminally (e.g. Redis down through all BullMQ
+ * retries) is flipped to `failed` by the compensator instead of leaking
+ * forever. Safe to call even if the run already completed.
  */
 export async function failQueuedOrRunningRun(
 	runId: string,
@@ -182,8 +214,13 @@ export async function failQueuedOrRunningRun(
 	const db = getDb();
 	const [updated] = await db
 		.update(agentRuns)
-		.set({ status, completedAt: new Date(), error: reason })
-		.where(and(eq(agentRuns.id, runId), inArray(agentRuns.status, ACTIVE_RUN_STATUSES)))
+		.set({ status, completedAt: new Date(), error: reason, resumeAt: null })
+		.where(
+			and(
+				eq(agentRuns.id, runId),
+				inArray(agentRuns.status, [...ACTIVE_RUN_STATUSES, 'suspended']),
+			),
+		)
 		.returning({ id: agentRuns.id });
 	return !!updated;
 }
@@ -290,6 +327,18 @@ export interface CountActiveRunsOpts {
 	 * the work-item CONFLICT guard (`hasActiveRunForWorkItem`) opts in.
 	 */
 	includeQueued?: boolean;
+	/**
+	 * When `true`, also count `suspended` rows (rate-limit suspension). Opt-in
+	 * for duplicate-dispatch guards only — suspended runs consume no worker, so
+	 * capacity math must never count them.
+	 */
+	includeSuspended?: boolean;
+	/**
+	 * Exclude one run id from the count — the resume handler's supersede guard
+	 * must not count the suspended run it is about to requeue as its own
+	 * conflict.
+	 */
+	excludeRunId?: string;
 }
 
 /**
@@ -298,11 +347,11 @@ export interface CountActiveRunsOpts {
  */
 export async function countActiveRuns(opts: CountActiveRunsOpts): Promise<number> {
 	const db = getDb();
+	const statuses: string[] = opts.includeQueued ? [...ACTIVE_RUN_STATUSES] : ['running'];
+	if (opts.includeSuspended) statuses.push('suspended');
 	const conditions: SQL[] = [
 		eq(agentRuns.projectId, opts.projectId),
-		opts.includeQueued
-			? inArray(agentRuns.status, ACTIVE_RUN_STATUSES)
-			: eq(agentRuns.status, 'running'),
+		statuses.length === 1 ? eq(agentRuns.status, statuses[0]) : inArray(agentRuns.status, statuses),
 	];
 	if (opts.workItemId !== undefined) {
 		conditions.push(eq(agentRuns.workItemId, opts.workItemId));
@@ -313,6 +362,9 @@ export async function countActiveRuns(opts: CountActiveRunsOpts): Promise<number
 	if (opts.maxAgeMs !== undefined) {
 		const cutoff = new Date(Date.now() - opts.maxAgeMs);
 		conditions.push(gte(agentRuns.startedAt, cutoff));
+	}
+	if (opts.excludeRunId !== undefined) {
+		conditions.push(ne(agentRuns.id, opts.excludeRunId));
 	}
 	const [row] = await db
 		.select({ count: count() })
@@ -328,8 +380,18 @@ export async function hasActiveRunForWorkItem(
 ): Promise<boolean> {
 	// MNG-1695: a pre-created `queued` row counts as active here so the CONFLICT
 	// guard (runs.trigger + runs.retry) blocks a duplicate dispatch on the same
-	// work item during the brief queued window.
-	return (await countActiveRuns({ projectId, workItemId, maxAgeMs, includeQueued: true })) > 0;
+	// work item during the brief queued window. `suspended` rows count too — a
+	// rate-limit-suspended run will auto-resume, so a duplicate manual/retry
+	// dispatch on the same work item must be blocked meanwhile.
+	return (
+		(await countActiveRuns({
+			projectId,
+			workItemId,
+			maxAgeMs,
+			includeQueued: true,
+			includeSuspended: true,
+		})) > 0
+	);
 }
 
 export async function failOrphanedRun(
@@ -423,8 +485,107 @@ export async function cancelRunById(runId: string, reason: string): Promise<bool
 			status: 'failed',
 			completedAt: new Date(),
 			error: reason,
+			resumeAt: null,
 		})
-		.where(and(eq(agentRuns.id, runId), eq(agentRuns.status, 'running')))
+		// `suspended` is cancellable too — the pending resume job self-neutralizes
+		// on its status guard when it fires.
+		.where(and(eq(agentRuns.id, runId), inArray(agentRuns.status, ['running', 'suspended'])))
+		.returning({ id: agentRuns.id });
+	return !!updated;
+}
+
+// ============================================================================
+// Rate-limit suspension (engine-credential rotation)
+// ============================================================================
+
+/**
+ * Flip an active (`queued`/`running`) run to `suspended` with a reason and
+ * expected resume time. Guarded so a double-fire is an idempotent no-op.
+ */
+export async function suspendRunById(
+	runId: string,
+	reason: string,
+	resumeAt: Date,
+): Promise<boolean> {
+	const db = getDb();
+	const [updated] = await db
+		.update(agentRuns)
+		.set({ status: 'suspended', error: reason, resumeAt })
+		.where(and(eq(agentRuns.id, runId), inArray(agentRuns.status, ACTIVE_RUN_STATUSES)))
+		.returning({ id: agentRuns.id });
+	return !!updated;
+}
+
+export interface CreateSuspendedRunInput extends CreateRunInput {
+	reason: string;
+	resumeAt: Date;
+	jobId: string;
+}
+
+/**
+ * Create a `suspended` run row for a dispatch that had no pre-created run
+ * (webhook cascade jobs). Keyed by jobId for idempotency across BullMQ
+ * retries — pair with {@link findSuspendedRunByJobId}.
+ */
+export async function createSuspendedRun(input: CreateSuspendedRunInput): Promise<string> {
+	const db = getDb();
+	const [row] = await db
+		.insert(agentRuns)
+		.values({
+			projectId: input.projectId,
+			workItemId: input.workItemId,
+			prNumber: input.prNumber,
+			agentType: input.agentType,
+			engine: input.engine,
+			triggerType: input.triggerType,
+			model: input.model,
+			status: 'suspended',
+			error: input.reason,
+			resumeAt: input.resumeAt,
+			jobId: input.jobId,
+		})
+		.returning({ id: agentRuns.id });
+	return row.id;
+}
+
+/** Idempotency lookup for {@link createSuspendedRun} across BullMQ retries. */
+export async function findSuspendedRunByJobId(jobId: string): Promise<string | null> {
+	const db = getDb();
+	const [row] = await db
+		.select({ id: agentRuns.id })
+		.from(agentRuns)
+		.where(and(eq(agentRuns.jobId, jobId), eq(agentRuns.status, 'suspended')))
+		.limit(1);
+	return row?.id ?? null;
+}
+
+/**
+ * Flip a `suspended` run back to `queued` for re-dispatch. Resets `startedAt`
+ * so maxAge-bounded duplicate guards see it fresh, and clears the suspension
+ * reason + resume time. Returns false when the row is no longer suspended
+ * (cancelled or already resumed) — the caller must then skip the re-dispatch.
+ */
+export async function requeueSuspendedRun(runId: string): Promise<boolean> {
+	const db = getDb();
+	const [updated] = await db
+		.update(agentRuns)
+		.set({ status: 'queued', startedAt: new Date(), error: null, resumeAt: null })
+		.where(and(eq(agentRuns.id, runId), eq(agentRuns.status, 'suspended')))
+		.returning({ id: agentRuns.id });
+	return !!updated;
+}
+
+/** Refresh a still-suspended run's reason + resume time (re-suspension). */
+export async function updateRunSuspension(
+	runId: string,
+	reason: string,
+	resumeAt: Date,
+): Promise<boolean> {
+	const db = getDb();
+	const [updated] = await db
+		.update(agentRuns)
+		.set({ error: reason, resumeAt })
+		.where(and(eq(agentRuns.id, runId), eq(agentRuns.status, 'suspended')))
 		.returning({ id: agentRuns.id });
 	return !!updated;
 }

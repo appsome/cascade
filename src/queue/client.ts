@@ -48,6 +48,8 @@ export interface RetryRunJob {
 	runId: string;
 	projectId: string;
 	modelOverride?: string;
+	/** Rate-limit resume path: requeued run row to reuse instead of inserting. */
+	preCreatedRunId?: string;
 }
 
 export interface DebugAnalysisJob {
@@ -55,6 +57,8 @@ export interface DebugAnalysisJob {
 	runId: string;
 	projectId: string;
 	workItemId?: string;
+	/** Rate-limit resume path: requeued run row to reuse instead of inserting. */
+	preCreatedRunId?: string;
 }
 
 /**
@@ -86,12 +90,33 @@ export interface WorkerImageBuildJob {
 	buildHash: string;
 }
 
+/**
+ * Delayed resume for a run suspended at dispatch time because every Anthropic
+ * credential in the project's rotation pool was at/over the utilization
+ * threshold. Lives on cascade-dashboard-jobs (router-side non-spawning handler,
+ * precedent: worker-image-validation) — deliberately NOT a delayed re-add of
+ * the original job onto cascade-jobs, whose delayed jobs are scanned by name
+ * by the PM coalescing machinery (scheduleCoalescedJob) and would silently
+ * supersede a coalesce-key-named original.
+ */
+export interface ResumeSuspendedRunJob {
+	type: 'resume-suspended-run';
+	runId: string;
+	originalQueue: 'cascade-jobs' | 'cascade-dashboard-jobs';
+	originalJobData: unknown;
+	suspendCount: number;
+	projectId: string;
+	agentType: string;
+	workItemId?: string;
+}
+
 export type DashboardJob =
 	| ManualRunJob
 	| RetryRunJob
 	| DebugAnalysisJob
 	| WorkerImageValidationJob
-	| WorkerImageBuildJob;
+	| WorkerImageBuildJob
+	| ResumeSuspendedRunJob;
 
 // ── Queue ────────────────────────────────────────────────────────────────────
 
@@ -125,6 +150,21 @@ function getQueue(): Queue<DashboardJob> {
 export async function submitDashboardJob(job: DashboardJob, jobId?: string): Promise<string> {
 	const id = jobId ?? `${job.type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 	const result = await getQueue().add(job.type, job, { jobId: id });
+	return result.id ?? id;
+}
+
+/**
+ * Schedule a delayed resume for a rate-limit-suspended run. The BullMQ job
+ * NAME is the scannable `resume_<runId>`; the job ID gets a unique suffix
+ * because BullMQ silently no-ops an add that reuses a completed job's id
+ * (and rejects most colon ids) — both lessons from scheduleCoalescedJob.
+ */
+export async function scheduleResumeSuspendedRun(
+	job: ResumeSuspendedRunJob,
+	delayMs: number,
+): Promise<string> {
+	const id = `resume_${job.runId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+	const result = await getQueue().add(`resume_${job.runId}`, job, { jobId: id, delay: delayMs });
 	return result.id ?? id;
 }
 

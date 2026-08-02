@@ -30,6 +30,8 @@ interface RunSummaryProps {
 		outputSummary: string | null;
 		workItemTitle?: string | null;
 		workItemUrl?: string | null;
+		resumeAt?: string | null;
+		engineCredentialName?: string | null;
 	};
 }
 
@@ -164,6 +166,10 @@ export function RunSummaryCard({ run }: RunSummaryProps) {
 				<Field label="Engine">{run.engine}</Field>
 				<Field label="Model">{run.model ?? '-'}</Field>
 				<Field label="Trigger">{run.triggerType ?? '-'}</Field>
+				{run.engineCredentialName && <Field label="Credential">{run.engineCredentialName}</Field>}
+				{run.status === 'suspended' && run.resumeAt && (
+					<Field label="Resumes">~{new Date(run.resumeAt).toLocaleString()}</Field>
+				)}
 				<Field label="Duration">{formatDuration(displayDuration)}</Field>
 				<Field label="Cost">{formatCost(run.costUsd)}</Field>
 				<Field label="LLM Iterations">{getIterationsLabel(run)}</Field>

@@ -5,6 +5,7 @@ import { reEncryptCredential } from '../crypto.js';
 import {
 	agentConfigs,
 	agentTriggerConfigs,
+	projectCredentialSelections,
 	projectCredentials,
 	projectIntegrations,
 	projects,
@@ -308,19 +309,34 @@ export async function cloneProject(
 	}
 
 	// 2. Fetch related tables in parallel
-	const [integrations, credentials, agentConfigRows, triggerConfigRows] = await Promise.all([
-		db.select().from(projectIntegrations).where(eq(projectIntegrations.projectId, sourceProjectId)),
-		db
-			.select({
-				envVarKey: projectCredentials.envVarKey,
-				value: projectCredentials.value,
-				name: projectCredentials.name,
-			})
-			.from(projectCredentials)
-			.where(eq(projectCredentials.projectId, sourceProjectId)),
-		db.select().from(agentConfigs).where(eq(agentConfigs.projectId, sourceProjectId)),
-		db.select().from(agentTriggerConfigs).where(eq(agentTriggerConfigs.projectId, sourceProjectId)),
-	]);
+	const [integrations, credentials, agentConfigRows, triggerConfigRows, credentialSelections] =
+		await Promise.all([
+			db
+				.select()
+				.from(projectIntegrations)
+				.where(eq(projectIntegrations.projectId, sourceProjectId)),
+			db
+				.select({
+					envVarKey: projectCredentials.envVarKey,
+					value: projectCredentials.value,
+					name: projectCredentials.name,
+				})
+				.from(projectCredentials)
+				.where(eq(projectCredentials.projectId, sourceProjectId)),
+			db.select().from(agentConfigs).where(eq(agentConfigs.projectId, sourceProjectId)),
+			db
+				.select()
+				.from(agentTriggerConfigs)
+				.where(eq(agentTriggerConfigs.projectId, sourceProjectId)),
+			db
+				.select({
+					provider: projectCredentialSelections.provider,
+					setId: projectCredentialSelections.setId,
+					position: projectCredentialSelections.position,
+				})
+				.from(projectCredentialSelections)
+				.where(eq(projectCredentialSelections.projectId, sourceProjectId)),
+		]);
 
 	// 3. Run everything in a transaction
 	await db.transaction(async (tx) => {
@@ -397,6 +413,19 @@ export async function cloneProject(
 					triggerEvent: t.triggerEvent,
 					enabled: t.enabled,
 					parameters: t.parameters,
+				})),
+			);
+		}
+
+		// Insert credential set selections (references only — no re-encryption;
+		// the sets are org-scoped and shared between the two projects)
+		if (credentialSelections.length > 0) {
+			await tx.insert(projectCredentialSelections).values(
+				credentialSelections.map((s) => ({
+					projectId: newProjectId,
+					provider: s.provider,
+					setId: s.setId,
+					position: s.position,
 				})),
 			);
 		}

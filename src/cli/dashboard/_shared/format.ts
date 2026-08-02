@@ -145,6 +145,8 @@ export function formatStatus(status: unknown): string {
 		case 'queued':
 		case 'cancelled':
 			return chalk.yellow(s);
+		case 'suspended':
+			return chalk.magenta(s);
 		default:
 			return s;
 	}

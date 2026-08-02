@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { CLAUDE_CODE_SETTING_DEFAULTS } from '../../backends/claude-code/settings.js';
 import { CODEX_SETTING_DEFAULTS } from '../../backends/codex/settings.js';
 import { OPENCODE_SETTING_DEFAULTS } from '../../backends/opencode/settings.js';
+import { CREDENTIAL_PROVIDERS, getCredentialProvider } from '../../config/credentialProviders.js';
 import { EngineSettingsSchema } from '../../config/engineSettings.js';
 import { getOrgCredential } from '../../config/provider.js';
 import { PROJECT_DEFAULTS } from '../../config/schema.js';
@@ -12,10 +13,13 @@ import { isValidImageReference } from '../../config/workerImageRef.js';
 import { getDb } from '../../db/client.js';
 import {
 	deleteProjectCredential,
+	listProjectCredentialSelections,
 	listProjectCredentials,
 	listProjectCredentialsMeta,
+	setProjectCredentialSelections,
 	writeProjectCredential,
 } from '../../db/repositories/credentialsRepository.js';
+import { listSetsMeta } from '../../db/repositories/orgCredentialSetsRepository.js';
 import {
 	listOrgCredentials,
 	listOrgCredentialsMeta,
@@ -944,6 +948,71 @@ export const projectsRouter = router({
 			.mutation(async ({ ctx, input }) => {
 				await verifyProjectOwnership(input.projectId, ctx.effectiveOrgId);
 				await deleteProjectCredential(input.projectId, input.envVarKey);
+			}),
+	}),
+
+	// Which named org credential set(s) this project uses per provider.
+	// Deliberately non-admin: project members pick from org sets by NAME —
+	// availableSets exposes names + configured-key presence only, never values.
+	credentialSelections: router({
+		list: protectedProcedure
+			.input(z.object({ projectId: z.string() }))
+			.query(async ({ ctx, input }) => {
+				await verifyProjectOwnership(input.projectId, ctx.effectiveOrgId);
+				const rows = await listProjectCredentialSelections(input.projectId);
+				return CREDENTIAL_PROVIDERS.map((provider) => ({
+					provider: provider.id,
+					multiSelect: provider.multiSelect,
+					selections: rows
+						.filter((r) => r.provider === provider.id)
+						.map((r) => ({ setId: r.setId, setName: r.setName, position: r.position })),
+				}));
+			}),
+
+		availableSets: protectedProcedure
+			.input(z.object({ projectId: z.string() }))
+			.query(async ({ ctx, input }) => {
+				await verifyProjectOwnership(input.projectId, ctx.effectiveOrgId);
+				const sets = await listSetsMeta(ctx.effectiveOrgId);
+				return CREDENTIAL_PROVIDERS.map((provider) => ({
+					provider: provider.id,
+					multiSelect: provider.multiSelect,
+					sets: sets
+						.filter((s) => s.provider === provider.id)
+						.map((s) => ({
+							id: s.id,
+							name: s.name,
+							isDefault: s.isDefault,
+							configuredKeys: s.keys.map((k) => k.envVarKey),
+						})),
+				}));
+			}),
+
+		set: protectedProcedure
+			.input(
+				z.object({
+					projectId: z.string(),
+					provider: z.string(),
+					setIds: z.array(z.number().int()).max(16),
+				}),
+			)
+			.mutation(async ({ ctx, input }) => {
+				await verifyProjectOwnership(input.projectId, ctx.effectiveOrgId);
+				const providerDef = getCredentialProvider(input.provider);
+				if (!providerDef) {
+					throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown credential provider' });
+				}
+				if (!providerDef.multiSelect && input.setIds.length > 1) {
+					throw new TRPCError({
+						code: 'BAD_REQUEST',
+						message: `${providerDef.label} supports a single credential selection`,
+					});
+				}
+				try {
+					await setProjectCredentialSelections(input.projectId, input.provider, input.setIds);
+				} catch (err) {
+					throw new TRPCError({ code: 'BAD_REQUEST', message: String(err) });
+				}
 			}),
 	}),
 

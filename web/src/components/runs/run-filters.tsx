@@ -11,7 +11,7 @@ interface RunFiltersProps {
 	projects?: { id: string; name: string }[];
 }
 
-const statuses = ['queued', 'running', 'completed', 'failed', 'timed_out'];
+const statuses = ['queued', 'running', 'suspended', 'completed', 'failed', 'timed_out'];
 const agentTypes = [
 	'splitting',
 	'planning',

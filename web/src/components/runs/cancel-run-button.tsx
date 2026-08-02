@@ -16,7 +16,7 @@ import { trpc, trpcClient } from '@/lib/trpc.js';
 
 interface CancelRunButtonProps {
 	runId: string;
-	/** Only show button when status is 'running' */
+	/** Only show button when status is 'running' or 'suspended' */
 	status: string;
 }
 
@@ -46,7 +46,9 @@ export function CancelRunButton({ runId, status }: CancelRunButtonProps) {
 		}
 	}, [showSuccess]);
 
-	if (status !== 'running') {
+	// Suspended (rate-limit) runs are cancellable too — the pending resume job
+	// self-neutralizes on its status guard.
+	if (status !== 'running' && status !== 'suspended') {
 		return null;
 	}
 

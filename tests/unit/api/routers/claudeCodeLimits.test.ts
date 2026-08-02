@@ -4,15 +4,17 @@ import { createCallerFor, expectTRPCError } from '../../../helpers/trpcTestHarne
 
 const {
 	mockListAllClaudeCodeCredentials,
+	mockListAllNamedClaudeCodeTokens,
+	mockListProjectCredentialSelections,
 	mockGetProjectOwnCredential,
-	mockResolveOrgCredential,
 	mockFetchClaudeSubscriptionLimits,
 	mockVerifyProjectOrgAccess,
 	mockGetOrgMembership,
 } = vi.hoisted(() => ({
 	mockListAllClaudeCodeCredentials: vi.fn(),
+	mockListAllNamedClaudeCodeTokens: vi.fn(),
+	mockListProjectCredentialSelections: vi.fn(),
 	mockGetProjectOwnCredential: vi.fn(),
-	mockResolveOrgCredential: vi.fn(),
 	mockFetchClaudeSubscriptionLimits: vi.fn(),
 	mockVerifyProjectOrgAccess: vi.fn(),
 	mockGetOrgMembership: vi.fn(),
@@ -20,11 +22,9 @@ const {
 
 vi.mock('../../../../src/db/repositories/credentialsRepository.js', () => ({
 	listAllClaudeCodeCredentials: mockListAllClaudeCodeCredentials,
+	listAllNamedClaudeCodeTokens: mockListAllNamedClaudeCodeTokens,
+	listProjectCredentialSelections: mockListProjectCredentialSelections,
 	getProjectOwnCredential: mockGetProjectOwnCredential,
-}));
-
-vi.mock('../../../../src/db/repositories/orgCredentialsRepository.js', () => ({
-	resolveOrgCredential: mockResolveOrgCredential,
 }));
 
 vi.mock('../../../../src/anthropic/client.js', () => ({
@@ -50,8 +50,8 @@ const mockAdmin = createMockUser({ role: 'admin' });
 const sampleLimits = {
 	tokenMasked: '****abcd',
 	buckets: [
-		{ label: '5-Hour Window', utilization: 33, resetsAt: '2026-04-10T19:00:00Z' },
-		{ label: '7-Day Overall', utilization: 3, resetsAt: '2026-04-17T10:00:00Z' },
+		{ key: 'five_hour', label: '5-Hour Window', utilization: 33, resetsAt: '2026-04-10T19:00:00Z' },
+		{ key: 'seven_day', label: '7-Day Overall', utilization: 3, resetsAt: '2026-04-17T10:00:00Z' },
 	],
 	extraUsage: { isEnabled: false, monthlyLimit: null, usedCredits: null, utilization: null },
 };
@@ -60,7 +60,8 @@ describe('claudeCodeLimitsRouter', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockGetOrgMembership.mockResolvedValue(null);
-		mockResolveOrgCredential.mockResolvedValue(null);
+		mockListAllNamedClaudeCodeTokens.mockResolvedValue([]);
+		mockListProjectCredentialSelections.mockResolvedValue([]);
 		mockListAllClaudeCodeCredentials.mockResolvedValue([]);
 		mockGetProjectOwnCredential.mockResolvedValue(null);
 		mockVerifyProjectOrgAccess.mockResolvedValue(undefined);
@@ -83,8 +84,11 @@ describe('claudeCodeLimitsRouter', () => {
 			expect(await caller.forOrg()).toEqual([]);
 		});
 
-		it('labels org and project sources with attribution', async () => {
-			mockResolveOrgCredential.mockResolvedValue('org-token');
+		it('labels named-set and project sources with attribution', async () => {
+			mockListAllNamedClaudeCodeTokens.mockResolvedValue([
+				{ setId: 1, setName: 'personal', isDefault: true, value: 'personal-token' },
+				{ setId: 2, setName: 'work', isDefault: false, value: 'work-token' },
+			]);
 			mockListAllClaudeCodeCredentials.mockResolvedValue([
 				{ projectId: 'proj-1', projectName: 'Project One', value: 'proj-token' },
 			]);
@@ -94,7 +98,8 @@ describe('claudeCodeLimitsRouter', () => {
 			const result = await caller.forOrg();
 
 			expect(result).toEqual([
-				{ scope: 'org', limits: sampleLimits },
+				{ scope: 'org', setId: 1, setName: 'personal', limits: sampleLimits },
+				{ scope: 'org', setId: 2, setName: 'work', limits: sampleLimits },
 				{
 					scope: 'project',
 					projectId: 'proj-1',
@@ -102,32 +107,28 @@ describe('claudeCodeLimitsRouter', () => {
 					limits: sampleLimits,
 				},
 			]);
-			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('org-token');
+			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('personal-token');
+			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('work-token');
 			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('proj-token');
 		});
 
 		it('keeps a failed source with limits: null instead of dropping it', async () => {
-			mockResolveOrgCredential.mockResolvedValue('org-token');
+			mockListAllNamedClaudeCodeTokens.mockResolvedValue([
+				{ setId: 1, setName: 'Default', isDefault: true, value: 'org-token' },
+			]);
 			mockFetchClaudeSubscriptionLimits.mockResolvedValue(null);
 
 			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
 			const result = await caller.forOrg();
 
-			expect(result).toEqual([{ scope: 'org', limits: null }]);
-		});
-
-		it('treats an undecryptable org token as absent instead of erroring', async () => {
-			mockResolveOrgCredential.mockRejectedValue(new Error('decrypt failed'));
-
-			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
-			expect(await caller.forOrg()).toEqual([]);
+			expect(result).toEqual([{ scope: 'org', setId: 1, setName: 'Default', limits: null }]);
 		});
 
 		it('scopes lookups to the effective org', async () => {
 			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
 			await caller.forOrg();
 
-			expect(mockResolveOrgCredential).toHaveBeenCalledWith('org-1', 'CLAUDE_CODE_OAUTH_TOKEN');
+			expect(mockListAllNamedClaudeCodeTokens).toHaveBeenCalledWith('org-1');
 			expect(mockListAllClaudeCodeCredentials).toHaveBeenCalledWith('org-1');
 		});
 	});
@@ -141,9 +142,11 @@ describe('claudeCodeLimitsRouter', () => {
 			expect(mockVerifyProjectOrgAccess).toHaveBeenCalledWith('p1', 'org-1');
 		});
 
-		it('marks the project override active over the org token', async () => {
+		it('marks the project override active over the org candidates', async () => {
 			mockGetProjectOwnCredential.mockResolvedValue('proj-token');
-			mockResolveOrgCredential.mockResolvedValue('org-token');
+			mockListAllNamedClaudeCodeTokens.mockResolvedValue([
+				{ setId: 1, setName: 'Default', isDefault: true, value: 'org-token' },
+			]);
 			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
 
 			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
@@ -151,19 +154,72 @@ describe('claudeCodeLimitsRouter', () => {
 
 			expect(result).toEqual([
 				{ scope: 'project', projectId: 'p1', active: true, limits: sampleLimits },
-				{ scope: 'org', active: false, limits: sampleLimits },
+				{
+					scope: 'org',
+					setId: 1,
+					setName: 'Default',
+					inPool: false,
+					active: false,
+					limits: sampleLimits,
+				},
 			]);
 			expect(mockGetProjectOwnCredential).toHaveBeenCalledWith('p1', 'CLAUDE_CODE_OAUTH_TOKEN');
 		});
 
-		it('marks the org token active when no project override exists', async () => {
-			mockResolveOrgCredential.mockResolvedValue('org-token');
+		it('marks the default set active when no project override exists', async () => {
+			mockListAllNamedClaudeCodeTokens.mockResolvedValue([
+				{ setId: 1, setName: 'Default', isDefault: true, value: 'org-token' },
+			]);
 			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
 
 			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
 			const result = await caller.forProject({ projectId: 'p1' });
 
-			expect(result).toEqual([{ scope: 'org', active: true, limits: sampleLimits }]);
+			expect(result).toEqual([
+				{
+					scope: 'org',
+					setId: 1,
+					setName: 'Default',
+					inPool: false,
+					active: true,
+					limits: sampleLimits,
+				},
+			]);
+		});
+
+		it('lists the selected pool in order with inPool attribution', async () => {
+			mockListAllNamedClaudeCodeTokens.mockResolvedValue([
+				{ setId: 1, setName: 'Default', isDefault: true, value: 'default-token' },
+				{ setId: 2, setName: 'work', isDefault: false, value: 'work-token' },
+			]);
+			mockListProjectCredentialSelections.mockResolvedValue([
+				{ provider: 'anthropic', setId: 2, setName: 'work', position: 0 },
+				{ provider: 'anthropic', setId: 1, setName: 'Default', position: 1 },
+				{ provider: 'github', setId: 9, setName: 'gh', position: 0 },
+			]);
+			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
+
+			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
+			const result = await caller.forProject({ projectId: 'p1' });
+
+			expect(result).toEqual([
+				{
+					scope: 'org',
+					setId: 2,
+					setName: 'work',
+					inPool: true,
+					active: true,
+					limits: sampleLimits,
+				},
+				{
+					scope: 'org',
+					setId: 1,
+					setName: 'Default',
+					inPool: true,
+					active: false,
+					limits: sampleLimits,
+				},
+			]);
 		});
 
 		it('returns empty array when nothing is configured', async () => {

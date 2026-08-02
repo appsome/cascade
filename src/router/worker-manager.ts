@@ -8,6 +8,7 @@
  */
 
 import { type Job, UnrecoverableError, type Worker } from 'bullmq';
+import type { ResumeSuspendedRunJob } from '../queue/client.js';
 import { logger } from '../utils/logging.js';
 import { createQueueWorker, parseRedisUrl } from './bullmq-workers.js';
 import { routerConfig } from './config.js';
@@ -22,6 +23,7 @@ import {
 import { startDanglingImageCleanup, stopDanglingImageCleanup } from './dangling-image-cleanup.js';
 import { classifyDispatchError } from './dispatch-error-classifier.js';
 import type { CascadeJob } from './queue.js';
+import { handleResumeSuspendedRun } from './run-suspension.js';
 import { acquireSlot, clearAllWaiters } from './slot-waiter.js';
 import { startSnapshotCleanup, stopSnapshotCleanup } from './snapshot-cleanup.js';
 import { syncSnapshotsFromDocker } from './snapshot-startup-sync.js';
@@ -101,6 +103,13 @@ async function processDashboardJob(job: Job): Promise<void> {
 			projectId: String(data.projectId),
 			buildHash: String(data.buildHash),
 		});
+		return;
+	}
+	if (data?.type === 'resume-suspended-run') {
+		// Rate-limit resume (engine-credential rotation): router-side, never
+		// spawns a container itself — it re-submits the original job, which then
+		// flows through the normal dispatch path.
+		await handleResumeSuspendedRun(job as Job<ResumeSuspendedRunJob>);
 		return;
 	}
 	await guardedSpawn(job as Job<CascadeJob>);

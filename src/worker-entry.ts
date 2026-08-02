@@ -183,6 +183,8 @@ export interface RetryRunJobData {
 	runId: string;
 	projectId: string;
 	modelOverride?: string;
+	/** Rate-limit resume path: requeued run row to reuse instead of inserting. */
+	preCreatedRunId?: string;
 }
 
 export interface DebugAnalysisJobData {
@@ -190,6 +192,8 @@ export interface DebugAnalysisJobData {
 	runId: string;
 	projectId: string;
 	workItemId?: string;
+	/** Rate-limit resume path: requeued run row to reuse instead of inserting. */
+	preCreatedRunId?: string;
 }
 
 export type DashboardJobData = ManualRunJobData | RetryRunJobData | DebugAnalysisJobData;
@@ -248,7 +252,13 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
 		if (!run?.projectId) throw new Error(`Run not found or has no project: ${jobData.runId}`);
 		const pc = await loadProjectConfigById(run.projectId);
 		if (!pc) throw new Error(`Project not found: ${run.projectId}`);
-		await triggerRetryRun(jobData.runId, pc.project, pc.config, jobData.modelOverride);
+		await triggerRetryRun(
+			jobData.runId,
+			pc.project,
+			pc.config,
+			jobData.modelOverride,
+			jobData.preCreatedRunId,
+		);
 	} else {
 		logger.info('[Worker] Processing debug-analysis job', { jobId, runId: jobData.runId });
 		const { triggerDebugAnalysis } = await import('./triggers/shared/debug-runner.js');
@@ -269,7 +279,13 @@ export async function processDashboardJob(jobId: string, jobData: DashboardJobDa
 			});
 			throw new Error(`Project not found: ${jobData.projectId}`);
 		}
-		await triggerDebugAnalysis(jobData.runId, pc.project, pc.config, jobData.workItemId);
+		await triggerDebugAnalysis(
+			jobData.runId,
+			pc.project,
+			pc.config,
+			jobData.workItemId,
+			jobData.preCreatedRunId,
+		);
 	}
 }
 

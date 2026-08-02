@@ -151,7 +151,10 @@ describe('tryCreateRun', () => {
 		const runId = await tryCreateRun({ ...baseInput, preCreatedRunId: 'queued-run-1' });
 
 		expect(runId).toBe('queued-run-1');
-		expect(mockActivateQueuedRun).toHaveBeenCalledWith('queued-run-1');
+		expect(mockActivateQueuedRun).toHaveBeenCalledWith('queued-run-1', {
+			engineCredentialId: undefined,
+			engineCredentialName: undefined,
+		});
 		expect(mockCreateRun).not.toHaveBeenCalled();
 	});
 
@@ -161,7 +164,10 @@ describe('tryCreateRun', () => {
 		const runId = await tryCreateRun({ ...baseInput, preCreatedRunId: 'queued-run-2' });
 
 		expect(runId).toBe('queued-run-2');
-		expect(mockActivateQueuedRun).toHaveBeenCalledWith('queued-run-2');
+		expect(mockActivateQueuedRun).toHaveBeenCalledWith('queued-run-2', {
+			engineCredentialId: undefined,
+			engineCredentialName: undefined,
+		});
 		expect(mockCreateRun).not.toHaveBeenCalled();
 	});
 

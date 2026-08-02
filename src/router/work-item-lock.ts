@@ -107,10 +107,14 @@ export async function isWorkItemLocked(
 	// DB check — same-type only, ignore runs older than 2× worker timeout.
 	// For project-singleton agents, omit workItemId so all rows for the
 	// agent type within the project count toward the limit.
+	// `includeSuspended`: a rate-limit-suspended run auto-resumes, so it still
+	// holds the same-type-per-work-item invariant at webhook time. Long
+	// suspensions age out via maxAgeMs; the resume handler's supersede guard
+	// closes that end.
 	const maxAgeMs = 2 * routerConfig.workerTimeoutMs;
 	const dbQuery = isProjectSingletonAgent(agentType)
-		? { projectId, agentType, maxAgeMs }
-		: { projectId, workItemId, agentType, maxAgeMs };
+		? { projectId, agentType, maxAgeMs, includeSuspended: true }
+		: { projectId, workItemId, agentType, maxAgeMs, includeSuspended: true };
 	const dbSameType = await countActiveRuns(dbQuery);
 
 	const effectiveSameType = Math.max(dbSameType, inMemorySameType);

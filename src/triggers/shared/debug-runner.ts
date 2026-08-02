@@ -141,6 +141,7 @@ export async function triggerDebugAnalysis(
 	project: ProjectConfig,
 	config: CascadeConfig,
 	workItemId?: string,
+	preCreatedRunId?: string,
 ): Promise<void> {
 	const run = await getRunById(analyzedRunId);
 	if (!run) {
@@ -176,6 +177,8 @@ export async function triggerDebugAnalysis(
 			originalWorkItemUrl: workItemId ? resolveWorkItemUrl(workItemId) : '',
 			prNumber: run.prNumber ?? undefined,
 			detectedAgentType: run.agentType,
+			// Rate-limit resume path: reuse the requeued run row.
+			preCreatedRunId,
 			project,
 			config,
 		});

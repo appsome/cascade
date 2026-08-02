@@ -84,7 +84,14 @@ function appendOptionalEnvVars(env: string[]): void {
 	if (process.env.DATABASE_CA_CERT) env.push(`DATABASE_CA_CERT=${process.env.DATABASE_CA_CERT}`);
 
 	// CLAUDE_CODE_OAUTH_TOKEN is for the Claude Code backend (subscription auth).
-	if (process.env.CLAUDE_CODE_OAUTH_TOKEN)
+	// Host-env fallback ONLY: a DB credential already in the env must win. This
+	// list becomes Docker Env where the LAST duplicate wins, so pushing the host
+	// token unconditionally after the DB loop silently overrode project/org
+	// credentials (and would defeat engine-credential rotation).
+	if (
+		process.env.CLAUDE_CODE_OAUTH_TOKEN &&
+		!env.some((e) => e.startsWith('CLAUDE_CODE_OAUTH_TOKEN='))
+	)
 		env.push(`CLAUDE_CODE_OAUTH_TOKEN=${process.env.CLAUDE_CODE_OAUTH_TOKEN}`);
 
 	// Forward Sentry env vars so worker containers report to the same project.
@@ -107,12 +114,17 @@ function appendOptionalEnvVars(env: string[]): void {
  * @param snapshotEnabled - When true, injects CASCADE_SNAPSHOT_ENABLED=true so the
  *   worker preserves its workspace on exit (the router will commit the container to
  *   a snapshot image after the worker exits).
+ * @param rotation - Engine-credential rotation pick: replaces every other
+ *   CLAUDE_CODE_OAUTH_TOKEN source (DB credential, host env) with the selected
+ *   pool token and injects CASCADE_ENGINE_CREDENTIAL_ID/NAME for run
+ *   attribution. Precedence: pool > DB credential > host env fallback.
  */
 export async function buildWorkerEnvWithProjectId(
 	job: Job<CascadeJob>,
 	projectId: string | null,
 	snapshotReuse = false,
 	snapshotEnabled = false,
+	rotation?: { credentialId: string; credentialName: string; token: string },
 ): Promise<string[]> {
 	const env: string[] = [
 		`JOB_ID=${job.id}`,
@@ -199,6 +211,14 @@ export async function buildWorkerEnvWithProjectId(
 	}
 
 	appendOptionalEnvVars(env);
+
+	if (rotation) {
+		const filtered = env.filter((e) => !e.startsWith('CLAUDE_CODE_OAUTH_TOKEN='));
+		filtered.push(`CLAUDE_CODE_OAUTH_TOKEN=${rotation.token}`);
+		filtered.push(`CASCADE_ENGINE_CREDENTIAL_ID=${rotation.credentialId}`);
+		filtered.push(`CASCADE_ENGINE_CREDENTIAL_NAME=${rotation.credentialName}`);
+		return filtered;
+	}
 
 	return env;
 }

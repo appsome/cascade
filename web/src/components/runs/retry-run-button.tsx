@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button.js';
-import { isRunActive } from '@/lib/run-pending.js';
+import { isRunActive, isRunAwaitingResume } from '@/lib/run-pending.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 
 interface RetryRunButtonProps {
@@ -23,7 +23,9 @@ export function RetryRunButton({ runId, status }: RetryRunButtonProps) {
 		},
 	});
 
-	if (isRunActive(status)) {
+	// Hidden while active AND while suspended — a suspended run auto-resumes,
+	// so a manual retry would produce a duplicate when the resume fires.
+	if (isRunActive(status) || isRunAwaitingResume(status)) {
 		return null;
 	}
 

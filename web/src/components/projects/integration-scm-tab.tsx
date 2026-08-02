@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input.js';
 import { Label } from '@/components/ui/label.js';
 import { API_URL } from '@/lib/api.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
+import { ProjectCredentialSelector } from './project-credential-selector.js';
 import { ProjectSecretField } from './project-secret-field.js';
 
 type SCMProvider = 'github' | 'gitlab';
@@ -69,7 +70,12 @@ function GitHubCredentialSlots({ projectId }: { projectId: string }) {
 
 	return (
 		<div className="space-y-4">
-			<Label className="text-sm font-medium">Credentials</Label>
+			<ProjectCredentialSelector
+				projectId={projectId}
+				provider="github"
+				label="GitHub credentials"
+			/>
+			<Label className="text-sm font-medium">Project overrides</Label>
 			<ProjectSecretField
 				projectId={projectId}
 				envVarKey="GITHUB_TOKEN_IMPLEMENTER"
@@ -111,7 +117,12 @@ function GitLabCredentialSlots({ projectId }: { projectId: string }) {
 
 	return (
 		<div className="space-y-4">
-			<Label className="text-sm font-medium">Credentials</Label>
+			<ProjectCredentialSelector
+				projectId={projectId}
+				provider="gitlab"
+				label="GitLab credentials"
+			/>
+			<Label className="text-sm font-medium">Project overrides</Label>
 			<ProjectSecretField
 				projectId={projectId}
 				envVarKey="GITLAB_TOKEN_IMPLEMENTER"

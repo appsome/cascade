@@ -1,4 +1,16 @@
+import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { CREDENTIAL_PROVIDERS } from '../../config/credentialProviders.js';
+import {
+	createSet,
+	deleteSet,
+	deleteSetCredential,
+	listSets,
+	listSetUsage,
+	renameSet,
+	setDefaultSet,
+	writeSetCredential,
+} from '../../db/repositories/orgCredentialSetsRepository.js';
 import {
 	deleteOrgCredential,
 	listOrgCredentials,
@@ -16,6 +28,15 @@ import { adminProcedure, protectedProcedure, router, superAdminProcedure } from 
 import { maskCredentialValue } from './_shared/maskCredential.js';
 import { assertOrgAdmin, resolveActorRole } from './_shared/orgRole.js';
 import { assertWebhookPasswordStrength } from './_shared/webhookPasswordPolicy.js';
+
+const PROVIDER_IDS = CREDENTIAL_PROVIDERS.map((p) => p.id) as [string, ...string[]];
+
+function conflictOnUniqueViolation(err: unknown, message: string): never {
+	if (String(err).includes('uq_org_credential_sets_org_provider_name')) {
+		throw new TRPCError({ code: 'CONFLICT', message });
+	}
+	throw err;
+}
 
 export const organizationRouter = router({
 	get: protectedProcedure.query(async ({ ctx }) => {
@@ -117,6 +138,96 @@ export const organizationRouter = router({
 			.mutation(async ({ ctx, input }) => {
 				assertOrgAdmin(await resolveActorRole(ctx));
 				await deleteOrgCredential(ctx.effectiveOrgId, input.envVarKey);
+			}),
+	}),
+
+	// Named credential sets (org_credential_sets) — multiple credentials per
+	// provider (engines + GitHub/GitLab) with per-project selection. Values
+	// never leave the server unmasked.
+	credentialSets: router({
+		list: adminProcedure.query(async ({ ctx }) => {
+			assertOrgAdmin(await resolveActorRole(ctx));
+			const [sets, usage] = await Promise.all([
+				listSets(ctx.effectiveOrgId),
+				listSetUsage(ctx.effectiveOrgId),
+			]);
+			return sets.map((set) => ({
+				id: set.id,
+				provider: set.provider,
+				name: set.name,
+				isDefault: set.isDefault,
+				keys: set.keys.map((key) => ({
+					envVarKey: key.envVarKey,
+					isConfigured: true,
+					maskedValue: maskCredentialValue(key.value),
+				})),
+				usage: usage
+					.filter((u) => u.setId === set.id)
+					.map((u) => ({ projectId: u.projectId, projectName: u.projectName })),
+			}));
+		}),
+
+		create: adminProcedure
+			.input(z.object({ provider: z.enum(PROVIDER_IDS), name: z.string().min(1).max(64) }))
+			.mutation(async ({ ctx, input }) => {
+				assertOrgAdmin(await resolveActorRole(ctx));
+				try {
+					const id = await createSet(ctx.effectiveOrgId, input.provider, input.name);
+					return { id };
+				} catch (err) {
+					conflictOnUniqueViolation(
+						err,
+						`A ${input.provider} entry named "${input.name}" already exists`,
+					);
+				}
+			}),
+
+		rename: adminProcedure
+			.input(z.object({ setId: z.number().int(), name: z.string().min(1).max(64) }))
+			.mutation(async ({ ctx, input }) => {
+				assertOrgAdmin(await resolveActorRole(ctx));
+				try {
+					await renameSet(ctx.effectiveOrgId, input.setId, input.name);
+				} catch (err) {
+					conflictOnUniqueViolation(err, `An entry named "${input.name}" already exists`);
+				}
+			}),
+
+		delete: adminProcedure
+			.input(z.object({ setId: z.number().int(), force: z.boolean().optional() }))
+			.mutation(async ({ ctx, input }) => {
+				assertOrgAdmin(await resolveActorRole(ctx));
+				return deleteSet(ctx.effectiveOrgId, input.setId, { force: input.force ?? false });
+			}),
+
+		setDefault: adminProcedure
+			.input(z.object({ setId: z.number().int() }))
+			.mutation(async ({ ctx, input }) => {
+				assertOrgAdmin(await resolveActorRole(ctx));
+				await setDefaultSet(ctx.effectiveOrgId, input.setId);
+			}),
+
+		setKey: adminProcedure
+			.input(
+				z.object({
+					setId: z.number().int(),
+					envVarKey: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
+					value: z.string().min(1),
+				}),
+			)
+			.mutation(async ({ ctx, input }) => {
+				assertOrgAdmin(await resolveActorRole(ctx));
+				assertWebhookPasswordStrength(input.envVarKey, input.value);
+				await writeSetCredential(ctx.effectiveOrgId, input.setId, input.envVarKey, input.value);
+			}),
+
+		deleteKey: adminProcedure
+			.input(
+				z.object({ setId: z.number().int(), envVarKey: z.string().regex(/^[A-Z_][A-Z0-9_]*$/) }),
+			)
+			.mutation(async ({ ctx, input }) => {
+				assertOrgAdmin(await resolveActorRole(ctx));
+				await deleteSetCredential(ctx.effectiveOrgId, input.setId, input.envVarKey);
 			}),
 	}),
 });

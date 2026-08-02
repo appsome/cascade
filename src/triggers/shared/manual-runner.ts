@@ -248,6 +248,7 @@ export async function triggerRetryRun(
 	project: ProjectConfig,
 	config: CascadeConfig,
 	modelOverride?: string,
+	preCreatedRunId?: string,
 ): Promise<void> {
 	const run = await getRunById(runId);
 	if (!run) {
@@ -272,6 +273,9 @@ export async function triggerRetryRun(
 		workItemId: run.workItemId ?? undefined,
 		prNumber: run.prNumber ?? undefined,
 		modelOverride: modelOverride ?? run.model ?? undefined,
+		// Rate-limit resume path: reuse the requeued run row instead of
+		// inserting a fresh one.
+		preCreatedRunId,
 	};
 
 	// For PR-based agents, we don't store branch/SHA in DB, so we can't restore them.
