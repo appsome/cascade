@@ -14,6 +14,7 @@ env:
   ROUTER_IMAGE: ghcr.io/appsome/cascade-router
   WORKER_IMAGE: ghcr.io/appsome/cascade-worker
   DASHBOARD_IMAGE: ghcr.io/appsome/cascade-dashboard
+  MIGRATOR_IMAGE: ghcr.io/appsome/cascade-migrator
 
 permissions:
   contents: read
@@ -56,12 +57,31 @@ jobs:
           docker push ${{ env.WORKER_IMAGE }}:main
           docker push ${{ env.WORKER_IMAGE }}:main-${{ github.sha }}
 
-      - name: Build and push dashboard image
+      # Dashboard uses Dockerfile.selfhosted (not Dockerfile.dashboard): the
+      # upstream dashboard image is API-only — upstream serves the frontend
+      # from Cloudflare Pages. Self-hosted mode builds the Vite frontend into
+      # dist/web/ so dashboard.ts serves the SPA at / on the same origin
+      # (VITE_API_URL stays unset → frontend calls /trpc relative).
+      - name: Build and push dashboard image (self-hosted, with frontend)
         run: |
           docker build \
             --label org.opencontainers.image.revision=${{ github.sha }} \
-            -f Dockerfile.dashboard \
+            -f Dockerfile.selfhosted \
+            --target production \
             -t ${{ env.DASHBOARD_IMAGE }}:main \
             -t ${{ env.DASHBOARD_IMAGE }}:main-${{ github.sha }} .
           docker push ${{ env.DASHBOARD_IMAGE }}:main
           docker push ${{ env.DASHBOARD_IMAGE }}:main-${{ github.sha }}
+
+      # One-shot migration runner (drizzle-kit migrate against DATABASE_URL).
+      # Run once per deploy before starting router/dashboard.
+      - name: Build and push migrator image
+        run: |
+          docker build \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -f Dockerfile.selfhosted \
+            --target migrator \
+            -t ${{ env.MIGRATOR_IMAGE }}:main \
+            -t ${{ env.MIGRATOR_IMAGE }}:main-${{ github.sha }} .
+          docker push ${{ env.MIGRATOR_IMAGE }}:main
+          docker push ${{ env.MIGRATOR_IMAGE }}:main-${{ github.sha }}
