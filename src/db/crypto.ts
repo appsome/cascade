@@ -54,7 +54,8 @@ export function isEncryptedValue(value: string): boolean {
  * Encrypt a credential value using AES-256-GCM.
  * Returns `enc:v1:<iv_hex>:<authTag_hex>:<ciphertext_hex>`.
  * If no master key is configured, returns the plaintext unchanged.
- * @param aad - Additional Authenticated Data (orgId) to bind the ciphertext to the org.
+ * @param aad - Additional Authenticated Data binding the ciphertext to its owner
+ *   (orgId for org_credentials, projectId for project_credentials).
  */
 export function encryptCredential(plaintext: string, aad: string): string {
 	const key = getMasterKey();

@@ -26,6 +26,8 @@ const {
 	mockListProjectCredentialsMeta,
 	mockWriteProjectCredential,
 	mockDeleteProjectCredential,
+	mockListOrgCredentials,
+	mockListOrgCredentialsMeta,
 	mockCaptureException,
 } = vi.hoisted(() => ({
 	mockListProjectsForOrg: vi.fn(),
@@ -42,6 +44,8 @@ const {
 	mockListProjectCredentialsMeta: vi.fn(),
 	mockWriteProjectCredential: vi.fn(),
 	mockDeleteProjectCredential: vi.fn(),
+	mockListOrgCredentials: vi.fn(),
+	mockListOrgCredentialsMeta: vi.fn(),
 	mockCaptureException: vi.fn(),
 }));
 
@@ -66,6 +70,11 @@ vi.mock('../../../../src/db/repositories/credentialsRepository.js', () => ({
 	listProjectCredentialsMeta: mockListProjectCredentialsMeta,
 	writeProjectCredential: mockWriteProjectCredential,
 	deleteProjectCredential: mockDeleteProjectCredential,
+}));
+
+vi.mock('../../../../src/db/repositories/orgCredentialsRepository.js', () => ({
+	listOrgCredentials: mockListOrgCredentials,
+	listOrgCredentialsMeta: mockListOrgCredentialsMeta,
 }));
 
 vi.mock('../../../../src/sentry.js', () => ({
@@ -666,6 +675,11 @@ describe('projectsRouter', () => {
 	// ============================================================================
 
 	describe('credentials', () => {
+		beforeEach(() => {
+			mockListOrgCredentials.mockResolvedValue([]);
+			mockListOrgCredentialsMeta.mockResolvedValue([]);
+		});
+
 		describe('list', () => {
 			it('throws UNAUTHORIZED when not authenticated', async () => {
 				const caller = createCaller({ user: null, effectiveOrgId: null });
@@ -688,14 +702,71 @@ describe('projectsRouter', () => {
 						name: 'OpenRouter Key',
 						isConfigured: true,
 						maskedValue: '****5678',
+						source: 'project',
+						hasOrgFallback: false,
 					},
 					{
 						envVarKey: 'SHORT',
 						name: null,
 						isConfigured: true,
 						maskedValue: '****',
+						source: 'project',
+						hasOrgFallback: false,
 					},
 				]);
+			});
+
+			it('appends inherited org rows not overridden by a project row', async () => {
+				mockDbWhere.mockResolvedValue([{ orgId: 'org-1' }]);
+				mockListProjectCredentials.mockResolvedValue([
+					{ envVarKey: 'OPENROUTER_API_KEY', name: null, value: 'sk-or-project-1234567' },
+				]);
+				mockListOrgCredentials.mockResolvedValue([
+					{ envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', name: 'GH', value: 'ghp_org_1234567890' },
+				]);
+				const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+
+				const result = await caller.credentials.list({ projectId: 'p1' });
+
+				expect(result).toEqual([
+					{
+						envVarKey: 'OPENROUTER_API_KEY',
+						name: null,
+						isConfigured: true,
+						maskedValue: '****4567',
+						source: 'project',
+						hasOrgFallback: false,
+					},
+					{
+						envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
+						name: 'GH',
+						isConfigured: true,
+						maskedValue: '****7890',
+						source: 'org',
+						hasOrgFallback: false,
+					},
+				]);
+			});
+
+			it('marks a project row that shadows an org value with hasOrgFallback', async () => {
+				mockDbWhere.mockResolvedValue([{ orgId: 'org-1' }]);
+				mockListProjectCredentials.mockResolvedValue([
+					{ envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', name: null, value: 'ghp_project_override1' },
+				]);
+				mockListOrgCredentials.mockResolvedValue([
+					{ envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', name: 'GH', value: 'ghp_org_1234567890' },
+				]);
+				const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+
+				const result = await caller.credentials.list({ projectId: 'p1' });
+
+				// Single row per key: project wins, org row filtered out
+				expect(result).toHaveLength(1);
+				expect(result[0]).toMatchObject({
+					envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
+					source: 'project',
+					hasOrgFallback: true,
+				});
 			});
 
 			it('calls listProjectCredentials with projectId', async () => {
@@ -736,15 +807,53 @@ describe('projectsRouter', () => {
 						name: 'GH Implementer',
 						isConfigured: true,
 						maskedValue: '****',
+						source: 'project',
+						hasOrgFallback: false,
 					},
 					{
 						envVarKey: 'OPENROUTER_API_KEY',
 						name: null,
 						isConfigured: true,
 						maskedValue: '****',
+						source: 'project',
+						hasOrgFallback: false,
 					},
 				]);
 				expect(mockListProjectCredentialsMeta).toHaveBeenCalledWith('p1');
+			});
+
+			it('meta fallback also merges org-tier metadata', async () => {
+				mockDbWhere.mockResolvedValue([{ orgId: 'org-1' }]);
+				mockListProjectCredentials.mockRejectedValueOnce(new Error('bad key'));
+				mockListProjectCredentialsMeta.mockResolvedValueOnce([
+					{ envVarKey: 'PROJECT_KEY', name: null },
+				]);
+				mockListOrgCredentialsMeta.mockResolvedValueOnce([
+					{ envVarKey: 'PROJECT_KEY', name: 'Org shadow' },
+					{ envVarKey: 'ORG_ONLY_KEY', name: 'Org only' },
+				]);
+				const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+
+				const result = await caller.credentials.list({ projectId: 'p1' });
+
+				expect(result).toEqual([
+					{
+						envVarKey: 'PROJECT_KEY',
+						name: null,
+						isConfigured: true,
+						maskedValue: '****',
+						source: 'project',
+						hasOrgFallback: true,
+					},
+					{
+						envVarKey: 'ORG_ONLY_KEY',
+						name: 'Org only',
+						isConfigured: true,
+						maskedValue: '****',
+						source: 'org',
+						hasOrgFallback: false,
+					},
+				]);
 			});
 
 			it('reports decryption failure to Sentry', async () => {

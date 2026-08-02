@@ -49,6 +49,11 @@ const ACCEPT_LIST: Array<{ path: string; reason: string }> = [
 		path: 'src/sentry/client.ts',
 		reason: 'Sentry client auth — alerting integration is out of spec 009 scope.',
 	},
+	{
+		path: 'src/anthropic/client.ts',
+		reason:
+			'Anthropic OAuth usage endpoint — LLM subscription API, not a PM/SCM/alerting integration; outside spec 009 scope.',
+	},
 ];
 
 // Patterns that suggest manual auth-header assembly:

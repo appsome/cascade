@@ -1,23 +1,51 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMockContext, createMockSuperAdmin } from '../../../helpers/factories.js';
+import { createMockContext, createMockUser } from '../../../helpers/factories.js';
 import { createCallerFor, expectTRPCError } from '../../../helpers/trpcTestHarness.js';
 
-const { mockListAllClaudeCodeCredentials, mockFetchClaudeSubscriptionLimits } = vi.hoisted(() => ({
+const {
+	mockListAllClaudeCodeCredentials,
+	mockGetProjectOwnCredential,
+	mockResolveOrgCredential,
+	mockFetchClaudeSubscriptionLimits,
+	mockVerifyProjectOrgAccess,
+	mockGetOrgMembership,
+} = vi.hoisted(() => ({
 	mockListAllClaudeCodeCredentials: vi.fn(),
+	mockGetProjectOwnCredential: vi.fn(),
+	mockResolveOrgCredential: vi.fn(),
 	mockFetchClaudeSubscriptionLimits: vi.fn(),
+	mockVerifyProjectOrgAccess: vi.fn(),
+	mockGetOrgMembership: vi.fn(),
 }));
 
 vi.mock('../../../../src/db/repositories/credentialsRepository.js', () => ({
 	listAllClaudeCodeCredentials: mockListAllClaudeCodeCredentials,
+	getProjectOwnCredential: mockGetProjectOwnCredential,
+}));
+
+vi.mock('../../../../src/db/repositories/orgCredentialsRepository.js', () => ({
+	resolveOrgCredential: mockResolveOrgCredential,
 }));
 
 vi.mock('../../../../src/anthropic/client.js', () => ({
 	fetchClaudeSubscriptionLimits: mockFetchClaudeSubscriptionLimits,
 }));
 
+vi.mock('../../../../src/api/routers/_shared/projectAccess.js', () => ({
+	verifyProjectOrgAccess: mockVerifyProjectOrgAccess,
+}));
+
+// Per-org actor-role refinement reads memberships through this repository.
+// Default (no membership row) falls back to the global role in the home org.
+vi.mock('../../../../src/db/repositories/orgMembershipsRepository.js', () => ({
+	getOrgMembership: mockGetOrgMembership,
+}));
+
 import { claudeCodeLimitsRouter } from '../../../../src/api/routers/claudeCodeLimits.js';
 
 const createCaller = createCallerFor(claudeCodeLimitsRouter);
+
+const mockAdmin = createMockUser({ role: 'admin' });
 
 const sampleLimits = {
 	tokenMasked: '****abcd',
@@ -31,136 +59,116 @@ const sampleLimits = {
 describe('claudeCodeLimitsRouter', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		// Clear the global env var between tests
-		delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+		mockGetOrgMembership.mockResolvedValue(null);
+		mockResolveOrgCredential.mockResolvedValue(null);
+		mockListAllClaudeCodeCredentials.mockResolvedValue([]);
+		mockGetProjectOwnCredential.mockResolvedValue(null);
+		mockVerifyProjectOrgAccess.mockResolvedValue(undefined);
 	});
 
-	describe('query', () => {
-		it('requires superadmin role — rejects regular users', async () => {
+	describe('forOrg', () => {
+		it('rejects members (global role)', async () => {
 			const caller = createCaller(createMockContext({ role: 'member' }));
-			await expectTRPCError(caller.query(), 'FORBIDDEN');
+			await expectTRPCError(caller.forOrg(), 'FORBIDDEN');
 		});
 
-		it('requires superadmin role — rejects admin users', async () => {
-			const caller = createCaller(createMockContext({ role: 'admin' }));
-			await expectTRPCError(caller.query(), 'FORBIDDEN');
+		it('rejects a global admin who is only a member in the effective org', async () => {
+			mockGetOrgMembership.mockResolvedValue({ role: 'member' });
+			const caller = createCaller({ user: mockAdmin, effectiveOrgId: 'other-org' });
+			await expectTRPCError(caller.forOrg(), 'FORBIDDEN');
 		});
 
-		it('returns empty array when no credentials and no env var', async () => {
-			mockListAllClaudeCodeCredentials.mockResolvedValueOnce([]);
-
-			const caller = createCaller({
-				user: createMockSuperAdmin(),
-				effectiveOrgId: 'org-1',
-			});
-			const result = await caller.query();
-
-			expect(result).toEqual([]);
+		it('returns empty array when no token source is configured', async () => {
+			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
+			expect(await caller.forOrg()).toEqual([]);
 		});
 
-		it('fetches limits for credentials found in DB', async () => {
-			mockListAllClaudeCodeCredentials.mockResolvedValueOnce([
-				{ projectId: 'proj-1', value: 'token-aaa' },
+		it('labels org and project sources with attribution', async () => {
+			mockResolveOrgCredential.mockResolvedValue('org-token');
+			mockListAllClaudeCodeCredentials.mockResolvedValue([
+				{ projectId: 'proj-1', projectName: 'Project One', value: 'proj-token' },
 			]);
-			mockFetchClaudeSubscriptionLimits.mockResolvedValueOnce(sampleLimits);
+			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
 
-			const caller = createCaller({
-				user: createMockSuperAdmin(),
-				effectiveOrgId: 'org-1',
-			});
-			const result = await caller.query();
+			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
+			const result = await caller.forOrg();
 
-			expect(result).toHaveLength(1);
-			expect(result[0]).toEqual(sampleLimits);
-			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('token-aaa');
-		});
-
-		it('deduplicates tokens from multiple projects', async () => {
-			mockListAllClaudeCodeCredentials.mockResolvedValueOnce([
-				{ projectId: 'proj-1', value: 'shared-token' },
-				{ projectId: 'proj-2', value: 'shared-token' },
-				{ projectId: 'proj-3', value: 'other-token' },
+			expect(result).toEqual([
+				{ scope: 'org', limits: sampleLimits },
+				{
+					scope: 'project',
+					projectId: 'proj-1',
+					projectName: 'Project One',
+					limits: sampleLimits,
+				},
 			]);
-			mockFetchClaudeSubscriptionLimits
-				.mockResolvedValueOnce({ ...sampleLimits, tokenMasked: '****oken' })
-				.mockResolvedValueOnce({ ...sampleLimits, tokenMasked: '****oken2' });
-
-			const caller = createCaller({
-				user: createMockSuperAdmin(),
-				effectiveOrgId: 'org-1',
-			});
-			const result = await caller.query();
-
-			// Should only call fetch twice (once per unique token)
-			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledTimes(2);
-			expect(result).toHaveLength(2);
+			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('org-token');
+			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('proj-token');
 		});
 
-		it('includes global env var token', async () => {
-			process.env.CLAUDE_CODE_OAUTH_TOKEN = 'global-env-token';
-			mockListAllClaudeCodeCredentials.mockResolvedValueOnce([]);
-			mockFetchClaudeSubscriptionLimits.mockResolvedValueOnce(sampleLimits);
+		it('keeps a failed source with limits: null instead of dropping it', async () => {
+			mockResolveOrgCredential.mockResolvedValue('org-token');
+			mockFetchClaudeSubscriptionLimits.mockResolvedValue(null);
 
-			const caller = createCaller({
-				user: createMockSuperAdmin(),
-				effectiveOrgId: 'org-1',
-			});
-			const result = await caller.query();
+			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
+			const result = await caller.forOrg();
 
-			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('global-env-token');
-			expect(result).toHaveLength(1);
+			expect(result).toEqual([{ scope: 'org', limits: null }]);
 		});
 
-		it('deduplicates global env var against project credentials', async () => {
-			process.env.CLAUDE_CODE_OAUTH_TOKEN = 'shared-token';
-			mockListAllClaudeCodeCredentials.mockResolvedValueOnce([
-				{ projectId: 'proj-1', value: 'shared-token' },
+		it('treats an undecryptable org token as absent instead of erroring', async () => {
+			mockResolveOrgCredential.mockRejectedValue(new Error('decrypt failed'));
+
+			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
+			expect(await caller.forOrg()).toEqual([]);
+		});
+
+		it('scopes lookups to the effective org', async () => {
+			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
+			await caller.forOrg();
+
+			expect(mockResolveOrgCredential).toHaveBeenCalledWith('org-1', 'CLAUDE_CODE_OAUTH_TOKEN');
+			expect(mockListAllClaudeCodeCredentials).toHaveBeenCalledWith('org-1');
+		});
+	});
+
+	describe('forProject', () => {
+		const member = createMockUser({ role: 'member' });
+
+		it('verifies project org access', async () => {
+			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
+			await caller.forProject({ projectId: 'p1' });
+			expect(mockVerifyProjectOrgAccess).toHaveBeenCalledWith('p1', 'org-1');
+		});
+
+		it('marks the project override active over the org token', async () => {
+			mockGetProjectOwnCredential.mockResolvedValue('proj-token');
+			mockResolveOrgCredential.mockResolvedValue('org-token');
+			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
+
+			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
+			const result = await caller.forProject({ projectId: 'p1' });
+
+			expect(result).toEqual([
+				{ scope: 'project', projectId: 'p1', active: true, limits: sampleLimits },
+				{ scope: 'org', active: false, limits: sampleLimits },
 			]);
-			mockFetchClaudeSubscriptionLimits.mockResolvedValueOnce(sampleLimits);
-
-			const caller = createCaller({
-				user: createMockSuperAdmin(),
-				effectiveOrgId: 'org-1',
-			});
-			const result = await caller.query();
-
-			// Even though token appears in both DB and env, fetch only once
-			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledTimes(1);
-			expect(result).toHaveLength(1);
+			expect(mockGetProjectOwnCredential).toHaveBeenCalledWith('p1', 'CLAUDE_CODE_OAUTH_TOKEN');
 		});
 
-		it('filters out null results from failed API calls', async () => {
-			mockListAllClaudeCodeCredentials.mockResolvedValueOnce([
-				{ projectId: 'proj-1', value: 'token-good' },
-				{ projectId: 'proj-2', value: 'token-bad' },
-			]);
-			mockFetchClaudeSubscriptionLimits
-				.mockResolvedValueOnce(sampleLimits) // token-good succeeds
-				.mockResolvedValueOnce(null); // token-bad fails
+		it('marks the org token active when no project override exists', async () => {
+			mockResolveOrgCredential.mockResolvedValue('org-token');
+			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
 
-			const caller = createCaller({
-				user: createMockSuperAdmin(),
-				effectiveOrgId: 'org-1',
-			});
-			const result = await caller.query();
+			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
+			const result = await caller.forProject({ projectId: 'p1' });
 
-			expect(result).toHaveLength(1);
-			expect(result[0]).toEqual(sampleLimits);
+			expect(result).toEqual([{ scope: 'org', active: true, limits: sampleLimits }]);
 		});
 
-		it('returns empty array when all API calls return null', async () => {
-			mockListAllClaudeCodeCredentials.mockResolvedValueOnce([
-				{ projectId: 'proj-1', value: 'token-bad' },
-			]);
-			mockFetchClaudeSubscriptionLimits.mockResolvedValueOnce(null);
-
-			const caller = createCaller({
-				user: createMockSuperAdmin(),
-				effectiveOrgId: 'org-1',
-			});
-			const result = await caller.query();
-
-			expect(result).toEqual([]);
+		it('returns empty array when nothing is configured', async () => {
+			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
+			expect(await caller.forProject({ projectId: 'p1' })).toEqual([]);
 		});
 	});
 });

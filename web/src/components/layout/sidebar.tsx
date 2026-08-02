@@ -8,13 +8,13 @@ import {
 	ChevronDown,
 	ChevronRight,
 	FolderGit2,
+	KeyRound,
 	Plus,
 	Settings,
 	Users,
 	Zap,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { ClaudeCodeLimitsSection } from '@/components/global/claude-code-limits.js';
 import { OrgNameBanner, OrgSwitcher } from '@/components/layout/org-switcher.js';
 import { ProjectFormDialog } from '@/components/projects/project-form-dialog.js';
 import {
@@ -45,6 +45,7 @@ const globalNav = [
 
 const settingsNav = [
 	{ to: '/settings/general' as const, label: 'General', icon: Settings },
+	{ to: '/settings/credentials' as const, label: 'Credentials', icon: KeyRound },
 	{ to: '/settings/users' as const, label: 'Users', icon: Users },
 ];
 
@@ -244,7 +245,6 @@ export function Sidebar({ user }: SidebarProps) {
 						{globalNav.map((item) => (
 							<NavLink key={item.to} {...item} currentPath={currentPath} />
 						))}
-						<ClaudeCodeLimitsSection />
 					</>
 				)}
 			</nav>

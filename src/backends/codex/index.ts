@@ -738,6 +738,9 @@ async function captureRefreshedToken(
 	if (newJson === originalJson) return;
 
 	try {
+		// Intentionally project-scoped: when the seed value was inherited from an
+		// org-level CODEX_AUTH_JSON credential, this creates a project override
+		// (the org value goes stale for this project). Accepted v1 behavior.
 		await writeProjectCredential(projectId, 'CODEX_AUTH_JSON', newJson);
 		logWriter('INFO', 'Captured refreshed Codex auth token and updated project credential', {});
 	} catch (error) {
