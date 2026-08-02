@@ -175,8 +175,10 @@ function GitHubWebhookSection({ projectId }: { projectId: string }) {
 		(c) => c.envVarKey === 'GITHUB_WEBHOOK_SECRET',
 	);
 
+	const publicUrlQuery = useQuery(trpc.system.getPublicUrl.queryOptions());
 	const callbackBaseUrl =
-		API_URL ||
+		publicUrlQuery.data?.routerPublicUrl ??
+		API_URL ??
 		(typeof window !== 'undefined' ? window.location.origin.replace(':5173', ':3000') : '');
 
 	const webhooksQuery = useQuery(trpc.webhooks.list.queryOptions({ projectId }));

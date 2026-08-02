@@ -10,6 +10,7 @@ import { projectsRouter } from './routers/projects.js';
 import { promptsRouter } from './routers/prompts.js';
 import { prsRouter } from './routers/prs.js';
 import { runsRouter } from './routers/runs.js';
+import { systemRouter } from './routers/system.js';
 import { usersRouter } from './routers/users.js';
 import { webhookLogsRouter } from './routers/webhookLogs.js';
 import { webhooksRouter } from './routers/webhooks.js';
@@ -37,6 +38,7 @@ export const appRouter = router({
 	users: usersRouter,
 	workflowStatuses: workflowStatusesRouter,
 	claudeCodeLimits: claudeCodeLimitsRouter,
+	system: systemRouter,
 });
 
 export type AppRouter = typeof appRouter;

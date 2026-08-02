@@ -1,3 +1,4 @@
+import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { logger } from '../../utils/logging.js';
 import { adminProcedure, router } from '../trpc.js';
@@ -186,20 +187,19 @@ export const webhooksRouter = router({
 				jiraListWebhooks(pctx),
 			]);
 
-			const sentry = input.callbackBaseUrl
-				? (buildSentryDisplayInfo(
-						pctx,
-						input.projectId,
-						input.callbackBaseUrl.replace(/\/$/, ''),
-					) ?? null)
+			const listEffectiveBaseUrl =
+				(input.callbackBaseUrl ?? process.env.WEBHOOK_CALLBACK_BASE_URL ?? '').replace(/\/$/, '') ||
+				null;
+
+			const sentry = listEffectiveBaseUrl
+				? (buildSentryDisplayInfo(pctx, input.projectId, listEffectiveBaseUrl) ?? null)
 				: null;
 
 			// Linear — informational only (webhooks must be configured in Linear team settings)
 			let linear: LinearWebhookInfo | null = null;
-			if (input.callbackBaseUrl && pctx.pmType === 'linear' && pctx.linearApiKey) {
-				const baseUrl = input.callbackBaseUrl.replace(/\/$/, '');
+			if (listEffectiveBaseUrl && pctx.pmType === 'linear' && pctx.linearApiKey) {
 				linear = {
-					url: `${baseUrl}/linear/webhook`,
+					url: `${listEffectiveBaseUrl}/linear/webhook`,
 					webhookSecretSet: pctx.linearWebhookSecretSet ?? false,
 					note: 'Configure this URL in your Linear team settings under API > Webhooks.',
 				};
@@ -226,7 +226,7 @@ export const webhooksRouter = router({
 		.input(
 			z.object({
 				projectId: z.string(),
-				callbackBaseUrl: z.string().url(),
+				callbackBaseUrl: z.string().url().optional(),
 				trelloOnly: z.boolean().optional(),
 				githubOnly: z.boolean().optional(),
 				gitlabOnly: z.boolean().optional(),
@@ -237,7 +237,18 @@ export const webhooksRouter = router({
 		.mutation(async ({ ctx, input }) => {
 			const pctx = await resolveProjectContext(input.projectId, ctx.effectiveOrgId);
 			applyOneTimeTokens(pctx, input.oneTimeTokens);
-			const baseUrl = input.callbackBaseUrl.replace(/\/$/, '');
+			const baseUrl = (
+				input.callbackBaseUrl ??
+				process.env.WEBHOOK_CALLBACK_BASE_URL ??
+				''
+			).replace(/\/$/, '');
+			if (!baseUrl) {
+				throw new TRPCError({
+					code: 'BAD_REQUEST',
+					message:
+						'callbackBaseUrl is required or set WEBHOOK_CALLBACK_BASE_URL env var on the server',
+				});
+			}
 
 			const results: {
 				trello?: TrelloWebhook | string;
@@ -275,7 +286,7 @@ export const webhooksRouter = router({
 		.input(
 			z.object({
 				projectId: z.string(),
-				callbackBaseUrl: z.string().url(),
+				callbackBaseUrl: z.string().url().optional(),
 				trelloOnly: z.boolean().optional(),
 				githubOnly: z.boolean().optional(),
 				gitlabOnly: z.boolean().optional(),
@@ -286,7 +297,18 @@ export const webhooksRouter = router({
 		.mutation(async ({ ctx, input }) => {
 			const pctx = await resolveProjectContext(input.projectId, ctx.effectiveOrgId);
 			applyOneTimeTokens(pctx, input.oneTimeTokens);
-			const baseUrl = input.callbackBaseUrl.replace(/\/$/, '');
+			const baseUrl = (
+				input.callbackBaseUrl ??
+				process.env.WEBHOOK_CALLBACK_BASE_URL ??
+				''
+			).replace(/\/$/, '');
+			if (!baseUrl) {
+				throw new TRPCError({
+					code: 'BAD_REQUEST',
+					message:
+						'callbackBaseUrl is required or set WEBHOOK_CALLBACK_BASE_URL env var on the server',
+				});
+			}
 			const deleted: { trello: string[]; github: number[]; gitlab: number[]; jira: number[] } = {
 				trello: [],
 				github: [],
