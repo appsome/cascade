@@ -16,6 +16,10 @@ export interface ProjectCredentialMeta {
 	name: string | null;
 	isConfigured: boolean;
 	maskedValue: string;
+	/** Which tier the value comes from; 'org' = inherited, no project row exists. */
+	source?: 'project' | 'org';
+	/** True when a project row shadows an org-level value with the same key. */
+	hasOrgFallback?: boolean;
 }
 
 /**
@@ -92,9 +96,15 @@ export function ProjectSecretField({
 			<div className="flex items-center gap-2">
 				<Label htmlFor={`secret-${envVarKey}`}>{label}</Label>
 				{credential?.isConfigured ? (
-					<Badge variant="secondary" className="text-xs font-mono">
-						{credential.maskedValue}
-					</Badge>
+					credential.source === 'org' ? (
+						<Badge variant="outline" className="text-xs font-mono">
+							Inherited from org {credential.maskedValue}
+						</Badge>
+					) : (
+						<Badge variant="secondary" className="text-xs font-mono">
+							{credential.maskedValue}
+						</Badge>
+					)
 				) : (
 					<Badge variant="outline" className="text-xs text-muted-foreground border-dashed">
 						not configured
@@ -108,7 +118,13 @@ export function ProjectSecretField({
 					type="password"
 					value={value}
 					onChange={(e) => setValue(e.target.value)}
-					placeholder={credential?.isConfigured ? 'Enter new value to update...' : placeholder}
+					placeholder={
+						credential?.isConfigured
+							? credential.source === 'org'
+								? 'Override organization value...'
+								: 'Enter new value to update...'
+							: placeholder
+					}
 					autoComplete="off"
 					className="flex-1"
 				/>
@@ -130,13 +146,17 @@ export function ProjectSecretField({
 						{isVerifying ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Verify'}
 					</button>
 				)}
-				{credential?.isConfigured && (
+				{credential?.isConfigured && credential.source !== 'org' && (
 					<button
 						type="button"
 						onClick={() => deleteMutation.mutate()}
 						disabled={deleteMutation.isPending}
 						className="p-2 text-muted-foreground hover:text-destructive disabled:opacity-50 shrink-0"
-						title="Clear credential"
+						title={
+							credential.hasOrgFallback
+								? 'Remove override (revert to organization value)'
+								: 'Clear credential'
+						}
 					>
 						{deleteMutation.isPending ? (
 							<Loader2 className="h-4 w-4 animate-spin" />

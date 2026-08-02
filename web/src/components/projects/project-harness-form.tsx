@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { HelpCircle } from 'lucide-react';
 import { useState } from 'react';
+import { ClaudeCodeLimitsPreview } from '@/components/projects/claude-code-limits-preview.js';
 import { ENGINE_SECRETS } from '@/components/projects/engine-secrets.js';
 import { ProjectSecretField } from '@/components/projects/project-secret-field.js';
 import { useProjectUpdate } from '@/components/projects/use-project-update.js';
@@ -294,17 +295,21 @@ export function ProjectHarnessForm({ project }: { project: Project }) {
 															const description =
 																secret.description + (sharedNote ? ` · ${sharedNote}` : '');
 															return (
-																<ProjectSecretField
-																	key={secret.envVarKey}
-																	projectId={project.id}
-																	envVarKey={secret.envVarKey}
-																	label={secret.label}
-																	description={description}
-																	placeholder={secret.placeholder}
-																	credential={credentials.find(
-																		(c) => c.envVarKey === secret.envVarKey,
+																<div key={secret.envVarKey} className="space-y-2">
+																	<ProjectSecretField
+																		projectId={project.id}
+																		envVarKey={secret.envVarKey}
+																		label={secret.label}
+																		description={description}
+																		placeholder={secret.placeholder}
+																		credential={credentials.find(
+																			(c) => c.envVarKey === secret.envVarKey,
+																		)}
+																	/>
+																	{secret.envVarKey === 'CLAUDE_CODE_OAUTH_TOKEN' && (
+																		<ClaudeCodeLimitsPreview projectId={project.id} />
 																	)}
-																/>
+																</div>
 															);
 														})}
 													</div>

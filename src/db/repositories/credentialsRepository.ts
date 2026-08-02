@@ -1,15 +1,24 @@
 import { and, eq } from 'drizzle-orm';
+import { logger } from '../../utils/logging.js';
 import { getDb } from '../client.js';
 import { decryptCredential, encryptCredential } from '../crypto.js';
-import { projectCredentials, projectIntegrations, projects } from '../schema/index.js';
+import {
+	orgCredentials,
+	projectCredentials,
+	projectIntegrations,
+	projects,
+} from '../schema/index.js';
 
 // ============================================================================
-// Project-scoped credential resolution (reads from project_credentials table)
+// Project-scoped credential resolution (reads from project_credentials table,
+// falling back to the org_credentials tier — project values override org)
 // ============================================================================
 
 /**
  * Resolve a single credential for a project by env var key.
- * Reads from the project_credentials table using projectId as AAD for decryption.
+ * Reads from the project_credentials table using projectId as AAD for
+ * decryption. When the project has no row for the key, falls back to the
+ * owning organization's org_credentials tier (AAD = orgId).
  */
 export async function resolveProjectCredential(
 	projectId: string,
@@ -24,13 +33,23 @@ export async function resolveProjectCredential(
 			and(eq(projectCredentials.projectId, projectId), eq(projectCredentials.envVarKey, envVarKey)),
 		);
 
-	if (!row) return null;
-	return decryptCredential(row.value, projectId);
+	if (row) return decryptCredential(row.value, projectId);
+
+	const [orgRow] = await db
+		.select({ value: orgCredentials.value, orgId: orgCredentials.orgId })
+		.from(orgCredentials)
+		.innerJoin(projects, eq(projects.orgId, orgCredentials.orgId))
+		.where(and(eq(projects.id, projectId), eq(orgCredentials.envVarKey, envVarKey)));
+
+	if (!orgRow) return null;
+	return decryptCredential(orgRow.value, orgRow.orgId);
 }
 
 /**
  * Resolve all credentials for a project as a flat env-var-key → value map.
- * Single query against project_credentials, using projectId as AAD.
+ * Merges the owning organization's org_credentials tier first, then overlays
+ * project_credentials rows so project values win on key collisions. Each tier
+ * decrypts with its own AAD (orgId vs projectId).
  * Throws if the project does not exist.
  */
 export async function resolveAllProjectCredentials(
@@ -39,12 +58,17 @@ export async function resolveAllProjectCredentials(
 	const db = getDb();
 
 	const [project] = await db
-		.select({ id: projects.id })
+		.select({ id: projects.id, orgId: projects.orgId })
 		.from(projects)
 		.where(eq(projects.id, projectId));
 	if (!project) {
 		throw new Error(`Project not found: ${projectId}`);
 	}
+
+	const orgRows = await db
+		.select({ envVarKey: orgCredentials.envVarKey, value: orgCredentials.value })
+		.from(orgCredentials)
+		.where(eq(orgCredentials.orgId, project.orgId));
 
 	const rows = await db
 		.select({ envVarKey: projectCredentials.envVarKey, value: projectCredentials.value })
@@ -52,6 +76,9 @@ export async function resolveAllProjectCredentials(
 		.where(eq(projectCredentials.projectId, projectId));
 
 	const result: Record<string, string> = {};
+	for (const row of orgRows) {
+		result[row.envVarKey] = decryptCredential(row.value, project.orgId);
+	}
 	for (const row of rows) {
 		result[row.envVarKey] = decryptCredential(row.value, projectId);
 	}
@@ -157,6 +184,87 @@ export async function listProjectCredentialsMeta(
 		.select({ envVarKey: projectCredentials.envVarKey, name: projectCredentials.name })
 		.from(projectCredentials)
 		.where(eq(projectCredentials.projectId, projectId));
+}
+
+// ============================================================================
+// Cross-project credential queries
+// ============================================================================
+
+/**
+ * List all project-level CLAUDE_CODE_OAUTH_TOKEN credentials across an org,
+ * with the owning project's name for display attribution.
+ * Returns decrypted values for use in server-side API calls only.
+ * Never expose raw tokens to the client.
+ *
+ * Rows that fail to decrypt (master-key rotation, AAD mismatch) are skipped
+ * with a warning instead of failing the whole query — one corrupted row must
+ * not hide usage data for the healthy tokens.
+ */
+export async function listAllClaudeCodeCredentials(
+	orgId: string,
+): Promise<{ projectId: string; projectName: string; value: string }[]> {
+	const db = getDb();
+
+	const rows = await db
+		.select({
+			projectId: projectCredentials.projectId,
+			projectName: projects.name,
+			value: projectCredentials.value,
+		})
+		.from(projectCredentials)
+		.innerJoin(projects, eq(projectCredentials.projectId, projects.id))
+		.where(
+			and(eq(projects.orgId, orgId), eq(projectCredentials.envVarKey, 'CLAUDE_CODE_OAUTH_TOKEN')),
+		);
+
+	const result: { projectId: string; projectName: string; value: string }[] = [];
+	for (const row of rows) {
+		try {
+			result.push({
+				projectId: row.projectId,
+				projectName: row.projectName,
+				value: decryptCredential(row.value, row.projectId),
+			});
+		} catch (err) {
+			logger.warn('Skipping undecryptable CLAUDE_CODE_OAUTH_TOKEN credential', {
+				projectId: row.projectId,
+				error: String(err),
+			});
+		}
+	}
+	return result;
+}
+
+/**
+ * Read a single credential from the project tier ONLY — no org fallback.
+ * Used where the project-vs-org distinction is the point (e.g. contrasting a
+ * project override with the inherited org value). Returns null when the row
+ * is absent or cannot be decrypted.
+ */
+export async function getProjectOwnCredential(
+	projectId: string,
+	envVarKey: string,
+): Promise<string | null> {
+	const db = getDb();
+
+	const [row] = await db
+		.select({ value: projectCredentials.value })
+		.from(projectCredentials)
+		.where(
+			and(eq(projectCredentials.projectId, projectId), eq(projectCredentials.envVarKey, envVarKey)),
+		);
+
+	if (!row) return null;
+	try {
+		return decryptCredential(row.value, projectId);
+	} catch (err) {
+		logger.warn('Failed to decrypt project credential', {
+			projectId,
+			envVarKey,
+			error: String(err),
+		});
+		return null;
+	}
 }
 
 // ============================================================================

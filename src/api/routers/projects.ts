@@ -16,6 +16,10 @@ import {
 	listProjectCredentialsMeta,
 	writeProjectCredential,
 } from '../../db/repositories/credentialsRepository.js';
+import {
+	listOrgCredentials,
+	listOrgCredentialsMeta,
+} from '../../db/repositories/orgCredentialsRepository.js';
 import { listProjectsForOrg } from '../../db/repositories/runsRepository.js';
 import {
 	createProject,
@@ -36,6 +40,7 @@ import { computeContentHash } from '../../router/worker-dockerfile-compose.js';
 import { captureException } from '../../sentry.js';
 import { logger } from '../../utils/logging.js';
 import { protectedProcedure, publicProcedure, router, superAdminProcedure } from '../trpc.js';
+import { maskCredentialValue } from './_shared/maskCredential.js';
 
 /**
  * The current worker-image/dockerfile state read alongside the ownership check.
@@ -790,11 +795,15 @@ export const projectsRouter = router({
 			}),
 	}),
 
-	// Project-scoped credentials (project_credentials table)
+	// Project-scoped credentials (project_credentials table), merged with the
+	// inherited org_credentials tier (project rows override org rows per key)
 	credentials: router({
 		/**
-		 * List masked metadata for all project-scoped credentials.
-		 * Never returns plaintext values — only masked last-4-chars preview.
+		 * List masked metadata for all credentials visible to the project:
+		 * project-scoped rows plus inherited org-scoped rows not overridden by
+		 * a project row. Never returns plaintext values — only masked
+		 * last-4-chars preview. `source` marks the tier a row comes from;
+		 * `hasOrgFallback` marks project rows that shadow an org value.
 		 */
 		list: protectedProcedure
 			.input(z.object({ projectId: z.string() }))
@@ -802,12 +811,29 @@ export const projectsRouter = router({
 				await verifyProjectOwnership(input.projectId, ctx.effectiveOrgId);
 				try {
 					const rows = await listProjectCredentials(input.projectId);
-					return rows.map((row) => ({
-						envVarKey: row.envVarKey,
-						name: row.name,
-						isConfigured: true,
-						maskedValue: row.value.length <= 12 ? '****' : `****${row.value.slice(-4)}`,
-					}));
+					const orgRows = await listOrgCredentials(ctx.effectiveOrgId);
+					const orgKeys = new Set(orgRows.map((row) => row.envVarKey));
+					const projectKeys = new Set(rows.map((row) => row.envVarKey));
+					return [
+						...rows.map((row) => ({
+							envVarKey: row.envVarKey,
+							name: row.name,
+							isConfigured: true,
+							maskedValue: maskCredentialValue(row.value),
+							source: 'project' as const,
+							hasOrgFallback: orgKeys.has(row.envVarKey),
+						})),
+						...orgRows
+							.filter((row) => !projectKeys.has(row.envVarKey))
+							.map((row) => ({
+								envVarKey: row.envVarKey,
+								name: row.name,
+								isConfigured: true,
+								maskedValue: maskCredentialValue(row.value),
+								source: 'org' as const,
+								hasOrgFallback: false,
+							})),
+					];
 				} catch (err) {
 					// Decryption key missing/wrong — return metadata without value preview
 					captureException(err, {
@@ -816,12 +842,29 @@ export const projectsRouter = router({
 						level: 'warning',
 					});
 					const meta = await listProjectCredentialsMeta(input.projectId);
-					return meta.map((row) => ({
-						envVarKey: row.envVarKey,
-						name: row.name,
-						isConfigured: true,
-						maskedValue: '****',
-					}));
+					const orgMeta = await listOrgCredentialsMeta(ctx.effectiveOrgId);
+					const orgKeys = new Set(orgMeta.map((row) => row.envVarKey));
+					const projectKeys = new Set(meta.map((row) => row.envVarKey));
+					return [
+						...meta.map((row) => ({
+							envVarKey: row.envVarKey,
+							name: row.name,
+							isConfigured: true,
+							maskedValue: '****',
+							source: 'project' as const,
+							hasOrgFallback: orgKeys.has(row.envVarKey),
+						})),
+						...orgMeta
+							.filter((row) => !projectKeys.has(row.envVarKey))
+							.map((row) => ({
+								envVarKey: row.envVarKey,
+								name: row.name,
+								isConfigured: true,
+								maskedValue: '****',
+								source: 'org' as const,
+								hasOrgFallback: false,
+							})),
+					];
 				}
 			}),
 
