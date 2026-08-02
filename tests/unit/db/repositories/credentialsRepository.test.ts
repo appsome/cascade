@@ -27,7 +27,25 @@ describe('credentialsRepository', () => {
 			expect(result).toBe('ghp_impl_token');
 		});
 
-		it('returns null when not found', async () => {
+		it('does not query the org tier when the project row exists', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([{ value: 'ghp_impl_token' }]);
+
+			await resolveProjectCredential('proj1', 'GITHUB_TOKEN_IMPLEMENTER');
+			expect(mockDb.db.select).toHaveBeenCalledTimes(1);
+		});
+
+		it('falls back to the org credential when the project row is missing', async () => {
+			// Project miss, then org join hit
+			mockDb.chain.where.mockResolvedValueOnce([]);
+			mockDb.chain.where.mockResolvedValueOnce([{ value: 'org-shared-token', orgId: 'org-1' }]);
+
+			const result = await resolveProjectCredential('proj1', 'GITHUB_TOKEN_IMPLEMENTER');
+			expect(result).toBe('org-shared-token');
+			expect(mockDb.db.select).toHaveBeenCalledTimes(2);
+		});
+
+		it('returns null when neither project nor org row exists', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([]);
 			mockDb.chain.where.mockResolvedValueOnce([]);
 
 			const result = await resolveProjectCredential('proj1', 'MISSING_KEY');
@@ -46,13 +64,28 @@ describe('credentialsRepository', () => {
 			const result = await resolveProjectCredential('proj1', 'SOME_KEY');
 			expect(result).toBe('my-secret');
 		});
+
+		it('uses orgId as AAD when decrypting an org-tier fallback value', async () => {
+			const key = randomBytes(32).toString('hex');
+			vi.stubEnv('CREDENTIAL_MASTER_KEY', key);
+
+			const { encryptCredential } = await import('../../../../src/db/crypto.js');
+			const encryptedValue = encryptCredential('org-secret', 'org-1');
+			mockDb.chain.where.mockResolvedValueOnce([]);
+			mockDb.chain.where.mockResolvedValueOnce([{ value: encryptedValue, orgId: 'org-1' }]);
+
+			const result = await resolveProjectCredential('proj1', 'SOME_KEY');
+			expect(result).toBe('org-secret');
+		});
 	});
 
 	describe('resolveAllProjectCredentials', () => {
 		it('returns all project credentials as key-value map', async () => {
-			// First select: project existence check
-			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1' }]);
-			// Second select: project_credentials rows
+			// First select: project existence check (now includes orgId)
+			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1', orgId: 'org-1' }]);
+			// Second select: org_credentials rows (none)
+			mockDb.chain.where.mockResolvedValueOnce([]);
+			// Third select: project_credentials rows
 			mockDb.chain.where.mockResolvedValueOnce([
 				{ envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', value: 'ghp_impl' },
 				{ envVarKey: 'TRELLO_API_KEY', value: 'trello-key' },
@@ -67,10 +100,49 @@ describe('credentialsRepository', () => {
 			});
 		});
 
+		it('merges org credentials underneath project credentials (project wins)', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1', orgId: 'org-1' }]);
+			mockDb.chain.where.mockResolvedValueOnce([
+				{ envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', value: 'org-shared' },
+				{ envVarKey: 'SENTRY_API_TOKEN', value: 'org-sentry' },
+			]);
+			mockDb.chain.where.mockResolvedValueOnce([
+				{ envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', value: 'project-override' },
+			]);
+
+			const result = await resolveAllProjectCredentials('proj1');
+			expect(result).toEqual({
+				GITHUB_TOKEN_IMPLEMENTER: 'project-override',
+				SENTRY_API_TOKEN: 'org-sentry',
+			});
+		});
+
+		it('decrypts each tier with its own AAD (orgId vs projectId)', async () => {
+			const key = randomBytes(32).toString('hex');
+			vi.stubEnv('CREDENTIAL_MASTER_KEY', key);
+			const { encryptCredential } = await import('../../../../src/db/crypto.js');
+
+			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1', orgId: 'org-1' }]);
+			mockDb.chain.where.mockResolvedValueOnce([
+				{ envVarKey: 'ORG_ONLY_KEY', value: encryptCredential('org-value', 'org-1') },
+			]);
+			mockDb.chain.where.mockResolvedValueOnce([
+				{ envVarKey: 'PROJECT_KEY', value: encryptCredential('project-value', 'proj1') },
+			]);
+
+			const result = await resolveAllProjectCredentials('proj1');
+			expect(result).toEqual({
+				ORG_ONLY_KEY: 'org-value',
+				PROJECT_KEY: 'project-value',
+			});
+		});
+
 		it('returns empty object when no credentials', async () => {
 			// Project exists
-			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1' }]);
-			// No credentials
+			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1', orgId: 'org-1' }]);
+			// No org credentials
+			mockDb.chain.where.mockResolvedValueOnce([]);
+			// No project credentials
 			mockDb.chain.where.mockResolvedValueOnce([]);
 
 			const result = await resolveAllProjectCredentials('proj1');
@@ -86,14 +158,14 @@ describe('credentialsRepository', () => {
 			);
 		});
 
-		it('issues two queries: project existence check then project_credentials', async () => {
-			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1' }]);
+		it('issues three queries: project check, org_credentials, project_credentials', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([{ id: 'proj1', orgId: 'org-1' }]);
+			mockDb.chain.where.mockResolvedValueOnce([]);
 			mockDb.chain.where.mockResolvedValueOnce([{ envVarKey: 'KEY1', value: 'val1' }]);
 
 			await resolveAllProjectCredentials('proj1');
 
-			// One select for project existence, one for project_credentials
-			expect(mockDb.db.select).toHaveBeenCalledTimes(2);
+			expect(mockDb.db.select).toHaveBeenCalledTimes(3);
 		});
 	});
 

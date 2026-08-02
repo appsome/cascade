@@ -6,6 +6,11 @@ import {
 	resolveProjectCredential,
 	writeProjectCredential,
 } from '../../../src/db/repositories/credentialsRepository.js';
+import {
+	deleteOrgCredential,
+	listOrgCredentials,
+	writeOrgCredential,
+} from '../../../src/db/repositories/orgCredentialsRepository.js';
 import { truncateAll } from '../helpers/db.js';
 import { seedOrg, seedProject } from '../helpers/seed.js';
 
@@ -109,6 +114,62 @@ describe('credentialsRepository (integration)', () => {
 			const creds = await listProjectCredentials('test-project');
 			const cred = creds.find((c) => c.envVarKey === 'ENC_KEY');
 			expect(cred?.value).toBe('plaintext-secret'); // decrypted on read
+		});
+	});
+
+	// =========================================================================
+	// Org-tier inheritance (org_credentials)
+	// =========================================================================
+
+	describe('org credential inheritance', () => {
+		it('org credential CRUD round-trips', async () => {
+			await writeOrgCredential('test-org', 'ORG_KEY', 'org-value', 'Org Key');
+
+			const creds = await listOrgCredentials('test-org');
+			expect(creds).toHaveLength(1);
+			expect(creds[0]).toEqual({ envVarKey: 'ORG_KEY', value: 'org-value', name: 'Org Key' });
+
+			await deleteOrgCredential('test-org', 'ORG_KEY');
+			expect(await listOrgCredentials('test-org')).toEqual([]);
+		});
+
+		it('project inherits an org-only credential', async () => {
+			await writeOrgCredential('test-org', 'GITHUB_TOKEN_IMPLEMENTER', 'org-shared-token');
+
+			const single = await resolveProjectCredential('test-project', 'GITHUB_TOKEN_IMPLEMENTER');
+			expect(single).toBe('org-shared-token');
+
+			const all = await resolveAllProjectCredentials('test-project');
+			expect(all.GITHUB_TOKEN_IMPLEMENTER).toBe('org-shared-token');
+		});
+
+		it('project credential with the same key overrides the org value', async () => {
+			await writeOrgCredential('test-org', 'SHARED_KEY', 'org-value');
+			await writeProjectCredential('test-project', 'SHARED_KEY', 'project-value');
+
+			expect(await resolveProjectCredential('test-project', 'SHARED_KEY')).toBe('project-value');
+
+			const all = await resolveAllProjectCredentials('test-project');
+			expect(all.SHARED_KEY).toBe('project-value');
+		});
+
+		it('deleting the project override reverts to the org value', async () => {
+			await writeOrgCredential('test-org', 'SHARED_KEY', 'org-value');
+			await writeProjectCredential('test-project', 'SHARED_KEY', 'project-value');
+			await deleteProjectCredential('test-project', 'SHARED_KEY');
+
+			expect(await resolveProjectCredential('test-project', 'SHARED_KEY')).toBe('org-value');
+		});
+
+		it('inheritance decrypts each tier with its own AAD under encryption', async () => {
+			vi.stubEnv('CREDENTIAL_MASTER_KEY', 'a'.repeat(64));
+
+			await writeOrgCredential('test-org', 'ORG_ENC_KEY', 'org-secret');
+			await writeProjectCredential('test-project', 'PROJECT_ENC_KEY', 'project-secret');
+
+			const all = await resolveAllProjectCredentials('test-project');
+			expect(all.ORG_ENC_KEY).toBe('org-secret');
+			expect(all.PROJECT_ENC_KEY).toBe('project-secret');
 		});
 	});
 });
