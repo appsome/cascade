@@ -29,7 +29,12 @@ export default class WebhooksCreate extends DashboardCommand {
 		const { args, flags } = await this.parse(WebhooksCreate);
 
 		try {
-			const callbackBaseUrl = flags['callback-url'] || this.cliConfig.serverUrl;
+			let callbackBaseUrl: string | undefined = flags['callback-url'] || undefined;
+			if (!callbackBaseUrl) {
+				// Try to get the public URL configured on the server
+				const { routerPublicUrl } = await this.client.system.getPublicUrl.query();
+				callbackBaseUrl = routerPublicUrl ?? undefined;
+			}
 
 			const oneTimeTokens: Record<string, string> = {};
 			if (flags['github-token']) oneTimeTokens.github = flags['github-token'];

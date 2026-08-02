@@ -232,8 +232,10 @@ export function AlertingTab({
 	const [verifyError, setVerifyError] = useState<string | null>(null);
 	const [isVerifying, setIsVerifying] = useState(false);
 
+	const publicUrlQuery = useQuery(trpc.system.getPublicUrl.queryOptions());
 	const callbackBaseUrl =
-		API_URL ||
+		publicUrlQuery.data?.routerPublicUrl ??
+		API_URL ??
 		(typeof window !== 'undefined' ? window.location.origin.replace(':5173', ':3000') : '');
 
 	const sentryWebhookUrl = callbackBaseUrl

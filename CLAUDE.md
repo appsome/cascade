@@ -196,6 +196,8 @@ Required:
 
 Optional:
 
+- `WEBHOOK_CALLBACK_BASE_URL` — public-facing base URL for webhook callbacks (e.g. `https://cascade.example.com`). Used as the server-side default callback URL when creating/deleting webhooks via the CLI or Dashboard (required behind NAT / reverse proxy where the internal service URL differs from the public URL), and for Trello HMAC signature verification. The `system.getPublicUrl` tRPC endpoint exposes it to frontend clients.
+
 - `DATABASE_SSL` — `false` disables SSL (local dev); `no-verify` keeps TLS but skips certificate verification — required for managed Postgres that requires TLS yet presents a self-signed/private-CA cert (e.g. Supabase's connection pooler), where `DATABASE_CA_CERT` can't help because spawned worker containers get `DATABASE_*` env but no mounted cert file; unset → TLS with verification. `DATABASE_CA_CERT` pins a CA for managed DBs with a private CA (verification mode only).
 - `CREDENTIAL_MASTER_KEY` — 64-char hex (AES-256 key) to encrypt project credentials at rest. Without it, credentials are stored as plaintext; both modes coexist.
 - `GITHUB_WEBHOOK_SECRET` — opt-in HMAC verification; store as the `webhook_secret` role on the GitHub SCM integration.
