@@ -163,6 +163,20 @@ describe('buildWorkerEnv', () => {
 		expect(env).toContain('CASCADE_CREDENTIAL_KEYS=GITHUB_TOKEN');
 	});
 
+	it('excludes EXTERNAL_WEBHOOK_PASSWORD_* keys from worker env (inbound-auth verifiers)', async () => {
+		mockGetAllProjectCredentials.mockResolvedValue({
+			GITHUB_TOKEN: 'ghp_test',
+			EXTERNAL_WEBHOOK_PASSWORD_IMPLEMENTATION: 'super-secret-webhook-pw',
+		});
+
+		const env = await buildWorkerEnv(makeJob() as never);
+
+		expect(env.some((e) => e.includes('EXTERNAL_WEBHOOK_PASSWORD'))).toBe(false);
+		expect(env.some((e) => e.includes('super-secret-webhook-pw'))).toBe(false);
+		expect(env).toContain('GITHUB_TOKEN=ghp_test');
+		expect(env).toContain('CASCADE_CREDENTIAL_KEYS=GITHUB_TOKEN');
+	});
+
 	it('skips credential env vars if credential resolution fails', async () => {
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		mockGetAllProjectCredentials.mockRejectedValue(new Error('DB error'));

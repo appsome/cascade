@@ -15,6 +15,7 @@ import { captureException } from '../../sentry.js';
 import { adminProcedure, protectedProcedure, router, superAdminProcedure } from '../trpc.js';
 import { maskCredentialValue } from './_shared/maskCredential.js';
 import { assertOrgAdmin, resolveActorRole } from './_shared/orgRole.js';
+import { assertWebhookPasswordStrength } from './_shared/webhookPasswordPolicy.js';
 
 export const organizationRouter = router({
 	get: protectedProcedure.query(async ({ ctx }) => {
@@ -99,6 +100,7 @@ export const organizationRouter = router({
 			)
 			.mutation(async ({ ctx, input }) => {
 				assertOrgAdmin(await resolveActorRole(ctx));
+				assertWebhookPasswordStrength(input.envVarKey, input.value);
 				await writeOrgCredential(
 					ctx.effectiveOrgId,
 					input.envVarKey,

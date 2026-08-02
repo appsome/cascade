@@ -15,6 +15,7 @@ import {
 } from '../capabilities/resolver.js';
 import type { ContextInjection, ToolManifest } from '../contracts/index.js';
 import {
+	appendExternalTriggerRequest,
 	buildTaskPromptContext,
 	renderInlineTaskPrompt,
 	validateTemplate,
@@ -255,7 +256,10 @@ function buildProfileFromDefinition(def: AgentDefinition, agentType: string): Ag
 			return injections;
 		},
 		buildTaskPrompt: (input) =>
-			renderInlineTaskPrompt(taskPromptTemplate, buildTaskPromptContext(input)),
+			appendExternalTriggerRequest(
+				renderInlineTaskPrompt(taskPromptTemplate, buildTaskPromptContext(input)),
+				input,
+			),
 		capabilities: def.capabilities,
 		getLlmistGadgets: (integrationChecker?: IntegrationChecker) => {
 			// Resolve effective capabilities based on integration availability

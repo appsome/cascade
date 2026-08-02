@@ -42,6 +42,7 @@ import { captureException } from '../../sentry.js';
 import { logger } from '../../utils/logging.js';
 import { protectedProcedure, publicProcedure, router, superAdminProcedure } from '../trpc.js';
 import { maskCredentialValue } from './_shared/maskCredential.js';
+import { assertWebhookPasswordStrength } from './_shared/webhookPasswordPolicy.js';
 
 /**
  * The current worker-image/dockerfile state read alongside the ownership check.
@@ -921,6 +922,7 @@ export const projectsRouter = router({
 			)
 			.mutation(async ({ ctx, input }) => {
 				await verifyProjectOwnership(input.projectId, ctx.effectiveOrgId);
+				assertWebhookPasswordStrength(input.envVarKey, input.value);
 				await writeProjectCredential(
 					input.projectId,
 					input.envVarKey,

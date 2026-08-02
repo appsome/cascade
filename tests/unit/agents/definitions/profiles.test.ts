@@ -22,6 +22,8 @@ vi.mock('../../../../src/agents/capabilities/resolver.js', () => ({
 vi.mock('../../../../src/agents/prompts/index.js', () => ({
 	buildTaskPromptContext: vi.fn().mockReturnValue({ task: 'implement' }),
 	renderInlineTaskPrompt: vi.fn().mockReturnValue('Rendered task prompt'),
+	// Pass-through like the real implementation for non-external-webhook input
+	appendExternalTriggerRequest: vi.fn((prompt: string) => prompt),
 	validateTemplate: vi.fn().mockReturnValue({ valid: true }),
 }));
 

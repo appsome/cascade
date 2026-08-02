@@ -10,6 +10,7 @@ import { findProjectByRepo, getAllProjectCredentials } from '../config/provider.
 import { getIntegrationProvider } from '../db/repositories/credentialsRepository.js';
 import { extractProjectIdFromJobViaRegistry } from '../integrations/pm/_shared/project-id-extractor.js';
 import { captureException } from '../sentry.js';
+import { isExternalWebhookPasswordKey } from '../triggers/shared/external-webhook.js';
 import { logger } from '../utils/logging.js';
 import { routerConfig } from './config.js';
 import {
@@ -169,13 +170,21 @@ export async function buildWorkerEnvWithProjectId(
 
 	// Resolve project credentials in the router and set as individual env vars.
 	// NOTE: CREDENTIAL_MASTER_KEY is intentionally NOT passed to workers.
+	// NOTE: EXTERNAL_WEBHOOK_PASSWORD_* keys are inbound-auth verifiers for the
+	// router's external webhook endpoint — agents never need them, and exposing
+	// them to worker containers would give a prompt-injected agent a direct
+	// "dispatch agent X with prompt Y" primitive (org-level passwords would
+	// escalate cross-project). They are excluded here.
 	if (projectId) {
 		try {
 			const secrets = await getAllProjectCredentials(projectId);
+			const injectedKeys: string[] = [];
 			for (const [key, value] of Object.entries(secrets)) {
+				if (isExternalWebhookPasswordKey(key)) continue;
 				env.push(`${key}=${value}`);
+				injectedKeys.push(key);
 			}
-			env.push(`CASCADE_CREDENTIAL_KEYS=${Object.keys(secrets).join(',')}`);
+			env.push(`CASCADE_CREDENTIAL_KEYS=${injectedKeys.join(',')}`);
 		} catch (err) {
 			logger.warn('[WorkerManager] Failed to resolve credentials for project:', {
 				projectId,

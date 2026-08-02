@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { _resetForTesting } from '../../../src/api/auth/rateLimiter.js';
 
 // Must mock heavy imports BEFORE importing the module under test
 const {
@@ -59,6 +60,13 @@ function buildApp(): Hono {
 	return app;
 }
 
+let ipCounter = 0;
+/** Unique per-test client IP so the shared rate limiter never couples tests. */
+function nextIp(): string {
+	ipCounter += 1;
+	return `10.0.0.${ipCounter}`;
+}
+
 function post(
 	app: Hono,
 	{
@@ -66,12 +74,13 @@ function post(
 		agentType = 'implementation',
 		body = '{"message":"do the thing"}',
 		headers = {} as Record<string, string>,
+		ip = nextIp(),
 	} = {},
 ): Promise<Response> {
 	return app.fetch(
 		new Request(`http://localhost/external/webhook/${projectId}/${agentType}`, {
 			method: 'POST',
-			headers,
+			headers: { 'x-forwarded-for': ip, ...headers },
 			body,
 		}),
 	);
@@ -82,6 +91,7 @@ const bearer = (password: string) => ({ Authorization: `Bearer ${password}` });
 describe('external webhook endpoint', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		_resetForTesting();
 		mockLoadProjectConfigById.mockResolvedValue({ project: { id: 'proj-1' }, config: {} });
 		mockResolveProjectCredential.mockResolvedValue('correct-password');
 		mockGetResolvedTriggerConfig.mockResolvedValue({ enabled: true, parameters: {} });
@@ -90,15 +100,50 @@ describe('external webhook endpoint', () => {
 		mockSubmitDashboardJob.mockResolvedValue(undefined);
 	});
 
-	describe('fail closed', () => {
-		it('rejects with 403 when no password is configured — never dispatches', async () => {
+	describe('fail closed + anti-enumeration', () => {
+		it('rejects with generic 401 when no password is configured — never dispatches', async () => {
 			mockResolveProjectCredential.mockResolvedValue(null);
 
 			const res = await post(buildApp(), { headers: bearer('anything') });
 
-			expect(res.status).toBe(403);
+			expect(res.status).toBe(401);
+			expect(await res.json()).toEqual({ error: 'Unauthorized' });
 			expect(mockSubmitDashboardJob).not.toHaveBeenCalled();
 			expect(mockCreateQueuedRun).not.toHaveBeenCalled();
+		});
+
+		it('unknown project, unset password, and wrong token are indistinguishable to callers', async () => {
+			const app = buildApp();
+
+			mockLoadProjectConfigById.mockResolvedValueOnce(undefined);
+			const unknownProject = await post(app, { headers: bearer('x') });
+
+			mockResolveProjectCredential.mockResolvedValueOnce(null);
+			const noPassword = await post(app, { headers: bearer('x') });
+
+			const wrongToken = await post(app, { headers: bearer('wrong-password!!') });
+
+			const bodies = await Promise.all(
+				[unknownProject, noPassword, wrongToken].map(async (r) => ({
+					status: r.status,
+					body: await r.json(),
+				})),
+			);
+			expect(bodies).toEqual([
+				{ status: 401, body: { error: 'Unauthorized' } },
+				{ status: 401, body: { error: 'Unauthorized' } },
+				{ status: 401, body: { error: 'Unauthorized' } },
+			]);
+		});
+
+		it('keeps distinct decision reasons in webhook logs for operators', async () => {
+			mockLoadProjectConfigById.mockResolvedValueOnce(undefined);
+			await post(buildApp(), { headers: bearer('x') });
+
+			const reasons = mockLogWebhookCall.mock.calls.map(
+				(call) => (call[0] as { decisionReason?: string }).decisionReason,
+			);
+			expect(reasons).toContain('Unknown project');
 		});
 	});
 
@@ -115,18 +160,20 @@ describe('external webhook endpoint', () => {
 			expect(res.status).toBe(401);
 		});
 
+		it('accepts a case-insensitive bearer scheme (RFC 7235)', async () => {
+			const res = await post(buildApp(), {
+				headers: { Authorization: 'bearer correct-password' },
+			});
+			expect(res.status).toBe(200);
+		});
+
 		it('rejects wrong password with 401', async () => {
 			const res = await post(buildApp(), { headers: bearer('wrong-password!') });
 			expect(res.status).toBe(401);
 			expect(mockSubmitDashboardJob).not.toHaveBeenCalled();
 		});
 
-		it('rejects wrong-length password with 401', async () => {
-			const res = await post(buildApp(), { headers: bearer('short') });
-			expect(res.status).toBe(401);
-		});
-
-		it('never passes the Authorization header to webhook logs', async () => {
+		it('never passes the Authorization header or password to webhook logs', async () => {
 			await post(buildApp(), { headers: bearer('correct-password') });
 
 			for (const call of mockLogWebhookCall.mock.calls) {
@@ -137,6 +184,39 @@ describe('external webhook endpoint', () => {
 		});
 	});
 
+	describe('rate limiting', () => {
+		it('returns 429 with Retry-After after repeated attempts from one IP', async () => {
+			const app = buildApp();
+			const ip = nextIp();
+
+			let lastStatus = 0;
+			for (let i = 0; i < 12; i++) {
+				const res = await post(app, { headers: bearer('wrong-password!'), ip });
+				lastStatus = res.status;
+				if (lastStatus === 429) {
+					expect(res.headers.get('Retry-After')).toBeTruthy();
+					break;
+				}
+			}
+			expect(lastStatus).toBe(429);
+		});
+
+		it('successful auth resets the counter for the IP', async () => {
+			const app = buildApp();
+			const ip = nextIp();
+
+			for (let i = 0; i < 5; i++) {
+				await post(app, { headers: bearer('wrong-password!'), ip });
+			}
+			const success = await post(app, { headers: bearer('correct-password'), ip });
+			expect(success.status).toBe(200);
+
+			// Counter reset — several more attempts allowed before limiting again
+			const next = await post(app, { headers: bearer('wrong-password!'), ip });
+			expect(next.status).toBe(401);
+		});
+	});
+
 	describe('routing guards', () => {
 		it('returns 404 for an invalid agent type slug', async () => {
 			const res = await post(buildApp(), { agentType: 'Not-Valid!' });
@@ -144,13 +224,7 @@ describe('external webhook endpoint', () => {
 			expect(mockLoadProjectConfigById).not.toHaveBeenCalled();
 		});
 
-		it('returns 404 for an unknown project', async () => {
-			mockLoadProjectConfigById.mockResolvedValue(undefined);
-			const res = await post(buildApp(), { headers: bearer('correct-password') });
-			expect(res.status).toBe(404);
-		});
-
-		it('returns 404 when the agent is not enabled or trigger undeclared', async () => {
+		it('returns 404 when the agent is not enabled or trigger undeclared (post-auth)', async () => {
 			mockGetResolvedTriggerConfig.mockResolvedValue(null);
 			const res = await post(buildApp(), { headers: bearer('correct-password') });
 			expect(res.status).toBe(404);
@@ -170,17 +244,7 @@ describe('external webhook endpoint', () => {
 	});
 
 	describe('body handling', () => {
-		it('rejects oversized declared content-length with 413', async () => {
-			const res = await post(buildApp(), {
-				headers: {
-					...bearer('correct-password'),
-					'content-length': String(EXTERNAL_WEBHOOK_BODY_MAX_BYTES + 1),
-				},
-			});
-			expect(res.status).toBe(413);
-		});
-
-		it('rejects oversized actual body with 413', async () => {
+		it('rejects an oversized body with 413 without dispatching', async () => {
 			const res = await post(buildApp(), {
 				headers: bearer('correct-password'),
 				body: 'x'.repeat(EXTERNAL_WEBHOOK_BODY_MAX_BYTES + 1),
@@ -222,12 +286,14 @@ describe('external webhook endpoint', () => {
 			});
 		});
 
-		it('fails the pre-created run and returns 500 when enqueue throws', async () => {
-			mockSubmitDashboardJob.mockRejectedValue(new Error('redis down'));
+		it('fails the pre-created run and returns a generic 500 when enqueue throws', async () => {
+			mockSubmitDashboardJob.mockRejectedValue(new Error('redis down at 10.0.0.5:6379'));
 
 			const res = await post(buildApp(), { headers: bearer('correct-password') });
 
 			expect(res.status).toBe(500);
+			// Internal detail stays out of the response body
+			expect(JSON.stringify(await res.json())).not.toContain('redis');
 			expect(mockFailQueuedOrRunningRun).toHaveBeenCalledWith(
 				'run-123',
 				'Failed to enqueue external webhook run',

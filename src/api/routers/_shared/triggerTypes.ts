@@ -234,5 +234,12 @@ export const TRIGGER_REGISTRY: Record<TriggerCategory, KnownTriggerEvent[]> = {
 			description: 'Orchestration trigger for chaining agents after completion',
 			contextPipeline: [],
 		},
+		{
+			event: 'internal:external-webhook',
+			label: 'External Webhook',
+			description:
+				'Dispatch from an external system via an authenticated POST to the per-agent webhook URL',
+			contextPipeline: [],
+		},
 	],
 };

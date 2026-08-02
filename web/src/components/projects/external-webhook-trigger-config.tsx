@@ -10,7 +10,6 @@ import { AlertTriangle } from 'lucide-react';
 import { ProjectSecretField } from '@/components/projects/project-secret-field.js';
 import { CopyButton } from '@/components/ui/copy-button.js';
 import { Label } from '@/components/ui/label.js';
-import { API_URL } from '@/lib/api.js';
 import { trpc } from '@/lib/trpc.js';
 import {
 	externalWebhookCredentialKey,
@@ -37,10 +36,14 @@ export function ExternalWebhookTriggerConfig({
 
 	if (!enabled) return null;
 
-	const callbackBaseUrl =
-		publicUrlQuery.data?.routerPublicUrl ??
-		API_URL ??
-		(typeof window !== 'undefined' ? window.location.origin.replace(':5173', ':3000') : '');
+	// The URL must point at the ROUTER service, so API_URL (the dashboard API)
+	// is deliberately not a fallback here. WEBHOOK_CALLBACK_BASE_URL is the
+	// authoritative source; the dev-server origin swap covers local dev only.
+	const devOrigin =
+		typeof window !== 'undefined' && window.location.origin.includes(':5173')
+			? window.location.origin.replace(':5173', ':3000')
+			: '';
+	const callbackBaseUrl = publicUrlQuery.data?.routerPublicUrl ?? devOrigin;
 	const webhookUrl = `${callbackBaseUrl || '<YOUR_ROUTER_URL>'}${externalWebhookPath(projectId, agentType)}`;
 
 	const credentialKey = externalWebhookCredentialKey(agentType);
@@ -80,7 +83,7 @@ export function ExternalWebhookTriggerConfig({
 			{!credential?.isConfigured && (
 				<div className="flex items-center gap-1.5 text-xs text-yellow-600 dark:text-yellow-500">
 					<AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-					Requests are rejected with 403 until a password is set.
+					Requests are rejected until a password is set.
 				</div>
 			)}
 
@@ -88,8 +91,8 @@ export function ExternalWebhookTriggerConfig({
 				projectId={projectId}
 				envVarKey={credentialKey}
 				label="Webhook Password"
-				description="Sent by callers as 'Authorization: Bearer <password>'. Required — requests are rejected until set."
-				placeholder="Choose a strong password..."
+				description="Sent by callers as 'Authorization: Bearer <password>'. Required (minimum 16 characters) — requests are rejected until set."
+				placeholder="Choose a strong password (16+ characters)..."
 				credential={credential}
 			/>
 		</div>

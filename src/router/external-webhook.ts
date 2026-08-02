@@ -10,15 +10,26 @@
  * The POST body (capped at 64 KiB) reaches the agent as trigger context via
  * the manual-run path's triggerCommentBody.
  *
+ * Hardening notes (adversarial review, 2026-08-02):
+ * - All pre-auth failures (unknown project, no password configured, wrong
+ *   token) return an identical generic 401 so unauthenticated callers cannot
+ *   enumerate projects or distinguish password-armed agents. The distinct
+ *   decisionReasons live only in webhook_logs (superadmin surface).
+ * - Failed attempts are rate-limited per client IP via the shared sliding
+ *   window limiter; successful auth resets the counter.
+ * - The Bearer scheme is matched case-insensitively (RFC 7235).
+ * - The body is read incrementally and aborted at the cap, not buffered first.
+ * - Error responses never include internal error details; those go to logs.
+ * - The Authorization header is never logged.
+ *
  * Deliberately hand-rolled rather than built on createWebhookHandler: that
  * factory parses before verifying and treats a missing secret as "skip
  * verification" (fail open) — both wrong for a token-authenticated endpoint.
- * The logging discipline (webhook_logs row per decision) is mirrored instead.
- * The Authorization header is never logged.
  */
 
 import { timingSafeEqual } from 'node:crypto';
 import type { Context, Handler } from 'hono';
+import { checkRateLimit, recordSuccessfulLogin } from '../api/auth/rateLimiter.js';
 import { resolveEngineName } from '../backends/resolution.js';
 import { loadProjectConfigById } from '../config/provider.js';
 import { resolveProjectCredential } from '../db/repositories/credentialsRepository.js';
@@ -36,6 +47,8 @@ import { logWebhookCall } from '../utils/webhookLogger.js';
 /** Kept below the 96 KiB JOB_DATA inline threshold (src/router/job-data-offload.ts). */
 export const EXTERNAL_WEBHOOK_BODY_MAX_BYTES = 64 * 1024;
 
+const UNAUTHORIZED_MESSAGE = 'Unauthorized';
+
 function timingSafeCompare(a: string, b: string): boolean {
 	const bufA = Buffer.from(a, 'utf8');
 	const bufB = Buffer.from(b, 'utf8');
@@ -43,14 +56,59 @@ function timingSafeCompare(a: string, b: string): boolean {
 	return timingSafeEqual(bufA, bufB);
 }
 
+/** RFC 7235: the auth scheme token is case-insensitive. */
+function parseBearerToken(authorizationHeader: string): string {
+	const match = /^bearer\s+(.+)$/i.exec(authorizationHeader);
+	return match?.[1] ?? '';
+}
+
+function getClientIp(c: Context): string {
+	const forwarded = c.req.header('x-forwarded-for');
+	if (forwarded) {
+		return forwarded.split(',')[0].trim();
+	}
+	return 'unknown';
+}
+
+/**
+ * Read the request body incrementally, aborting as soon as the byte count
+ * exceeds the cap — an oversized or endless body never gets fully buffered.
+ * Returns null when the cap was exceeded.
+ */
+async function readBodyWithCap(c: Context, maxBytes: number): Promise<string | null> {
+	const stream = c.req.raw.body;
+	if (!stream) return '';
+
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel();
+				return null;
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return Buffer.concat(chunks).toString('utf8');
+}
+
 interface ReplyExtras {
 	runId?: string;
 	bodyRaw?: string;
+	/** Override the response body message (responses default to decisionReason). */
+	publicMessage?: string;
 }
 
 function reply(
 	c: Context,
-	status: 200 | 401 | 403 | 404 | 413 | 500,
+	status: 200 | 401 | 404 | 413 | 429 | 500,
 	decisionReason: string,
 	extras: ReplyExtras = {},
 ) {
@@ -70,7 +128,12 @@ function reply(
 	if (status === 200) {
 		return c.json({ ok: true, runId: extras.runId }, 200);
 	}
-	return c.json({ error: decisionReason }, status);
+	return c.json({ error: extras.publicMessage ?? decisionReason }, status);
+}
+
+/** Identical public 401 for every pre-auth failure — anti-enumeration. */
+function unauthorized(c: Context, decisionReason: string) {
+	return reply(c, 401, decisionReason, { publicMessage: UNAUTHORIZED_MESSAGE });
 }
 
 export function createExternalWebhookHandler(): Handler {
@@ -78,41 +141,50 @@ export function createExternalWebhookHandler(): Handler {
 		const projectId = c.req.param('projectId') ?? '';
 		const agentType = c.req.param('agentType') ?? '';
 
-		// 1. Cheap slug guard before any DB hit
+		// 0. Per-IP sliding-window rate limit — every attempt counts until a
+		//    successful authentication resets the counter.
+		const rateKey = `external-webhook:${getClientIp(c)}`;
+		const rateCheck = checkRateLimit(rateKey);
+		if (rateCheck.limited) {
+			c.header('Retry-After', String(rateCheck.retryAfterSeconds));
+			return reply(c, 429, 'Rate limited', {
+				publicMessage: 'Too many attempts. Please try again later.',
+			});
+		}
+
+		// 1. Cheap slug guard before any DB hit (format error — no state info)
 		if (!projectId || !isValidAgentTypeSlug(agentType)) {
 			return reply(c, 404, 'Invalid agent type');
 		}
 
-		// 2. Project must exist (config also needed for engine resolution)
+		// 2-4. Authentication. Unknown project, missing password (fail closed),
+		// and wrong token all collapse into the same generic 401; the
+		// decisionReason in webhook_logs distinguishes them for operators.
 		const pc = await loadProjectConfigById(projectId);
 		if (!pc) {
-			return reply(c, 404, 'Unknown project');
+			return unauthorized(c, 'Unknown project');
 		}
 
-		// 3. Resolve password — FAIL CLOSED when unset
 		const password = await resolveProjectCredential(
 			projectId,
 			externalWebhookCredentialKey(agentType),
 		);
 		if (!password) {
-			return reply(
+			return unauthorized(
 				c,
-				403,
 				'No webhook password configured for this agent — rejecting (fail closed)',
 			);
 		}
 
-		// 4. Bearer parse + timing-safe compare
-		const auth = c.req.header('authorization') ?? '';
-		const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+		const token = parseBearerToken(c.req.header('authorization') ?? '');
 		if (!token || !timingSafeCompare(token, password)) {
-			return reply(c, 401, 'Invalid or missing bearer token');
+			return unauthorized(c, 'Invalid or missing bearer token');
 		}
+		recordSuccessfulLogin(rateKey);
 
 		// 5. Enablement — one resolver call covers: agent_configs row exists,
-		//    definition declares the event, DB config / defaultEnabled. 404 for
-		//    both undeclared and disabled (anti-probing); the decisionReason in
-		//    webhook_logs distinguishes them for operators.
+		//    definition declares the event, DB config / defaultEnabled. The
+		//    caller is authenticated at this point, so a specific 404 is fine.
 		const triggerConfig = await getResolvedTriggerConfig(
 			projectId,
 			agentType,
@@ -125,13 +197,9 @@ export function createExternalWebhookHandler(): Handler {
 			return reply(c, 404, 'external-webhook trigger disabled for this agent');
 		}
 
-		// 6. Body read + cap (content-length pre-check, post-read check for chunked)
-		const declaredLength = Number(c.req.header('content-length') ?? 0);
-		if (declaredLength > EXTERNAL_WEBHOOK_BODY_MAX_BYTES) {
-			return reply(c, 413, 'Body too large');
-		}
-		const body = await c.req.text();
-		if (Buffer.byteLength(body, 'utf8') > EXTERNAL_WEBHOOK_BODY_MAX_BYTES) {
+		// 6. Body read with incremental cap (never fully buffers an oversized body)
+		const body = await readBodyWithCap(c, EXTERNAL_WEBHOOK_BODY_MAX_BYTES);
+		if (body === null) {
 			return reply(c, 413, 'Body too large');
 		}
 
@@ -162,7 +230,9 @@ export function createExternalWebhookHandler(): Handler {
 				agentType,
 				error: String(err),
 			});
-			return reply(c, 500, `Enqueue failed: ${String(err)}`);
+			return reply(c, 500, `Enqueue failed: ${String(err)}`, {
+				publicMessage: 'Failed to queue the run',
+			});
 		}
 
 		return reply(c, 200, `Job queued: ${agentType} agent (external webhook)`, {

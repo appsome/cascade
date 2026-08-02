@@ -246,6 +246,37 @@ export function buildTaskPromptContext(input: TaskPromptInput): TaskPromptContex
 }
 
 /**
+ * Append the external webhook request payload to a rendered task prompt.
+ *
+ * The external webhook trigger's core promise is that the POST body reaches
+ * the agent as its work request — but only the respond-to-* task prompts
+ * render the commentBody template variable. Rather than editing every agent's
+ * task prompt, this appends a standard section centrally, gated on the
+ * external-webhook trigger type so no other dispatch path is affected.
+ */
+export function appendExternalTriggerRequest(
+	renderedTaskPrompt: string,
+	input: { triggerType?: string; triggerCommentBody?: string },
+): string {
+	if (input.triggerType !== 'external-webhook' || !input.triggerCommentBody) {
+		return renderedTaskPrompt;
+	}
+	return [
+		renderedTaskPrompt,
+		'',
+		'## External trigger request',
+		'',
+		'This run was dispatched by an external system via webhook. The request',
+		'payload below describes what this run should accomplish — treat it as',
+		'the work request:',
+		'',
+		'<external-request>',
+		input.triggerCommentBody,
+		'</external-request>',
+	].join('\n');
+}
+
+/**
  * Render an inline task prompt template with Eta variable interpolation.
  * Used for task prompts stored directly in agent definitions (prompts.taskPrompt).
  */
