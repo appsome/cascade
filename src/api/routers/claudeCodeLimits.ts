@@ -1,23 +1,45 @@
 import { z } from 'zod';
 import { fetchClaudeSubscriptionLimits } from '../../anthropic/client.js';
 import {
+	getProjectOwnCredential,
 	listAllClaudeCodeCredentials,
-	listProjectCredentials,
 } from '../../db/repositories/credentialsRepository.js';
 import { resolveOrgCredential } from '../../db/repositories/orgCredentialsRepository.js';
+import { logger } from '../../utils/logging.js';
 import { adminProcedure, protectedProcedure, router } from '../trpc.js';
 import { assertOrgAdmin, resolveActorRole } from './_shared/orgRole.js';
 import { verifyProjectOrgAccess } from './_shared/projectAccess.js';
 
 const CLAUDE_CODE_TOKEN_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
 
-export type ClaudeCodeLimitsScope = 'org' | 'project' | 'env';
+// The server env token (process.env.CLAUDE_CODE_OAUTH_TOKEN) is deliberately
+// NOT surfaced here: (a) this tRPC handler runs in the dashboard service while
+// workers receive the ROUTER service's env — the dashboard's view of it can be
+// wrong in both directions; (b) it is a host-level operator secret, and its
+// usage/billing data must not be exposed to tenant org members. Operators who
+// want its usage visible should store the token as an org credential instead —
+// which is exactly what this feature is for.
+
+export type ClaudeCodeLimitsScope = 'org' | 'project';
 
 export interface LimitsSource {
 	scope: ClaudeCodeLimitsScope;
 	projectId?: string;
 	projectName?: string;
 	token: string;
+}
+
+/** Resolve the org token, treating decrypt failures as absent (never 500). */
+async function safeResolveOrgToken(orgId: string): Promise<string | null> {
+	try {
+		return await resolveOrgCredential(orgId, CLAUDE_CODE_TOKEN_KEY);
+	} catch (err) {
+		logger.warn('Failed to resolve org CLAUDE_CODE_OAUTH_TOKEN', {
+			orgId,
+			error: String(err),
+		});
+		return null;
+	}
 }
 
 /**
@@ -40,16 +62,16 @@ async function fetchLimitsForSources<T extends LimitsSource>(sources: T[]) {
 export const claudeCodeLimitsRouter = router({
 	/**
 	 * Claude Code subscription usage for every credential source in the
-	 * effective org: the org-level shared token, each project-level override,
-	 * and the server's global env token. Org-admin gated — same audience as
-	 * the organization credentials settings page.
+	 * effective org: the org-level shared token and each project-level
+	 * override. Org-admin gated — same audience as the organization
+	 * credentials settings page.
 	 */
 	forOrg: adminProcedure.query(async ({ ctx }) => {
 		assertOrgAdmin(await resolveActorRole(ctx));
 
 		const sources: LimitsSource[] = [];
 
-		const orgToken = await resolveOrgCredential(ctx.effectiveOrgId, CLAUDE_CODE_TOKEN_KEY);
+		const orgToken = await safeResolveOrgToken(ctx.effectiveOrgId);
 		if (orgToken) sources.push({ scope: 'org', token: orgToken });
 
 		const projectCredentials = await listAllClaudeCodeCredentials(ctx.effectiveOrgId);
@@ -62,31 +84,24 @@ export const claudeCodeLimitsRouter = router({
 			});
 		}
 
-		const envToken = process.env[CLAUDE_CODE_TOKEN_KEY];
-		if (envToken) sources.push({ scope: 'env', token: envToken });
-
 		return fetchLimitsForSources(sources);
 	}),
 
 	/**
 	 * Claude Code subscription usage for the credential candidates visible to
-	 * one project: its own override (if set), the inherited org token (if set),
-	 * and the server's global env token. `active` marks the credential-system
-	 * winner (project override beats org; env is informational). Used by the
-	 * project settings engine tab as a picker preview.
+	 * one project: its own override (if set) and the inherited org token (if
+	 * set). `active` marks the credential-system winner (project override
+	 * beats org). Used by the project settings engine tab as a picker preview.
 	 */
 	forProject: protectedProcedure
 		.input(z.object({ projectId: z.string() }))
 		.query(async ({ ctx, input }) => {
 			await verifyProjectOrgAccess(input.projectId, ctx.effectiveOrgId);
 
-			// Project override — project rows only, deliberately NOT the inheriting
-			// resolver: the point is contrasting the override with the org value.
-			const projectRows = await listProjectCredentials(input.projectId);
-			const projectToken = projectRows.find((r) => r.envVarKey === CLAUDE_CODE_TOKEN_KEY)?.value;
-
-			const orgToken = await resolveOrgCredential(ctx.effectiveOrgId, CLAUDE_CODE_TOKEN_KEY);
-			const envToken = process.env[CLAUDE_CODE_TOKEN_KEY];
+			// Project tier only, deliberately NOT the inheriting resolver: the
+			// point is contrasting the override with the org value.
+			const projectToken = await getProjectOwnCredential(input.projectId, CLAUDE_CODE_TOKEN_KEY);
+			const orgToken = await safeResolveOrgToken(ctx.effectiveOrgId);
 
 			const sources: (LimitsSource & { active: boolean })[] = [];
 			if (projectToken) {
@@ -99,9 +114,6 @@ export const claudeCodeLimitsRouter = router({
 			}
 			if (orgToken) {
 				sources.push({ scope: 'org', token: orgToken, active: !projectToken });
-			}
-			if (envToken) {
-				sources.push({ scope: 'env', token: envToken, active: false });
 			}
 
 			return fetchLimitsForSources(sources);

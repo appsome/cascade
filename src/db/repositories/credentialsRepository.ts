@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { logger } from '../../utils/logging.js';
 import { getDb } from '../client.js';
 import { decryptCredential, encryptCredential } from '../crypto.js';
 import {
@@ -194,6 +195,10 @@ export async function listProjectCredentialsMeta(
  * with the owning project's name for display attribution.
  * Returns decrypted values for use in server-side API calls only.
  * Never expose raw tokens to the client.
+ *
+ * Rows that fail to decrypt (master-key rotation, AAD mismatch) are skipped
+ * with a warning instead of failing the whole query — one corrupted row must
+ * not hide usage data for the healthy tokens.
  */
 export async function listAllClaudeCodeCredentials(
 	orgId: string,
@@ -212,11 +217,54 @@ export async function listAllClaudeCodeCredentials(
 			and(eq(projects.orgId, orgId), eq(projectCredentials.envVarKey, 'CLAUDE_CODE_OAUTH_TOKEN')),
 		);
 
-	return rows.map((row) => ({
-		projectId: row.projectId,
-		projectName: row.projectName,
-		value: decryptCredential(row.value, row.projectId),
-	}));
+	const result: { projectId: string; projectName: string; value: string }[] = [];
+	for (const row of rows) {
+		try {
+			result.push({
+				projectId: row.projectId,
+				projectName: row.projectName,
+				value: decryptCredential(row.value, row.projectId),
+			});
+		} catch (err) {
+			logger.warn('Skipping undecryptable CLAUDE_CODE_OAUTH_TOKEN credential', {
+				projectId: row.projectId,
+				error: String(err),
+			});
+		}
+	}
+	return result;
+}
+
+/**
+ * Read a single credential from the project tier ONLY — no org fallback.
+ * Used where the project-vs-org distinction is the point (e.g. contrasting a
+ * project override with the inherited org value). Returns null when the row
+ * is absent or cannot be decrypted.
+ */
+export async function getProjectOwnCredential(
+	projectId: string,
+	envVarKey: string,
+): Promise<string | null> {
+	const db = getDb();
+
+	const [row] = await db
+		.select({ value: projectCredentials.value })
+		.from(projectCredentials)
+		.where(
+			and(eq(projectCredentials.projectId, projectId), eq(projectCredentials.envVarKey, envVarKey)),
+		);
+
+	if (!row) return null;
+	try {
+		return decryptCredential(row.value, projectId);
+	} catch (err) {
+		logger.warn('Failed to decrypt project credential', {
+			projectId,
+			envVarKey,
+			error: String(err),
+		});
+		return null;
+	}
 }
 
 // ============================================================================

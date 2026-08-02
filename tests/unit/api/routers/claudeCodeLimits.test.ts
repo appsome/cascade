@@ -4,14 +4,14 @@ import { createCallerFor, expectTRPCError } from '../../../helpers/trpcTestHarne
 
 const {
 	mockListAllClaudeCodeCredentials,
-	mockListProjectCredentials,
+	mockGetProjectOwnCredential,
 	mockResolveOrgCredential,
 	mockFetchClaudeSubscriptionLimits,
 	mockVerifyProjectOrgAccess,
 	mockGetOrgMembership,
 } = vi.hoisted(() => ({
 	mockListAllClaudeCodeCredentials: vi.fn(),
-	mockListProjectCredentials: vi.fn(),
+	mockGetProjectOwnCredential: vi.fn(),
 	mockResolveOrgCredential: vi.fn(),
 	mockFetchClaudeSubscriptionLimits: vi.fn(),
 	mockVerifyProjectOrgAccess: vi.fn(),
@@ -20,7 +20,7 @@ const {
 
 vi.mock('../../../../src/db/repositories/credentialsRepository.js', () => ({
 	listAllClaudeCodeCredentials: mockListAllClaudeCodeCredentials,
-	listProjectCredentials: mockListProjectCredentials,
+	getProjectOwnCredential: mockGetProjectOwnCredential,
 }));
 
 vi.mock('../../../../src/db/repositories/orgCredentialsRepository.js', () => ({
@@ -59,11 +59,10 @@ const sampleLimits = {
 describe('claudeCodeLimitsRouter', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 		mockGetOrgMembership.mockResolvedValue(null);
 		mockResolveOrgCredential.mockResolvedValue(null);
 		mockListAllClaudeCodeCredentials.mockResolvedValue([]);
-		mockListProjectCredentials.mockResolvedValue([]);
+		mockGetProjectOwnCredential.mockResolvedValue(null);
 		mockVerifyProjectOrgAccess.mockResolvedValue(undefined);
 	});
 
@@ -84,12 +83,11 @@ describe('claudeCodeLimitsRouter', () => {
 			expect(await caller.forOrg()).toEqual([]);
 		});
 
-		it('labels org, project, and env sources with attribution', async () => {
+		it('labels org and project sources with attribution', async () => {
 			mockResolveOrgCredential.mockResolvedValue('org-token');
 			mockListAllClaudeCodeCredentials.mockResolvedValue([
 				{ projectId: 'proj-1', projectName: 'Project One', value: 'proj-token' },
 			]);
-			process.env.CLAUDE_CODE_OAUTH_TOKEN = 'env-token';
 			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
 
 			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
@@ -103,11 +101,9 @@ describe('claudeCodeLimitsRouter', () => {
 					projectName: 'Project One',
 					limits: sampleLimits,
 				},
-				{ scope: 'env', limits: sampleLimits },
 			]);
 			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('org-token');
 			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('proj-token');
-			expect(mockFetchClaudeSubscriptionLimits).toHaveBeenCalledWith('env-token');
 		});
 
 		it('keeps a failed source with limits: null instead of dropping it', async () => {
@@ -118,6 +114,13 @@ describe('claudeCodeLimitsRouter', () => {
 			const result = await caller.forOrg();
 
 			expect(result).toEqual([{ scope: 'org', limits: null }]);
+		});
+
+		it('treats an undecryptable org token as absent instead of erroring', async () => {
+			mockResolveOrgCredential.mockRejectedValue(new Error('decrypt failed'));
+
+			const caller = createCaller({ user: mockAdmin, effectiveOrgId: mockAdmin.orgId });
+			expect(await caller.forOrg()).toEqual([]);
 		});
 
 		it('scopes lookups to the effective org', async () => {
@@ -139,9 +142,7 @@ describe('claudeCodeLimitsRouter', () => {
 		});
 
 		it('marks the project override active over the org token', async () => {
-			mockListProjectCredentials.mockResolvedValue([
-				{ envVarKey: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'proj-token', name: null },
-			]);
+			mockGetProjectOwnCredential.mockResolvedValue('proj-token');
 			mockResolveOrgCredential.mockResolvedValue('org-token');
 			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
 
@@ -152,6 +153,7 @@ describe('claudeCodeLimitsRouter', () => {
 				{ scope: 'project', projectId: 'p1', active: true, limits: sampleLimits },
 				{ scope: 'org', active: false, limits: sampleLimits },
 			]);
+			expect(mockGetProjectOwnCredential).toHaveBeenCalledWith('p1', 'CLAUDE_CODE_OAUTH_TOKEN');
 		});
 
 		it('marks the org token active when no project override exists', async () => {
@@ -162,16 +164,6 @@ describe('claudeCodeLimitsRouter', () => {
 			const result = await caller.forProject({ projectId: 'p1' });
 
 			expect(result).toEqual([{ scope: 'org', active: true, limits: sampleLimits }]);
-		});
-
-		it('includes the env token as an inactive informational source', async () => {
-			process.env.CLAUDE_CODE_OAUTH_TOKEN = 'env-token';
-			mockFetchClaudeSubscriptionLimits.mockResolvedValue(sampleLimits);
-
-			const caller = createCaller({ user: member, effectiveOrgId: member.orgId });
-			const result = await caller.forProject({ projectId: 'p1' });
-
-			expect(result).toEqual([{ scope: 'env', active: false, limits: sampleLimits }]);
 		});
 
 		it('returns empty array when nothing is configured', async () => {

@@ -24,7 +24,7 @@ export interface ClaudeUsageLimits {
 }
 
 export interface ClaudeUsageSource {
-	scope: 'org' | 'project' | 'env';
+	scope: 'org' | 'project';
 	projectId?: string;
 	projectName?: string;
 	active?: boolean;
@@ -54,7 +54,6 @@ function utilizationColor(pct: number): string {
 
 export function sourceLabel(source: ClaudeUsageSource): string {
 	if (source.scope === 'org') return 'Organization';
-	if (source.scope === 'env') return 'Server environment';
 	return source.projectName ? `Project: ${source.projectName}` : 'This project';
 }
 

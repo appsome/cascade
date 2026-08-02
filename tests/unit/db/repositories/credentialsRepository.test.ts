@@ -7,6 +7,8 @@ vi.mock('../../../../src/db/client.js', () => mockDbClientModule);
 
 import {
 	getIntegrationProvider,
+	getProjectOwnCredential,
+	listAllClaudeCodeCredentials,
 	listProjectCredentialsMeta,
 	resolveAllProjectCredentials,
 	resolveProjectCredential,
@@ -190,6 +192,65 @@ describe('credentialsRepository', () => {
 			const result = await listProjectCredentialsMeta('proj1');
 
 			expect(result).toEqual([]);
+		});
+	});
+
+	describe('getProjectOwnCredential', () => {
+		it('returns the project-tier value without org fallback', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([{ value: 'proj-token' }]);
+
+			const result = await getProjectOwnCredential('proj1', 'CLAUDE_CODE_OAUTH_TOKEN');
+			expect(result).toBe('proj-token');
+			// Single query — never touches the org tier
+			expect(mockDb.db.select).toHaveBeenCalledTimes(1);
+		});
+
+		it('returns null when the project row is absent (no org fallback)', async () => {
+			mockDb.chain.where.mockResolvedValueOnce([]);
+
+			const result = await getProjectOwnCredential('proj1', 'CLAUDE_CODE_OAUTH_TOKEN');
+			expect(result).toBeNull();
+			expect(mockDb.db.select).toHaveBeenCalledTimes(1);
+		});
+
+		it('returns null instead of throwing when decryption fails', async () => {
+			const key = randomBytes(32).toString('hex');
+			vi.stubEnv('CREDENTIAL_MASTER_KEY', key);
+
+			const { encryptCredential } = await import('../../../../src/db/crypto.js');
+			// Encrypted with a different AAD — decryption with proj1 fails
+			const foreign = encryptCredential('secret', 'other-project');
+			mockDb.chain.where.mockResolvedValueOnce([{ value: foreign }]);
+
+			const result = await getProjectOwnCredential('proj1', 'CLAUDE_CODE_OAUTH_TOKEN');
+			expect(result).toBeNull();
+		});
+	});
+
+	describe('listAllClaudeCodeCredentials', () => {
+		it('skips undecryptable rows instead of failing the whole query', async () => {
+			const key = randomBytes(32).toString('hex');
+			vi.stubEnv('CREDENTIAL_MASTER_KEY', key);
+
+			const { encryptCredential } = await import('../../../../src/db/crypto.js');
+			mockDb.chain.where.mockResolvedValueOnce([
+				{
+					projectId: 'proj-good',
+					projectName: 'Good',
+					value: encryptCredential('good-token', 'proj-good'),
+				},
+				{
+					projectId: 'proj-bad',
+					projectName: 'Bad',
+					// Encrypted with the wrong AAD — decryption throws for proj-bad
+					value: encryptCredential('bad-token', 'some-other-project'),
+				},
+			]);
+
+			const result = await listAllClaudeCodeCredentials('org-1');
+			expect(result).toEqual([
+				{ projectId: 'proj-good', projectName: 'Good', value: 'good-token' },
+			]);
 		});
 	});
 
