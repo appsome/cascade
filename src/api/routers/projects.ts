@@ -18,6 +18,7 @@ import {
 } from '../../db/repositories/credentialsRepository.js';
 import { listProjectsForOrg } from '../../db/repositories/runsRepository.js';
 import {
+	cloneProject,
 	createProject,
 	deleteProject,
 	deleteProjectIntegration,
@@ -736,6 +737,44 @@ export const projectsRouter = router({
 		.mutation(async ({ ctx, input }) => {
 			await verifyProjectOwnership(input.id, ctx.effectiveOrgId);
 			await deleteProject(input.id, ctx.effectiveOrgId);
+		}),
+
+	/**
+	 * Clone a project: copies all settings, integrations, credentials (re-encrypted),
+	 * agent configs, and trigger configs to a new project with a given ID and name.
+	 * The `repo` field is NOT copied — user must configure it after cloning.
+	 */
+	clone: protectedProcedure
+		.input(
+			z.object({
+				sourceId: z.string(),
+				newId: z
+					.string()
+					.min(1)
+					.regex(/^[a-z0-9-]+$/),
+				newName: z.string().min(1),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			await verifyProjectOwnership(input.sourceId, ctx.effectiveOrgId);
+			try {
+				return await cloneProject(ctx.effectiveOrgId, input.sourceId, input.newId, input.newName);
+			} catch (err) {
+				// PostgreSQL unique constraint violation (error code 23505) means the
+				// new project ID already exists — surface an actionable BAD_REQUEST instead
+				// of an opaque INTERNAL_SERVER_ERROR.
+				if (
+					err instanceof Error &&
+					'code' in err &&
+					(err as NodeJS.ErrnoException).code === '23505'
+				) {
+					throw new TRPCError({
+						code: 'BAD_REQUEST',
+						message: `Project ID '${input.newId}' is already taken. Please choose a different name.`,
+					});
+				}
+				throw err;
+			}
 		}),
 
 	// Integrations

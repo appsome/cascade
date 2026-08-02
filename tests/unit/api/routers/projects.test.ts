@@ -18,6 +18,7 @@ const {
 	mockCreateProject,
 	mockUpdateProject,
 	mockDeleteProject,
+	mockCloneProject,
 	mockListProjectIntegrations,
 	mockUpsertProjectIntegration,
 	mockDeleteProjectIntegration,
@@ -33,6 +34,7 @@ const {
 	mockCreateProject: vi.fn(),
 	mockUpdateProject: vi.fn(),
 	mockDeleteProject: vi.fn(),
+	mockCloneProject: vi.fn(),
 	mockListProjectIntegrations: vi.fn(),
 	mockUpsertProjectIntegration: vi.fn(),
 	mockDeleteProjectIntegration: vi.fn(),
@@ -53,6 +55,7 @@ vi.mock('../../../../src/db/repositories/settingsRepository.js', () => ({
 	createProject: mockCreateProject,
 	updateProject: mockUpdateProject,
 	deleteProject: mockDeleteProject,
+	cloneProject: mockCloneProject,
 	listProjectIntegrations: mockListProjectIntegrations,
 	upsertProjectIntegration: mockUpsertProjectIntegration,
 	deleteProjectIntegration: mockDeleteProjectIntegration,
@@ -411,6 +414,76 @@ describe('projectsRouter', () => {
 				code: 'NOT_FOUND',
 			});
 			expect(mockDeleteProject).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('clone', () => {
+		it('calls cloneProject with correct args after verifying ownership', async () => {
+			mockDbWhere.mockResolvedValue([{ orgId: 'org-1' }]);
+			mockCloneProject.mockResolvedValue({ id: 'new-project', name: 'New Project' });
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+
+			const result = await caller.clone({
+				sourceId: 'source-project',
+				newId: 'new-project',
+				newName: 'New Project',
+			});
+
+			expect(mockCloneProject).toHaveBeenCalledWith(
+				'org-1',
+				'source-project',
+				'new-project',
+				'New Project',
+			);
+			expect(result).toEqual({ id: 'new-project', name: 'New Project' });
+		});
+
+		it('throws NOT_FOUND when source project belongs to different org', async () => {
+			mockDbWhere.mockResolvedValue([{ orgId: 'different-org' }]);
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+
+			await expect(
+				caller.clone({ sourceId: 'p1', newId: 'new-p1', newName: 'New P1' }),
+			).rejects.toMatchObject({ code: 'NOT_FOUND' });
+			expect(mockCloneProject).not.toHaveBeenCalled();
+		});
+
+		it('throws UNAUTHORIZED when not authenticated', async () => {
+			const caller = createCaller({ user: null, effectiveOrgId: null });
+			await expectTRPCError(
+				caller.clone({ sourceId: 'p1', newId: 'new-p1', newName: 'New P1' }),
+				'UNAUTHORIZED',
+			);
+		});
+
+		it('rejects invalid newId format', async () => {
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.clone({ sourceId: 'p1', newId: 'INVALID ID!', newName: 'New P1' }),
+			).rejects.toThrow();
+		});
+
+		it('rejects empty newName', async () => {
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+			await expect(
+				caller.clone({ sourceId: 'p1', newId: 'valid-id', newName: '' }),
+			).rejects.toThrow();
+		});
+
+		it('converts unique constraint violation to BAD_REQUEST with actionable message', async () => {
+			mockDbWhere.mockResolvedValue([{ orgId: 'org-1' }]);
+			const uniqueConstraintError = Object.assign(new Error('duplicate key value'), {
+				code: '23505',
+			});
+			mockCloneProject.mockRejectedValue(uniqueConstraintError);
+			const caller = createCaller({ user: mockUser, effectiveOrgId: mockUser.orgId });
+
+			await expect(
+				caller.clone({ sourceId: 'p1', newId: 'existing-id', newName: 'New P1' }),
+			).rejects.toMatchObject({
+				code: 'BAD_REQUEST',
+				message: expect.stringContaining('existing-id'),
+			});
 		});
 	});
 
