@@ -160,6 +160,7 @@ export default defineConfig({
 						'tests/unit/openrouter/**/*.test.ts',
 						'tests/unit/sentry/**/*.test.ts',
 						'tests/unit/docker/**/*.test.ts',
+						'tests/unit/anthropic/**/*.test.ts',
 						'tests/unit/*.test.ts',
 					],
 					...sharedTest,
