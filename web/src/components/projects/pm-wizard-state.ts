@@ -92,6 +92,7 @@ export interface WizardState {
 	trelloListMappings: Record<string, string>;
 	trelloLabelMappings: Record<string, string>;
 	trelloCostFieldId: string;
+	trelloRequiredLabelId: string;
 	// JIRA mappings
 	jiraStatusMappings: Record<string, string>;
 	jiraIssueTypes: Record<string, string>;

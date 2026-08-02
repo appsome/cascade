@@ -11,8 +11,10 @@
  */
 
 import type { TriggerRegistry } from '../triggers/registry.js';
+import type { TriggerResult } from '../types/index.js';
 import { logger } from '../utils/logging.js';
 import { isDuplicateAction, markActionProcessed } from './action-dedup.js';
+import type { RouterProjectConfig } from './config.js';
 import type { RouterPlatformAdapter } from './platform-adapter.js';
 import {
 	handleTriggerOutcome,
@@ -81,9 +83,22 @@ export async function processRouterWebhook(
 	// Step 5: Fire acknowledgment reaction (fire-and-forget)
 	adapter.sendReaction(event, payload);
 
-	// Step 6: Resolve project config
-	const project = await adapter.resolveProject(event);
-	if (!project) {
+	// Step 6: Resolve project config(s)
+	// When the adapter implements resolveAllProjects (e.g. Trello, where multiple projects can
+	// share the same board and are distinguished by requiredLabelId), we use its result directly.
+	// An empty array means the event was definitively filtered out (e.g. card lacks required label)
+	// and we must NOT fall back to resolveProject — that would bypass the filter and re-introduce
+	// projects that were intentionally excluded.
+	// For adapters that don't implement resolveAllProjects, we fall back to resolveProject.
+	let projectsToTry: RouterProjectConfig[];
+	if (adapter.resolveAllProjects) {
+		projectsToTry = await adapter.resolveAllProjects(event);
+	} else {
+		const singleProject = await adapter.resolveProject(event);
+		projectsToTry = singleProject ? [singleProject] : [];
+	}
+
+	if (projectsToTry.length === 0) {
 		logger.info(`No project config found for ${adapter.type} event`, {
 			projectIdentifier: event.projectIdentifier,
 		});
@@ -93,25 +108,41 @@ export async function processRouterWebhook(
 		};
 	}
 
-	// Step 7: Dispatch triggers with credential scope
-	let result = null;
-	try {
-		result = await adapter.dispatchWithCredentials(event, payload, project, triggerRegistry);
-	} catch (err) {
-		logger.warn(`${adapter.type} trigger dispatch failed (non-fatal)`, {
-			error: String(err),
-			projectId: project.id,
-		});
+	// Step 7: Dispatch triggers with credential scope — iterate over all candidate projects and
+	// use the first one whose dispatch returns a non-null result (i.e., whose requiredLabelId
+	// matches the card, or which has no label filter configured).
+	let result: TriggerResult | null = null;
+	let project: RouterProjectConfig | null = null;
+
+	for (const proj of projectsToTry) {
+		try {
+			const dispatchResult = await adapter.dispatchWithCredentials(
+				event,
+				payload,
+				proj,
+				triggerRegistry,
+			);
+			if (dispatchResult !== null) {
+				result = dispatchResult;
+				project = proj;
+				break;
+			}
+		} catch (err) {
+			logger.warn(`${adapter.type} trigger dispatch failed (non-fatal)`, {
+				error: String(err),
+				projectId: proj.id,
+			});
+		}
 	}
 
-	if (!result) {
+	if (!result || !project) {
 		logger.info(`No trigger matched for ${adapter.type} event`, {
 			eventType: event.eventType,
 			workItemId: event.workItemId,
 		});
 		return {
 			shouldProcess: true,
-			projectId: project.id,
+			projectId: projectsToTry[0]?.id,
 			decisionReason: 'No trigger matched for event',
 		};
 	}

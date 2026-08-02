@@ -13,15 +13,23 @@ vi.mock('../../../src/router/acknowledgments.js', () => ({
 	resolveTrelloBotMemberId: vi.fn(),
 }));
 
+vi.mock('../../../src/trello/client.js', () => ({
+	trelloClient: {
+		getCard: vi.fn(),
+	},
+}));
+
 import { resolveTrelloBotMemberId } from '../../../src/router/acknowledgments.js';
 import type { RouterProjectConfig } from '../../../src/router/config.js';
 import {
+	checkCardHasRequiredLabel,
 	isAgentLogAttachmentUploaded,
 	isAgentLogFilename,
 	isCardInTriggerList,
 	isReadyToProcessLabelAdded,
 	isSelfAuthoredTrelloComment,
 } from '../../../src/router/trello.js';
+import { trelloClient } from '../../../src/trello/client.js';
 
 const mockProject: RouterProjectConfig = {
 	id: 'p1',
@@ -161,6 +169,67 @@ describe('isAgentLogAttachmentUploaded', () => {
 				trello: { ...mockProject.trello, lists: { ...mockProject.trello?.lists, debug: '' } },
 			},
 		);
+		expect(result).toBe(false);
+	});
+});
+
+describe('checkCardHasRequiredLabel', () => {
+	it('returns true when no requiredLabelId is set (falsy)', async () => {
+		const result = await checkCardHasRequiredLabel('card1', undefined);
+		expect(result).toBe(true);
+		expect(trelloClient.getCard).not.toHaveBeenCalled();
+	});
+
+	it('returns true when empty string is provided as requiredLabelId', async () => {
+		const result = await checkCardHasRequiredLabel('card1', '');
+		expect(result).toBe(true);
+		expect(trelloClient.getCard).not.toHaveBeenCalled();
+	});
+
+	it('returns true when card has the required label', async () => {
+		vi.mocked(trelloClient.getCard).mockResolvedValue({
+			id: 'card1',
+			name: 'Test card',
+			desc: '',
+			idList: 'list1',
+			labels: [{ id: 'label-required', name: 'Required', color: 'red' }],
+			url: 'https://trello.com/c/card1',
+			pos: 0,
+			shortUrl: 'https://trello.com/c/card1',
+		});
+		const result = await checkCardHasRequiredLabel('card1', 'label-required');
+		expect(result).toBe(true);
+		expect(trelloClient.getCard).toHaveBeenCalledWith('card1');
+	});
+
+	it('returns false when card does not have the required label', async () => {
+		vi.mocked(trelloClient.getCard).mockResolvedValue({
+			id: 'card1',
+			name: 'Test card',
+			desc: '',
+			idList: 'list1',
+			labels: [{ id: 'label-other', name: 'Other', color: 'blue' }],
+			url: 'https://trello.com/c/card1',
+			pos: 0,
+			shortUrl: 'https://trello.com/c/card1',
+		});
+		const result = await checkCardHasRequiredLabel('card1', 'label-required');
+		expect(result).toBe(false);
+		expect(trelloClient.getCard).toHaveBeenCalledWith('card1');
+	});
+
+	it('returns false when card has no labels', async () => {
+		vi.mocked(trelloClient.getCard).mockResolvedValue({
+			id: 'card1',
+			name: 'Test card',
+			desc: '',
+			idList: 'list1',
+			labels: [],
+			url: 'https://trello.com/c/card1',
+			pos: 0,
+			shortUrl: 'https://trello.com/c/card1',
+		});
+		const result = await checkCardHasRequiredLabel('card1', 'label-required');
 		expect(result).toBe(false);
 	});
 });

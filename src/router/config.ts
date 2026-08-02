@@ -11,6 +11,7 @@ export interface RouterProjectConfig {
 		boardId: string;
 		lists: Record<string, string>;
 		labels: Record<string, string>;
+		requiredLabelId?: string;
 	};
 	jira?: {
 		projectKey: string;
@@ -20,6 +21,12 @@ export interface RouterProjectConfig {
 		teamId: string;
 		projectId?: string;
 	};
+	/**
+	 * @internal Set by resolveAllProjects when label pre-filtering was successful.
+	 * When true, dispatchWithCredentials skips the secondary checkCardHasRequiredLabel
+	 * guard since the label was already verified during project resolution.
+	 */
+	_labelPreFiltered?: boolean;
 }
 
 export interface RouterConfig {
@@ -113,6 +120,7 @@ export async function loadProjectConfig(): Promise<{
 								boardId: trelloConfig.boardId,
 								lists: trelloConfig.lists,
 								labels: trelloConfig.labels,
+								requiredLabelId: trelloConfig.requiredLabelId,
 							},
 						}),
 						...(jiraConfig && {
